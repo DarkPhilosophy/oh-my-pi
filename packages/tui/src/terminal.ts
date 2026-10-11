@@ -27,7 +27,12 @@ import {
 	setTerminalGlyphProtocol,
 	TERMINAL,
 } from "./terminal-capabilities";
-import { canQueryHerdrNativeTransport } from "./terminal-multiplexer";
+import {
+	canDiscoverHerdrNativeTransport,
+	canQueryHerdrNativeTransport,
+	isDirectHerdrPane,
+	queryHerdrNativeTransport,
+} from "./terminal-multiplexer";
 import { isInsideTmux, wrapTmuxPassthrough } from "./tmux";
 import { setHangulCompatibilityJamoWidth } from "./utils";
 import { translateWindowsAltGrSequence } from "./windows-altgr";
@@ -674,6 +679,12 @@ export interface Terminal {
 	 * revokes it.
 	 */
 	readonly tspExpected?: boolean;
+	/**
+	 * Native frames travel through a multiplexer that shows the classic rows to
+	 * its other clients (Herdr): the TUI then paints rows next to the surface
+	 * instead of in place of it. `PI_TUI_DUAL=0` opts out.
+	 */
+	readonly nativeRelayed?: boolean;
 }
 
 /**
@@ -850,6 +861,7 @@ export class ProcessTerminal implements Terminal {
 	#glyphProtocolCallbacks: GlyphProtocolReportHandler[] = [];
 	#tspPending = false;
 	#tspResult: TspHello | null | undefined;
+	#tspQueryGeneration = 0;
 	#tspCallbacks: TspHelloHandler[] = [];
 	#tspReplyBuffer = "";
 	#privateCsiResponseBuffer = "";
@@ -970,6 +982,10 @@ export class ProcessTerminal implements Terminal {
 
 	get tspProbePending(): boolean {
 		return this.#tspPending;
+	}
+
+	get nativeRelayed(): boolean {
+		return $env.PI_TUI_DUAL !== "0" && isDirectHerdrPane($env);
 	}
 
 	get tspExpected(): boolean {
@@ -1787,18 +1803,27 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	#queryTspSupport(): void {
+		const generation = ++this.#tspQueryGeneration;
 		this.#tspPending = false;
 		this.#tspResult = undefined;
 		this.#tspReplyBuffer = "";
 		if (this.#dead) return;
-		if (!this.#shouldQueryTspSupport()) {
-			this.#tspResult = null;
-			for (const cb of this.#tspCallbacks) cb(null);
-			return;
-		}
-		this.#tspPending = true;
-		this.#da1SentinelOwners.push({ kind: "tsp" });
-		this.#safeWrite(`${encodeTspHelloQuery()}\x1b[c`);
+		const probe = (available: boolean) => {
+			if (!this.#active || this.#dead || generation !== this.#tspQueryGeneration) return;
+			if (!available) {
+				this.#tspPending = true;
+				this.#resolveTspSupport(null);
+				return;
+			}
+			this.#tspPending = true;
+			this.#da1SentinelOwners.push({ kind: "tsp" });
+			this.#safeWrite(`${encodeTspHelloQuery()}\x1b[c`);
+		};
+		if (this.#shouldQueryTspSupport()) probe(true);
+		else if (!isBunTestRuntime() && $env.PI_TUI_NATIVE !== "0" && canDiscoverHerdrNativeTransport($env)) {
+			this.#tspPending = true;
+			void queryHerdrNativeTransport({ ...$env }).then(probe, () => probe(false));
+		} else probe(false);
 	}
 
 	#handleTspMessage(sequence: string): void {
@@ -2119,6 +2144,7 @@ export class ProcessTerminal implements Terminal {
 	stop(): void {
 		// Suppress observer/timer callbacks before any teardown can yield or throw.
 		this.#active = false;
+		this.#tspQueryGeneration++;
 		this.#inputDeferred = false;
 		if (this.#headless) return;
 		// Release stdout ownership (out-of-band writers and emergency cleanup)

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { detectKittyUnicodePlaceholdersSupport } from "@oh-my-pi/pi-tui/kitty-graphics";
 import {
 	detectStyledUnderlineSupport,
 	detectTerminalId,
@@ -101,6 +102,23 @@ describe("detectTerminalId", () => {
 		const id = detectTerminalId({ TERM: "monstar", COLORTERM: "truecolor" });
 		expect(id).toBe("monstar");
 		expect(getTerminalInfo(id).notifyProtocol).toBe(NotifyProtocol.Osc9);
+	});
+
+	it("recognizes Attyx by TERM_PROGRAM and turns on OSC 8 hyperlinks, leaving every other capability unchanged", () => {
+		// Attyx exports TERM_PROGRAM=Attyx with COLORTERM=truecolor, which used to fall to the trueColor fallback (hyperlinks off)
+		// and left the code-block `[copy]` chip, an `omp-copy:` OSC 8 link, as dead text.
+		const env = { TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "Attyx" };
+		const id = detectTerminalId(env);
+		expect(id).toBe("attyx");
+		expect(shouldEnableHyperlinksByDefault(env, id)).toBe(true);
+		const info = getTerminalInfo(id);
+		const fallback = getTerminalInfo("trueColor");
+		expect(info.imageProtocol).toBe(fallback.imageProtocol);
+		expect(info.notifyProtocol).toBe(fallback.notifyProtocol);
+		expect(info.trueColor).toBe(true);
+		// The user kill switch and a multiplexer that cannot forward OSC 8 still win over the static capability.
+		expect(shouldEnableHyperlinksByDefault({ ...env, PI_NO_HYPERLINKS: "1" }, id)).toBe(false);
+		expect(shouldEnableHyperlinksByDefault({ ...env, STY: "1.pts-0.host" }, id)).toBe(false);
 	});
 
 	it("falls back to trueColor on VTE/Ptyxis environments — VTE OSC 9 is ConEmu progress, not a notification protocol", () => {
@@ -481,6 +499,42 @@ describe("Herdr image protocol mask", () => {
 
 		expect(terminalId).toBe("ghostty");
 		expect(resolveImageProtocol(terminalId, env, true)).toBeNull();
+	});
+
+	it("keeps upstream Herdr gated: no announcement, no Kitty", () => {
+		const env = { HERDR_ENV: "1", HERDR_PANE_ID: "p1", TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "herdr" };
+		expect(resolveImageProtocol(detectTerminalId(env), env, true)).toBeNull();
+		expect(resolveImageProtocol("base", { ...env, HERDR_KITTY_GRAPHICS: "0" }, true)).toBeNull();
+	});
+
+	it("enables Kitty in a direct pane of a Herdr that announces forwarding", () => {
+		const env = {
+			HERDR_ENV: "1",
+			HERDR_PANE_ID: "p1",
+			HERDR_KITTY_GRAPHICS: "1",
+			TERM: "xterm-256color",
+			COLORTERM: "truecolor",
+			TERM_PROGRAM: "herdr",
+		};
+		expect(resolveImageProtocol(detectTerminalId(env), env, true)).toBe(ImageProtocol.Kitty);
+		expect(detectKittyUnicodePlaceholdersSupport(detectTerminalId(env), env)).toBe(true);
+		expect(detectKittyUnicodePlaceholdersSupport(detectTerminalId(env), { ...env, PI_NO_KITTY_PLACEHOLDERS: "1" })).toBe(false);
+	});
+
+	it.each([
+		["TMUX", "/tmp/tmux-1000/default,1,0"],
+		["STY", "1.pts-0"],
+		["ZELLIJ", "0"],
+		["CMUX_WORKSPACE_ID", "w"],
+		["WMUX", "1"],
+		["HERDR_PLUGIN_ID", "x.y"],
+		["TERM", "tmux-256color"],
+		["TERM", "screen-256color"],
+		["PASEO_TERMINAL_ID", "term-1"],
+	])("stays gated when %s shows a nested multiplexer or embedder", (key, value) => {
+		const env = { HERDR_ENV: "1", HERDR_PANE_ID: "p1", HERDR_KITTY_GRAPHICS: "1", TERM: "xterm-256color", [key]: value };
+		expect(resolveImageProtocol("base", env, true)).toBeNull();
+		expect(detectKittyUnicodePlaceholdersSupport("base", env)).toBe(false);
 	});
 });
 

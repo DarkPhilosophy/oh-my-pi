@@ -10,7 +10,12 @@ import {
 	renderKittyPlaceholderLines,
 	setKittyGraphics,
 } from "./kitty-graphics";
-import { isInsideHerdr, isInsideTerminalMultiplexer } from "./terminal-multiplexer";
+import {
+	canUseHerdrKittyGraphics,
+	isDirectHerdrPane,
+	isInsideHerdr,
+	isInsideTerminalMultiplexer,
+} from "./terminal-multiplexer";
 import { isInsideTmux, resolveTmuxClientTerminalName, wrapTmuxPassthrough, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import type { HangulCompatibilityJamoWidth } from "./utils";
 
@@ -42,6 +47,7 @@ export type TerminalId =
 	| "rio"
 	| "tern"
 	| "monstar"
+	| "attyx"
 	| "base"
 	| "trueColor";
 
@@ -671,14 +677,18 @@ export function resolveImageProtocol(
 	// applied after the multiplexer fallback so tmux/screen inside a Paseo
 	// pane cannot restore Kitty via getFallbackImageProtocol
 	// (getpaseo/paseo#3850).
-	if (imageProtocol !== null && isPaseoEmbedder(env)) {
+	if (isPaseoEmbedder(env) && (imageProtocol !== null || isInsideHerdr(env))) {
 		return null;
 	}
-	// Herdr owns the pane grid but does not expose whether the attached client
-	// enabled its experimental Kitty renderer. Outer-terminal identity variables
-	// can leak into the pane, so only the explicit protocol override is safe.
-	if (imageProtocol !== null && isInsideHerdr(env)) {
-		return null;
+	// Herdr owns the pane grid and, for upstream builds, does not expose whether
+	// attached clients render Kitty graphics; outer-terminal identity variables can
+	// leak into the pane, so only the explicit protocol override is safe there.
+	// Our fork announces forwarding with `HERDR_KITTY_GRAPHICS=1` (or the ping
+	// capability, applied by the terminal after startup): then Herdr's own VT
+	// engine ingests the APC and re-emits it to every client, so Kitty is usable
+	// even though the pane's terminal id (`TERM_PROGRAM=herdr`) names no protocol.
+	if (isInsideHerdr(env)) {
+		return canUseHerdrKittyGraphics(env) ? ImageProtocol.Kitty : null;
 	}
 	return imageProtocol;
 }
@@ -753,6 +763,10 @@ const KNOWN_TERMINALS = Object.freeze({
 	// activating it focuses the Monstar window. The BEL path uses omp's own
 	// `notify-send` fallback instead, which cannot focus a window.
 	monstar: new TerminalInfo("monstar", ImageProtocol.Kitty, true, true, NotifyProtocol.Osc9, false, false, false, 2),
+	// Attyx sets TERM_PROGRAM=Attyx. It renders OSC 8 hyperlinks and opens them on a plain click, which is what makes the
+	// code-block `[copy]` chip (an `omp-copy:` link) work. Every other capability keeps the conservative defaults of an
+	// unrecognised true-colour terminal, so recognising it changes nothing but hyperlinks.
+	attyx: new TerminalInfo("attyx", null, true, true, NotifyProtocol.Bell),
 });
 
 /** Resolve terminal identity from environment markers used by common emulators. */
@@ -775,6 +789,7 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 		if (caseEq(program, "rio")) return "rio";
 		if (caseEq(program, "tern")) return "tern";
 		if (caseEq(program, "monstar")) return "monstar";
+		if (caseEq(program, "attyx")) return "attyx";
 		return null;
 	}
 
@@ -900,6 +915,24 @@ export function setTerminalEnvironment(env: NodeJS.ProcessEnv): void {
  */
 export function setTerminalImageProtocol(imageProtocol: ImageProtocol | null): void {
 	TERMINAL.imageProtocol = imageProtocol;
+}
+
+/**
+ * Apply Kitty graphics for a Herdr pane whose daemon confirmed forwarding at
+ * runtime (ping capability) because the pane predates the spawn marker. The
+ * result equals what {@link resolveImageProtocol} yields for a marked pane:
+ * nothing changes under an explicit protocol choice, Paseo, or a nested
+ * multiplexer, and the `PI_NO_KITTY_PLACEHOLDERS` / `PI_KITTY_PLACEHOLDERS`
+ * opt-outs still decide placeholders.
+ */
+export function applyHerdrKittyGraphics(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	if (!isDirectHerdrPane(env) || isPaseoEmbedder(env) || TERMINAL.imageProtocol || getForcedImageProtocol() !== undefined) {
+		return false;
+	}
+	const announced = { ...env, HERDR_KITTY_GRAPHICS: "1" };
+	TERMINAL.imageProtocol = resolveImageProtocol(TERMINAL.id, announced, true);
+	setKittyGraphics({ unicodePlaceholders: detectKittyUnicodePlaceholdersSupport(TERMINAL.id, announced) });
+	return TERMINAL.imageProtocol !== null;
 }
 
 /**

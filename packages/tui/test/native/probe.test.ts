@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { TspHello } from "@oh-my-pi/pi-tui/native/encode";
 import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
-
+import { TtyWriter } from "@oh-my-pi/pi-natives";
+import { createServer, type Socket } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 const DA1_REPLY = "\x1b[?1;2c";
 const HELLO_REPLY = '\x1b_tsp;r;{"r":"hello","v":1,"term":"tern","kinds":["col","text"],"credits":3,"future":1}\x1b\\';
 const EVENT = '\x1b_tsp;e;{"ev":"ack","sf":"s:1","s":1}\x1b\\';
@@ -28,6 +32,7 @@ function setup() {
 	vi.spyOn(process.stdin, "resume").mockImplementation(() => process.stdin);
 	vi.spyOn(process.stdin, "pause").mockImplementation(() => process.stdin);
 	vi.spyOn(process.stdin, "setEncoding").mockImplementation(() => process.stdin);
+	vi.spyOn(TtyWriter.prototype, "write").mockImplementation(data => { writes.push(data); return data.length; });
 	vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
 		writes.push(typeof chunk === "string" ? chunk : chunk.toString());
 		return true;
@@ -174,6 +179,52 @@ describe("TSP hello probe", () => {
 			expect(hellos).toEqual([null]);
 		} finally {
 			terminal.stop();
+		}
+	});
+	it.each(["reject", "stop", "hello"])("holds first paint during API discovery and handles %s", async mode => {
+		const saved = { ...Bun.env };
+		const dir = mkdtempSync(join(tmpdir(), "herdr-probe-"));
+		const path = join(dir, "api.sock");
+		let peer: Socket | undefined;
+		let requestId = "";
+		let received!: () => void;
+		const request = new Promise<void>(resolve => { received = resolve; });
+		const server = createServer(socket => {
+			peer = socket;
+			socket.once("data", data => { requestId = JSON.parse(data.toString()).id; received(); });
+		});
+		await new Promise<void>(resolve => server.listen(path, resolve));
+		let result: ReturnType<typeof setup> | undefined;
+		try {
+			for (const key of Object.keys(Bun.env)) if (/^(TMUX|STY|ZELLIJ|HERDR_|CMUX_|WMUX|PI_TUI_NATIVE)/.test(key)) delete Bun.env[key];
+			delete Bun.env.PI_TEST_RUNTIME;
+			delete Bun.env.BUN_ENV;
+			delete Bun.env.NODE_ENV;
+			Object.assign(Bun.env, { HERDR_PANE_ID: "old-pane", HERDR_SOCKET_PATH: path, TERM: "xterm-256color" });
+			result = setup();
+			expect(result.terminal.tspProbePending).toBe(true);
+			expect(result.writes.join("")).not.toContain("\x1b_tsp;");
+			await request;
+			if (mode === "stop") result.terminal.stop();
+			const before = result.writes.length;
+			peer!.end(JSON.stringify({ id: requestId, result: { type: "pong", capabilities: { native_transport: mode !== "reject" } } }) + "\n");
+			await Bun.sleep(20);
+			if (mode === "stop") expect(result.writes.length).toBe(before);
+			else if (mode === "reject") {
+				expect(result.terminal.tspProbePending).toBe(false);
+				expect(result.hellos).toEqual([null]);
+				expect(result.writes.join("")).not.toContain("\x1b_tsp;");
+			} else {
+				expect(result.writes.join("")).toContain("\x1b_tsp;");
+				process.stdin.emit("data", HELLO_REPLY);
+				expect(result.hellos[0]?.term).toBe("tern");
+			}
+		} finally {
+			result?.terminal.stop(); peer?.destroy();
+			await new Promise<void>(resolve => server.close(() => resolve()));
+			rmSync(dir, { recursive: true });
+			for (const key of Object.keys(Bun.env)) if (!(key in saved)) delete Bun.env[key];
+			Object.assign(Bun.env, saved);
 		}
 	});
 });

@@ -36,11 +36,15 @@ mkdir -p "$launch_dir"
 OMP_LAUNCH_CWD=$PWD
 export OMP_LAUNCH_CWD
 cd "$launch_dir"
-# Herdr 0.7.5 validates the foreground process name. The macOS shell can
-# preserve OMP's identity while still running the development CLI through Bun.
+# Herdr identifies the agent in a pane from the foreground process name (argv[0]). Running the development CLI through
+# Bun would make that `bun`, so the agent would not be found (daemon mode keeps this process as the pane's client).
+# `exec -a` keeps OMP's identity. POSIX sh (e.g. dash) has no `exec -a`, so bash is used for it when present.
 run_bun() {
-	if [ "${HERDR_ENV:-}" = 1 ] && [ "$(uname -s)" = Darwin ]; then
+	if (exec -a omp true) 2>/dev/null; then
 		exec -a omp bun "$@"
+	fi
+	if command -v bash >/dev/null 2>&1; then
+		exec bash -c 'exec -a omp bun "$@"' omp "$@"
 	fi
 	exec bun "$@"
 }

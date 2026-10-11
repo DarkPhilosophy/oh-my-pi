@@ -15,7 +15,7 @@
 import * as fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import { getDebugLogPath } from "@oh-my-pi/pi-utils/dirs";
-import { $flag } from "@oh-my-pi/pi-utils/env";
+import { $flag, isBunTestRuntime } from "@oh-my-pi/pi-utils/env";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import type { TspFrame, TspNode, TspText } from "@oh-my-pi/pi-wire";
@@ -40,6 +40,7 @@ import {
 	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
 	encodeKittyPlacementLine,
+	applyHerdrKittyGraphics,
 	ImageProtocol,
 	isImageProtocolForced,
 	isInsideHerdr,
@@ -51,7 +52,7 @@ import {
 	synchronizedOutputUserOverride,
 	TERMINAL,
 } from "./terminal-capabilities";
-import { classifyTerminalMultiplexer } from "./terminal-multiplexer";
+import { canDiscoverHerdrKittyGraphics, classifyTerminalMultiplexer, queryHerdrKittyGraphics } from "./terminal-multiplexer";
 import { compositeLineAt } from "./render/composite";
 import {
 	Ellipsis,
@@ -1109,6 +1110,8 @@ export class TUI extends Container {
 	// to text via a purge + full redraw. Cap is configured by the host app.
 	#imageBudget = new ImageBudget(DEFAULT_MAX_INLINE_IMAGES, () => this.requestRender());
 	#ghosttyInitialImageDelayDone = false;
+	/** In-flight Herdr Kitty-forwarding discovery; startup probes run it once per TUI. */
+	#herdrKittyDiscovery: Promise<void> | undefined;
 	#ghosttyInitialImageDelayTimer: RenderTimer | undefined;
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
@@ -1188,6 +1191,10 @@ export class TUI extends Container {
 	// stop/start so a restart adopts the surface.
 	#native: NativeBackend | undefined;
 	#nativeLive = false;
+	// The surface is live next to the classic rows (a Herdr pane: its other
+	// clients show the rows). Rows keep their own cadence, resize replay, cursor,
+	// alternate screen and mouse state; only the paint hold and erase are skipped.
+	#nativeDual = false;
 	// Holds the first paint while the `hello` probe is outstanding, so a TSP
 	// terminal never sees a row paint it would have to erase.
 	#nativeHoldTimer: RenderTimer | undefined;
@@ -1655,9 +1662,11 @@ export class TUI extends Container {
 			() => {
 				if (this.#nativeLive) {
 					// The terminal lays the surface out: a resize only refreshes the
-					// width `rows` fallback nodes render at. No replay.
+					// width `rows` fallback nodes render at.
 					this.#native!.noteTerminalColumns(this.terminal.columns);
-					return;
+					// Next to the rows, the classic clients still resize the grid:
+					// replay as usual.
+					if (!this.#nativeDual) return;
 				}
 				if (this.#resizeProbe) {
 					// Warp echoes a height-only ±1 SIGWINCH on CSI ?1049l. The echo
@@ -1751,7 +1760,9 @@ export class TUI extends Container {
 			this.#startNative(assumedTspHello(this.terminal));
 			this.#nativeUnconfirmed = true;
 			this.#armNativeConfirm(TUI.#NATIVE_CONFIRM_MS);
-		} else if (this.terminal.tspProbePending && !this.#nativeLive) {
+		} else if (this.terminal.tspProbePending && !this.#nativeLive && this.terminal.nativeRelayed !== true) {
+			// A relay shows the rows to its other clients at once; only a direct
+			// terminal must not see a row paint it would have to erase.
 			this.#nativeHoldTimer = this.#renderScheduler.scheduleRender(() => {
 				this.#nativeHoldTimer = undefined;
 				if (!this.#stopped && !this.#nativeLive) this.requestRender(true);
@@ -1821,7 +1832,10 @@ export class TUI extends Container {
 
 	/** Switch to the surface (adopting the one a stop/start cycle closed). */
 	#startNative(hello: TspHello): void {
-		this.#eraseRowPaintForNative();
+		// Behind a relay the rows stay on screen for the other clients: nothing to
+		// erase, and the surface opens beside them.
+		this.#nativeDual = this.terminal.nativeRelayed === true;
+		if (!this.#nativeDual) this.#eraseRowPaintForNative();
 		this.#nativeLive = true;
 		if (this.#native) {
 			this.#native.resume(hello);
@@ -1867,6 +1881,7 @@ export class TUI extends Container {
 		this.#clearNativeConfirm();
 		logger.warn("TSP: terminal did not confirm the surface; falling back to rows", { reason });
 		this.#nativeLive = false;
+		this.#nativeDual = false;
 		this.#native?.stop(false);
 		this.#native = undefined;
 		this.requestRender(true);
@@ -2606,12 +2621,33 @@ export class TUI extends Container {
 		this.#inputListeners.delete(listener);
 	}
 
+	/**
+	 * A Herdr pane that predates the `HERDR_KITTY_GRAPHICS` spawn marker cannot
+	 * get it injected into its environment, so ask the daemon (bounded, read-only
+	 * `ping`) whether it forwards Kitty graphics. Success applies the same state
+	 * `resolveImageProtocol` gives a marked pane and repaints; every failure,
+	 * an old daemon included, leaves images off. Explicit protocol choices win.
+	 */
+	#discoverHerdrKittyGraphics(): void {
+		if (this.#herdrKittyDiscovery || isBunTestRuntime() || !canDiscoverHerdrKittyGraphics()) return;
+		this.#herdrKittyDiscovery = queryHerdrKittyGraphics({ ...Bun.env }).then(
+			forwarded => {
+				if (!forwarded || this.#stopped || !applyHerdrKittyGraphics()) return;
+				this.#queryCellSize();
+				this.invalidate();
+				this.requestRender(true);
+			},
+			() => {},
+		);
+	}
+
 	#querySixelSupport(): void {
 		// A statically known protocol (Kitty/iTerm2 terminals) or an explicit
 		// PI_FORCE_IMAGE_PROTOCOL choice — including its `off` kill switch — wins
 		// over the probe.
 		if (TERMINAL.imageProtocol) return;
 		if (isImageProtocolForced()) return;
+		this.#discoverHerdrKittyGraphics();
 		if (!process.stdin.isTTY || !process.stdout.isTTY) return;
 
 		this.#clearSixelProbeState();
@@ -2834,8 +2870,9 @@ export class TUI extends Container {
 		// the original damage flag or an offered append has been acknowledged.
 		this.#cursorOverlayHistoryDamaged ||= this.#clearScrollbackWaitsForReplay;
 		this.#clearScrollbackOnNextRender = false;
-		// The surface already holds the transcript; there's no row history to retire.
-		if (!nativeWasLive) this.#flushHistoryBeforeStop();
+		// The surface already holds the transcript; there's no row history to retire,
+		// unless the rows are painted next to it.
+		if (!nativeWasLive || this.#nativeDual) this.#flushHistoryBeforeStop();
 		// Deliberately leave transmitted images in the terminal's graphics store:
 		// placeholder cells committed to native scrollback render only while their
 		// image data lives, so a delete-by-id here blanks every transcript image
@@ -3062,8 +3099,8 @@ export class TUI extends Container {
 		const adaptiveDelay = Math.max(0, adaptiveFloor - elapsed);
 		const inputGraceDelay = Math.max(0, this.#inputRenderGraceUntilMs - now);
 		// Native frames are paced by the terminal's acknowledgements (credits),
-		// not by the row renderer's cadence.
-		const delay = this.#nativeLive ? 0 : Math.max(cadenceDelay, adaptiveDelay, inputGraceDelay);
+		// not by the row renderer's cadence. Rows written next to them keep theirs.
+		const delay = this.#nativeLive && !this.#nativeDual ? 0 : Math.max(cadenceDelay, adaptiveDelay, inputGraceDelay);
 		this.#renderTimer = this.#renderScheduler.scheduleRender(this.#runScheduledRender, delay);
 	}
 
@@ -4651,7 +4688,9 @@ export class TUI extends Container {
 		this.#pendingLiveRender = false;
 		if (this.#nativeLive) {
 			this.#native!.render();
-			return;
+			// Behind a relay the classic rows are painted too, from this same
+			// frame's state, as separate writes (a surface frame is one atomic APC).
+			if (!this.#nativeDual) return;
 		}
 		// Awaiting the TSP hello: its resolution (or the hold timeout) repaints.
 		if (this.#nativeHoldTimer) return;

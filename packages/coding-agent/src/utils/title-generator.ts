@@ -953,13 +953,22 @@ export class TerminalTitleController {
 }
 
 /**
- * The tab title while a TSP terminal renders: the session name (`omp` before
- * there is one) and the branch's pull request. The terminal shows run state
- * itself, so there is no brand or state separator.
+ * The tab title while a TSP terminal renders. The terminal draws run state itself, but
+ * hosts that only read the title (Herdr's agent detector, window managers, other clients
+ * attached to the same pane) cannot see that surface, so the title keeps the
+ * `π <state> <name>` shape of the classic path. The state glyph is static here (a fixed
+ * first spinner frame while working): a TSP terminal clocks its own animations and must
+ * not be woken by title ticks.
  */
-export function buildNativeTerminalTitle(sessionName: string | undefined, pullRequest: number | undefined): string {
+export function buildNativeTerminalTitle(
+	sessionName: string | undefined,
+	pullRequest: number | undefined,
+	state: TerminalTitleState = "idle",
+): string {
 	const name = sessionName ?? NATIVE_TERMINAL_TITLE;
-	return pullRequest === undefined ? name : `${name} · #${pullRequest}`;
+	const label = pullRequest === undefined ? name : `${name} · #${pullRequest}`;
+	// Braille regardless of `tui.titleSpinner`: the glyph is static here and Herdr's detector classifies braille.
+	return buildTerminalTitleWithState(label, state, 0, true, "linux", "braille", {});
 }
 
 function emitTerminalTitle(): void {
@@ -971,7 +980,11 @@ function emitTerminalTitle(): void {
 	const next =
 		terminalTitleRuntime.extensionOverride ??
 		(native
-			? buildNativeTerminalTitle(terminalTitleRuntime.sessionName, terminalTitleRuntime.pullRequest)
+			? buildNativeTerminalTitle(
+					terminalTitleRuntime.sessionName,
+					terminalTitleRuntime.pullRequest,
+					terminalTitleRuntime.enabled ? terminalTitleRuntime.state : "idle",
+				)
 			: buildTerminalTitleWithState(
 					terminalTitleRuntime.label,
 					terminalTitleRuntime.state,

@@ -37,6 +37,8 @@ export interface TspHarnessOptions {
 	hour12?: boolean;
 	/** The environment names Tern (`TERM_PROGRAM=tern`): the terminal reports `tspExpected`. */
 	expected?: boolean;
+	/** Frames travel through a Herdr-style relay that shows the rows to its other clients. */
+	relayed?: boolean;
 	/** Never answer the probe on flush; the test calls {@link TspTestTerminal.answerProbe}. */
 	manualProbe?: boolean;
 	/** Start the TUI the way the startup prepaint does. */
@@ -185,6 +187,10 @@ export class TspTestTerminal implements Terminal {
 
 	get tspExpected(): boolean {
 		return this.#options.expected === true;
+	}
+
+	get nativeRelayed(): boolean {
+		return this.#options.relayed === true;
 	}
 
 	/** Whether flushes answer the probe by themselves. */

@@ -46,7 +46,8 @@ import { createUsageRowBlock, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/us
 import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/controllers/tool-args-reveal";
 import { materializeImageReferenceLinksSync } from "@oh-my-pi/pi-tui/prompt/image-references";
-import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
+import type { LocalProtocolOptions } from "../../internal-urls";
+import { imageLinkTarget } from "./image-source-link";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import { warmHighlighter } from "@oh-my-pi/pi-tui/theme/tui-adapters";
 import { QueuedMessageBox } from "@oh-my-pi/pi-tui/queued-message-box";
@@ -145,10 +146,11 @@ type AddMessageOptions = {
 function imageLinksForMessage(
 	images: readonly ImageContent[],
 	putBlobSync: InteractiveModeContext["sessionManager"]["putBlobSync"],
+	localProtocolOptions: LocalProtocolOptions,
 ): (string | undefined)[] | undefined {
 	if (images.length === 0) return undefined;
 	const materialized = materializeImageReferenceLinksSync(images, putBlobSync);
-	return images.map((image, index) => imageAttachmentSource(image)?.path ?? materialized?.[index]);
+	return images.map((image, index) => imageLinkTarget(image, localProtocolOptions, materialized?.[index]));
 }
 
 export class UiHelpers {
@@ -313,12 +315,13 @@ export class UiHelpers {
 						userComponent = cached;
 					} else {
 						const images = imageContent(message.content);
+						const viewSessionManager = this.ctx.viewSession.sessionManager;
 						const imageLinks =
 							options?.imageLinks ??
-							imageLinksForMessage(
-								images,
-								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
-							);
+							imageLinksForMessage(images, viewSessionManager.putBlobSync.bind(viewSessionManager), {
+								getArtifactsDir: () => viewSessionManager.getArtifactsDir(),
+								getSessionId: () => viewSessionManager.getSessionId(),
+							});
 						userComponent = new UserMessageComponent(userText, {
 							synthetic: isSynthetic,
 							imageLinks,

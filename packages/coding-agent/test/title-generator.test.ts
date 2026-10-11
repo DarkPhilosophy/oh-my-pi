@@ -1213,27 +1213,47 @@ describe("terminal title runtime", () => {
 		expectWorkingSeparator(last, "my-session");
 	});
 
-	it("titles the tab with the bare session name while a TSP terminal renders, and restores the run state after", () => {
+	it("titles the tab with the run state and session name while a TSP terminal renders, without spinner ticks", () => {
 		setSessionTerminalTitle("Ack path refactor");
 		setTerminalTitleState("working");
 		try {
 			setNativeRendering(true);
 			resetEmitted();
-			// The terminal shows run state itself: no brand, no spinner ticks.
+			// A TSP terminal clocks its own animation, so the title is static: a fixed
+			// state glyph that hosts reading only the title (Herdr) can classify.
 			vi.advanceTimersByTime(400);
+			expect(emittedTitles()).toEqual([]);
 			setTerminalTitlePullRequest(412);
-			expect(emittedTitles()).toEqual(["Ack path refactor · #412"]);
+			expect(emittedTitles()).toEqual(["π ⠋ Ack path refactor · #412"]);
 
 			setSessionTerminalTitle("Renamed");
-			expect(emittedTitles().at(-1)).toBe("Renamed · #412");
+			expect(emittedTitles().at(-1)).toBe("π ⠋ Renamed · #412");
+			setTerminalTitleState("attention");
+			expect(emittedTitles().at(-1)).toBe("π ! Renamed · #412");
+			setTerminalTitleState("idle");
+			expect(emittedTitles().at(-1)).toBe("π > Renamed · #412");
+			setTerminalTitleState("working");
 			setSessionTerminalTitle(undefined);
 			setTerminalTitlePullRequest(undefined);
-			expect(emittedTitles().at(-1)).toBe("omp");
+			expect(emittedTitles().at(-1)).toBe("π ⠋ omp");
 			setSessionTerminalTitle("Renamed");
 		} finally {
 			setNativeRendering(false);
 			setTerminalTitlePullRequest(undefined);
 		}
 		expectWorkingSeparator(emittedTitles().at(-1), "Renamed");
+	});
+
+	it("keeps the canonical braille glyph in the native title whatever spinner style is configured", () => {
+		setSessionTerminalTitle("Styled");
+		setTerminalTitleSpinnerStyle("pulse");
+		try {
+			setNativeRendering(true);
+			setTerminalTitleState("working");
+			expect(emittedTitles().at(-1)).toBe("π ⠋ Styled");
+		} finally {
+			setNativeRendering(false);
+			setTerminalTitleSpinnerStyle("braille");
+		}
 	});
 });

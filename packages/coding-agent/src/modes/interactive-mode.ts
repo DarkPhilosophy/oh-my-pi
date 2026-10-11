@@ -280,6 +280,7 @@ import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { TanCommandController } from "./controllers/tan-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
 import { imageReferenceHyperlink, materializeImageReferenceLinks } from "@oh-my-pi/pi-tui/prompt/image-references";
+import { imageLinkTarget } from "./utils/image-source-link";
 import { describeLoopCondition, evaluateLoopCondition, type LoopConditionVerdict } from "./loop-condition";
 import {
 	consumeLoopLimitIteration,
@@ -1937,8 +1938,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor.attachmentChips = attachmentChips;
 		// Restored drafts (esc-esc, /tree, branch) re-materialize blob-store links off the render
 		// path so their chip tokens become clickable again instead of degrading to dead text.
-		this.editor.draftImageLinkMaterializer = images =>
-			materializeImageReferenceLinks(images, this.sessionManager.putBlob.bind(this.sessionManager));
+		this.editor.draftImageLinkMaterializer = async images => {
+			const blobs = await materializeImageReferenceLinks(images, this.sessionManager.putBlob.bind(this.sessionManager));
+			const localProtocolOptions = {
+				getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
+				getSessionId: () => this.sessionManager.getSessionId(),
+			};
+			return images.map((image, index) => imageLinkTarget(image, localProtocolOptions, blobs?.[index]));
+		};
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor);
 		this.statusLine = new StatusLineComponent(session, createStatusLineHost(this.settings));

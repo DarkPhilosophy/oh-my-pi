@@ -786,14 +786,16 @@ export class CustomEditor extends Editor {
 	}
 
 	/** Resolve draft-image links off the render path and repaint when they land; guarded against
-	 *  the draft being replaced while the blob writes were in flight. */
+	 *  the draft being replaced while the blob writes were in flight. The materializer owns the
+	 *  per-image target (a source file, an internal URL resolved to its file, or a blob copy), so
+	 *  an attachment's raw source path is only a fallback when it produced nothing. */
 	async #materializeDraftLinks(): Promise<void> {
 		const materialize = this.draftImageLinkMaterializer;
 		const images = this.pendingImages;
 		if (!materialize || images.length === 0) return;
 		const links = await materialize(images);
 		if (!links || this.pendingImages !== images) return;
-		this.pendingImageLinks = images.map((image, index) => imageAttachmentSource(image)?.path ?? links[index]);
+		this.pendingImageLinks = images.map((image, index) => links[index] ?? imageAttachmentSource(image)?.path);
 		this.imageLinks = this.pendingImageLinks;
 		this.#requestShimmerRepaint?.();
 	}

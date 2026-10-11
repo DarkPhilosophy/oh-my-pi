@@ -25,6 +25,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { imageLinkTarget } from "@oh-my-pi/pi-coding-agent/modes/utils/image-source-link";
+import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -226,12 +228,15 @@ describe("path-pasted image source path (#12244)", () => {
 		if (!artifactsDir) throw new Error("Expected a file-backed session artifact directory");
 		const editor = await pasteClipboardBitmap(sessionManager);
 
-		const url = editor.pendingImageLinks[0];
-		if (!url) throw new Error("Expected the pasted image to link to its saved file");
+		const url = imageAttachmentSource(editor.pendingImages[0]!)?.path;
+		if (!url) throw new Error("Expected the pasted image to carry its saved file as its source");
 		expect(url).toMatch(/^local:\/\/pasted-image-[0-9a-f]+\.png$/);
 		const savedPath = resolveLocalUrlToPath(url, localOptions(sessionManager));
 		expect(savedPath.startsWith(artifactsDir)).toBe(true);
 		expect(Buffer.from(await Bun.file(savedPath).arrayBuffer()).toBase64()).toBe(TINY_PNG);
+		// The chip opens the saved file itself: a `local://` URL handed to `fileHyperlink` would be
+		// resolved against the cwd (`file:///cwd/local:/pasted-image-….png`), which no viewer opens.
+		expect(editor.pendingImageLinks[0]).toBe(savedPath);
 
 		await session.prompt("What is in [Image #1]?", { images: [...editor.pendingImages] });
 		expect(modelVisibleText(session)).toContain(url);
@@ -246,8 +251,8 @@ describe("path-pasted image source path (#12244)", () => {
 		const moving = createSession(sessionManager);
 		try {
 			const editor = await pasteClipboardBitmap(sessionManager);
-			const url = editor.pendingImageLinks[0];
-			if (!url) throw new Error("Expected the pasted image to link to its saved file");
+			const url = imageAttachmentSource(editor.pendingImages[0]!)?.path;
+			if (!url) throw new Error("Expected the pasted image to carry its saved file as its source");
 			await moving.prompt("What is in [Image #1]?", { images: [...editor.pendingImages] });
 			await sessionManager.ensureOnDisk();
 			const pathBeforeMove = resolveLocalUrlToPath(url, localOptions(sessionManager));
@@ -260,6 +265,8 @@ describe("path-pasted image source path (#12244)", () => {
 			const pathAfterMove = resolveLocalUrlToPath(url, localOptions(sessionManager));
 			expect(pathAfterMove).not.toBe(pathBeforeMove);
 			expect(Buffer.from(await Bun.file(pathAfterMove).arrayBuffer()).toBase64()).toBe(TINY_PNG);
+			// Links rebuilt after the move follow the file to its new home.
+			expect(imageLinkTarget(editor.pendingImages[0]!, localOptions(sessionManager), undefined)).toBe(pathAfterMove);
 			// Tools addressing `attachment://1` get the post-move filesystem path.
 			expect(moving.getImageAttachments()[0]?.sourcePath).toBe(pathAfterMove);
 		} finally {
@@ -272,10 +279,11 @@ describe("path-pasted image source path (#12244)", () => {
 		const sessionManager = SessionManager.inMemory(tmpDir);
 		const editor = await pasteClipboardBitmap(sessionManager);
 
-		const url = editor.pendingImageLinks[0];
-		if (!url) throw new Error("Expected the pasted image to link to its saved file");
+		const url = imageAttachmentSource(editor.pendingImages[0]!)?.path;
+		if (!url) throw new Error("Expected the pasted image to carry its saved file as its source");
 		const savedPath = resolveLocalUrlToPath(url, localOptions(sessionManager));
 		expect(Buffer.from(await Bun.file(savedPath).arrayBuffer()).toBase64()).toBe(TINY_PNG);
+		expect(editor.pendingImageLinks[0]).toBe(savedPath);
 
 		await session.prompt("What is in [Image #1]?", { images: [...editor.pendingImages] });
 		expect(modelVisibleText(session)).toContain(url);

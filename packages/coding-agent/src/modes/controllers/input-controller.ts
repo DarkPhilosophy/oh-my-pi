@@ -15,7 +15,7 @@ import { appKey, editorKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { formatModelRoleAlias, roleCandidatePool } from "../../config/model-roles";
 import { resolveModelRoleValue } from "../../config/model-resolver";
 import { isSettingsInitialized, settings } from "../../config/settings";
-import { InternalUrlRouter, resolveLocalRoot } from "../../internal-urls";
+import { InternalUrlRouter, type LocalProtocolOptions, resolveLocalRoot } from "../../internal-urls";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { extractImagePathFromText } from "@oh-my-pi/pi-tui/prompt/custom-editor";
@@ -63,6 +63,7 @@ import { commandUsage, hintUsage } from "../../utils/usage-counter";
 import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { loadImageInput } from "../../utils/image-loading";
+import { imageSourceLinkPath } from "../utils/image-source-link";
 import { ensureSupportedImageInput, ImageInputTooLargeError } from "@oh-my-pi/pi-tui/chat/image-loading";
 import { type ImageAttachmentSource, tagImageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
 import { blobExtensionForImageMimeType } from "@oh-my-pi/pi-tui/prompt/image-format";
@@ -2057,14 +2058,24 @@ export class InputController {
 		return entries.length;
 	}
 
+	/** The session's `local://` root mapping, read fresh so `/move` and session switches are honored. */
+	#localProtocolOptions(): LocalProtocolOptions {
+		return {
+			getArtifactsDir: () => this.ctx.sessionManager.getArtifactsDir(),
+			getSessionId: () => this.ctx.sessionManager.getSessionId(),
+		};
+	}
+
 	async #insertPendingImage(imageData: ImageContent, source?: ImageAttachmentSource): Promise<void> {
 		const image: ImageContent = source
 			? tagImageAttachmentSource(imageData, source.path, source.kind)
 			: { type: "image", data: imageData.data, mimeType: imageData.mimeType };
-		// File-backed attachments link to their file (so the chip opens it); payloads
-		// without one (a failed clipboard persist) materialize a clickable blob copy.
+		// File-backed attachments link to their file (so the chip opens it); an internal
+		// `local://` source resolves to its file under the session root, and payloads
+		// without a resolvable file materialize a clickable blob copy.
+		const sourceLink = source?.path ? imageSourceLinkPath(source.path, this.#localProtocolOptions()) : undefined;
 		const imageLink =
-			source?.path ??
+			sourceLink ??
 			(
 				await materializeImageReferenceLinks([image], this.ctx.sessionManager.putBlob.bind(this.ctx.sessionManager))
 			)?.[0];
