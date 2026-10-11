@@ -1,6 +1,5 @@
 import { type Component, Container, type HistoryBatch } from "../tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
-import { popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
 import { renderForScrollback } from "../components/image";
 import { col } from "../native/describe";
 import type { NativeNode } from "../native/node";
@@ -255,6 +254,7 @@ export class TranscriptContainer extends Container {
 	 * so rows already in native history are not offered as a fresh append.
 	 */
 	#rebuildLedger: { width: number; rows: readonly string[]; borrowed: readonly string[] } | undefined;
+	#releaseFailures = new WeakSet<Component>();
 	constructor() {
 		super();
 		this.#trackedChildren = this.#trackChildren(this.children);
@@ -298,10 +298,15 @@ export class TranscriptContainer extends Container {
 		this.#childrenDirty = false;
 	}
 
+	/** Removes `component` if {@link canRemoveBlock} allows it; otherwise does nothing. */
 	override removeChild(component: Component): void {
-		if (this.children.indexOf(component) < 0 || !this.canRemoveBlock(component)) return;
-		super.removeChild(component);
-		this.#entries = this.#entries.filter(candidate => candidate.component !== component);
+		const index = this.#removableIndex(component);
+		if (index < 0) return;
+		// #removableIndex synced entries, which now mirror children index for
+		// index. This class renders through its own entries, never Container's
+		// memoized render, so splicing children directly is the whole removal.
+		this.children.splice(index, 1);
+		this.#entries.splice(index, 1);
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
 		this.#childStartRows.delete(component);
 		this.#childrenDirty = false;
@@ -492,14 +497,24 @@ export class TranscriptContainer extends Container {
 
 	/** Whether a transient block may be discarded without leaving tape history. */
 	canRemoveBlock(component: Component): boolean {
+		return this.#removableIndex(component) >= 0;
+	}
+
+	/**
+	 * Syncs entries, then returns `component`'s index if it can be discarded
+	 * without leaving tape history (not committed, not emitted, not in an
+	 * offered batch), else -1.
+	 */
+	#removableIndex(component: Component): number {
 		this.#syncEntries();
-		const index = this.#entries.findIndex(entry => entry.component === component);
-		if (index < 0) return false;
+		// Removable blocks are transient ones near the live tail, so search from there.
+		const index = this.#entries.findLastIndex(entry => entry.component === component);
+		if (index < 0) return -1;
 		const entry = this.#entries[index]!;
-		if (entry.state === "committed" || entry.emitted > 0 || entry.borrowed) return false;
-		if (this.#offered?.kind === "commit" && index < this.#offered.end) return false;
-		if (this.#offered?.kind === "append" && index === this.#offered.entry) return false;
-		return true;
+		if (entry.state === "committed" || entry.emitted > 0 || entry.borrowed) return -1;
+		if (this.#offered?.kind === "commit" && index < this.#offered.end) return -1;
+		if (this.#offered?.kind === "append" && index === this.#offered.entry) return -1;
+		return index;
 	}
 
 	/**
@@ -540,6 +555,10 @@ export class TranscriptContainer extends Container {
 
 	endPaint(): void {
 		this.#paintFrame = undefined;
+		// The memo only serves the paint that wrote it; dropping it here keeps
+		// a finished paint's rows (often the component's own cached array)
+		// from being pinned until the next paint.
+		for (const entry of this.#entries) entry.frameMemo = undefined;
 	}
 
 	/**
@@ -754,8 +773,8 @@ export class TranscriptContainer extends Container {
 			// a card that fits the viewport.
 			const offset =
 				entry.mode === "mutable" &&
-				projected > 0 &&
-				!this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width, frame))
+					projected > 0 &&
+					!this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width, frame))
 					? 0
 					: projected;
 			const rendered = this.#holdPeakHeight(entry, width, this.#renderEntry(entry, width, frame), offset);
@@ -849,7 +868,10 @@ export class TranscriptContainer extends Container {
 		this.#replayPending = false;
 		const allowEmptyReplay = this.#allowEmptyReplay;
 		this.#allowEmptyReplay = false;
-		if (rows.length === 0 && !allowEmptyReplay) return undefined;
+		if (rows.length === 0 && !allowEmptyReplay) {
+			this.#releaseCommittedRenderCaches();
+			return undefined;
+		}
 		const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "replay" };
 		this.#offered = { batch, kind: "replay" };
 		return batch;
@@ -939,7 +961,7 @@ export class TranscriptContainer extends Container {
 			0,
 			Math.trunc(
 				(head?.component as (Component & FinalizableBlock) | undefined)?.getTranscriptBlockSettledRows?.(width) ??
-					0,
+				0,
 			),
 		);
 		if (
@@ -1113,6 +1135,8 @@ export class TranscriptContainer extends Container {
 				entry.historyDirty = false;
 			}
 			this.#frontier = offered.end;
+		} else {
+			this.#releaseCommittedRenderCaches();
 		}
 		this.#offered = undefined;
 		if (this.#replayRequested) this.#startReplay();
@@ -1132,6 +1156,7 @@ export class TranscriptContainer extends Container {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = trimBlankEdges(entry.component.render(width));
+			if (entry.state === "committed") this.#releaseRenderCaches(entry);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.unshift("");
 			rows.unshift(...block);
@@ -1179,6 +1204,7 @@ export class TranscriptContainer extends Container {
 		for (const entry of this.#entries) {
 			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderEntry(entry, width);
+			if (entry.state === "committed") this.#releaseRenderCaches(entry);
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
 			this.#childStartRows.set(entry.component, rows.length);
@@ -1494,6 +1520,29 @@ export class TranscriptContainer extends Container {
 		entry.stableRows = EMPTY_STABLE_ROWS;
 		entry.renderedStableByWidth = new Map();
 		entry.stableRowCountByWidth = new Map();
+		entry.frameMemo = undefined;
+		this.#releaseRenderCaches(entry);
+	}
+
+	#releaseCommittedRenderCaches(): void {
+		for (let index = 0; index < this.#frontier; index++) {
+			this.#releaseRenderCaches(this.#entries[index]!);
+		}
+	}
+
+	#releaseRenderCaches(entry: TranscriptEntry): void {
+		const release = entry.component.releaseRenderCaches;
+		if (release === undefined) return;
+		try {
+			release.call(entry.component);
+		} catch (err) {
+			if (this.#releaseFailures.has(entry.component)) return;
+			this.#releaseFailures.add(entry.component);
+			logger.warn("Transcript block failed to release render caches", {
+				component: entry.component.constructor.name,
+				error: String(err),
+			});
+		}
 	}
 
 	#startReplay(): void {
@@ -1556,4 +1605,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container {}
+export class TranscriptBlock extends Container { }

@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { raceWithSignal } from "@oh-my-pi/pi-ai/utils/abort";
 import { logger, popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
@@ -11,11 +11,17 @@ import {
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { SecretValueSet } from "../secrets/placeholder";
 import {
+	buildToolResultPairing,
 	formatExecutionSourcePreview,
 	formatSessionHistoryMarkdown,
 	PRIMARY_CONTEXT_CUSTOM_TYPES,
 } from "../session/session-history-format";
-import { ADVISOR_RENDER_OPTIONS, renderAdvisorDeltaChunks, renderAdvisorDeltaChunksSliced } from "./delta-split";
+import {
+	ADVISOR_RENDER_OPTIONS,
+	advisorToolIOTransform,
+	renderAdvisorDeltaChunks,
+	renderAdvisorDeltaChunksSliced,
+} from "./delta-split";
 import { fingerprintMessage } from "./message-fingerprint";
 
 /**
@@ -483,7 +489,7 @@ export class AdvisorRuntime {
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
-	) {}
+	) { }
 
 	get backlog(): number {
 		return this.#backlog;
@@ -621,16 +627,16 @@ export class AdvisorRuntime {
 			parts.length === 1
 				? last
 				: {
-						text: parts.map(part => part.text).join("\n\n"),
-						rawMessages: parts.flatMap(part => part.rawMessages),
-						// The merged review covers everything from the first held part, so the cursor it
-						// started at is the earliest one.
-						cursorBefore: parts[0]!.cursorBefore,
-						// Revisions only grow; the oldest part decides whether the drain re-renders.
-						renderRevision: Math.min(...parts.map(part => part.renderRevision)),
-						turns: 1,
-						wip: last.wip,
-					},
+					text: parts.map(part => part.text).join("\n\n"),
+					rawMessages: parts.flatMap(part => part.rawMessages),
+					// The merged review covers everything from the first held part, so the cursor it
+					// started at is the earliest one.
+					cursorBefore: parts[0]!.cursorBefore,
+					// Revisions only grow; the oldest part decides whether the drain re-renders.
+					renderRevision: Math.min(...parts.map(part => part.renderRevision)),
+					turns: 1,
+					wip: last.wip,
+				},
 		);
 		this.#backlog++;
 		this.#notifyWaiters();
@@ -709,7 +715,7 @@ export class AdvisorRuntime {
 		this.#wakeAllWaiters();
 		try {
 			this.agent.abort("advisor disposed");
-		} catch {}
+		} catch { }
 	}
 
 	/**
@@ -746,10 +752,10 @@ export class AdvisorRuntime {
 		this.#clearSeenContext();
 		try {
 			this.agent.reset();
-		} catch {}
+		} catch { }
 		try {
 			this.agent.abort("advisor reset");
-		} catch {}
+		} catch { }
 	}
 
 	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean, reason?: string): void {
@@ -802,12 +808,12 @@ export class AdvisorRuntime {
 			this.#iterationAbort?.abort("advisor session transition");
 			try {
 				this.agent.abort("advisor session transition");
-			} catch {}
+			} catch { }
 		}
 		return (
 			this.#promptInFlight?.then(
-				() => {},
-				() => {},
+				() => { },
+				() => { },
 			) ?? Promise.resolve()
 		);
 	}
@@ -1151,7 +1157,7 @@ export class AdvisorRuntime {
 			md = formatSessionHistoryMarkdown(this.#obfuscatePrimaryContextMessages(obfuscator, delta), {
 				...ADVISOR_RENDER_OPTIONS,
 				includeThinking,
-				transformExpandedToolIO: text => obfuscator.obfuscate(text, this.#advisorRegexSecretValues),
+				transformExpandedToolIO: advisorToolIOTransform(obfuscator, this.#advisorRegexSecretValues),
 			});
 			md = obfuscator.obfuscate(md, this.#advisorRegexSecretValues);
 		}
@@ -1305,11 +1311,9 @@ export class AdvisorRuntime {
 		obfuscator?: SecretObfuscator,
 		includeThinking = this.#includeThinking,
 	): Promise<string[] | null> {
-		const toolResultIndex = new Map<string, ToolResultMessage>();
 		const toolResultChars = new Map<string, number>();
 		for (const message of messages) {
 			if (message.role !== "toolResult") continue;
-			toolResultIndex.set(message.toolCallId, message);
 			toolResultChars.set(message.toolCallId, estimateMessageChars(message, FAST_RENDER_MAX_CHARS + 1));
 		}
 		const chunkOptions = {
@@ -1317,8 +1321,9 @@ export class AdvisorRuntime {
 			// Same options as #renderDeltaMarkdown: without this the sliced path
 			// silently dropped thinking blocks that the synchronous path kept.
 			includeThinking,
-			toolResultIndex,
-			consumedToolCallIds: new Set<string>(),
+			// One pairing over the whole delta so a toolCall resolves its result
+			// across slice boundaries.
+			toolResultPairing: buildToolResultPairing(messages),
 		};
 		const parts: string[] = [];
 		let start = 0;
@@ -1399,7 +1404,7 @@ export class AdvisorRuntime {
 						if (JSON.stringify(oldMsg[key]) !== JSON.stringify(newMsg[key])) differingFields.push(key);
 					}
 					logger.debug("advisor delivered prefix changed", { index: i, role: newMsg.role, differingFields });
-				} catch {}
+				} catch { }
 				break;
 			}
 			delivered.message = current;
@@ -2221,7 +2226,7 @@ export class AdvisorRuntime {
 }
 
 /** Mirrors turn recovery's refusal classification without treating account eligibility as a model refusal. */
-function isClassifierRefusal(message: AssistantMessage): boolean {
+export function isClassifierRefusal(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error") return false;
 	const id = AIError.classifyMessage(message);
 	if (AIError.is(id, AIError.Flag.AccountPolicy)) return false;
@@ -2352,12 +2357,18 @@ function obfuscateAdvisorMessage(
 		}
 		case "bashExecution": {
 			const msg = message as AgentMessage & { command: string };
-			const command = obfuscator.obfuscate(formatExecutionSourcePreview(msg.command), sharedRegexSecretValues);
+			const command = formatExecutionSourcePreview(
+				msg.command,
+				advisorToolIOTransform(obfuscator, sharedRegexSecretValues),
+			);
 			return command === msg.command ? message : ({ ...(message as object), command } as AgentMessage);
 		}
 		case "pythonExecution": {
 			const msg = message as AgentMessage & { code: string };
-			const code = obfuscator.obfuscate(formatExecutionSourcePreview(msg.code), sharedRegexSecretValues);
+			const code = formatExecutionSourcePreview(
+				msg.code,
+				advisorToolIOTransform(obfuscator, sharedRegexSecretValues),
+			);
 			return code === msg.code ? message : ({ ...(message as object), code } as AgentMessage);
 		}
 		case "branchSummary": {
@@ -2410,9 +2421,9 @@ function scrubAdvisorHistory(
 		const message = messages[index]!;
 		const replay =
 			message.role === "user" ||
-			message.role === "developer" ||
-			message.role === "assistant" ||
-			message.role === "compactionSummary"
+				message.role === "developer" ||
+				message.role === "assistant" ||
+				message.role === "compactionSummary"
 				? obfuscateNativeReplay(obfuscator, message, sharedRegexSecretValues)
 				: message;
 		const next = obfuscateAdvisorMessage(obfuscator, replay, sharedRegexSecretValues);

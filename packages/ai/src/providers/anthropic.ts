@@ -1307,10 +1307,12 @@ function buildClaudeCodeTlsFetchOptions(
 		},
 	};
 }
-function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]): Record<string, string> {
-	// Case-insensitive merge: later sources win and keep their casing. A plain
-	// Object.assign would let `authorization` and `Authorization` coexist, and
-	// the Headers constructor then joins both values comma-separated on the wire.
+/**
+ * Merge headers case-insensitively; later sources win and preserve their key casing.
+ * Undefined sources are ignored. Differently cased duplicates are removed so the
+ * Headers constructor cannot join competing values comma-separated on the wire.
+ */
+export function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]): Record<string, string> {
 	const merged: Record<string, string> = {};
 	const keyByLower = new Map<string, string>();
 	for (const headers of headerSources) {
@@ -4399,6 +4401,10 @@ function planAnthropicToolControls(
 			declaredSet.add(name);
 			deferred.add(name);
 		}
+		// The API rejects a declaration whose tools are all deferred (a tool-less
+		// conversation gaining tools, or a resume that kept none of the loaded
+		// ones), so load them all and let the controls below replay availability.
+		if (declared.every(name => deferred.has(name))) deferred.clear();
 		// The chain starts from what the top-level declaration makes active, so a
 		// rewritten history converges on the current roster instead of trusting a
 		// record whose earlier controls were summarized away.
@@ -4510,6 +4516,23 @@ export function resolveAnthropicCompactionEffort(
 		model.thinking?.efforts?.findLast(effort => mapEffortToAnthropicAdaptiveEffort(model, effort) === inForce) ??
 		requested
 	);
+}
+
+/**
+ * Whether effort controls earlier requests left in `messages` rule out
+ * `thinking: {type: "disabled"}`: Anthropic rejects a per-message effort
+ * control with thinking off, and `disabled` above `high` effort. Both stay in
+ * force across a thinking toggle, so such a request falls back to the
+ * adaptive-only off path (lowest effort) instead of a 400.
+ */
+function effortControlsBlockDisabledThinking(
+	model: Model<"anthropic-messages">,
+	messages: readonly Message[],
+	records: readonly AnthropicControlRecord[],
+): boolean {
+	if (model.compat.supportsPerMessageEffort !== true) return false;
+	const plan = planAnthropicEffortControls(undefined, messages, records, true, undefined, false);
+	return plan.inserts.length > 0 || plan.topLevel === "xhigh" || plan.topLevel === "max";
 }
 
 /**
@@ -4730,7 +4753,11 @@ function buildParams(
 	let outputConfigEffort: AnthropicOutputEffort | undefined;
 	if (model.reasoning) {
 		const disabledThinking = model.compat.disabledThinking;
-		if (options?.thinkingEnabled === false && disabledThinking !== undefined) {
+		if (
+			options?.thinkingEnabled === false &&
+			disabledThinking !== undefined &&
+			!(disabledThinking === "disabled" && effortControlsBlockDisabledThinking(model, context.messages, records))
+		) {
 			if (disabledThinking !== "omit") {
 				thinking =
 					disabledThinking === "adaptive"

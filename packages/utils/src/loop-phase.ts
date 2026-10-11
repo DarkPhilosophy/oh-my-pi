@@ -1,8 +1,16 @@
+/** A label and its exclusive in-window time, as named by {@link takeLoopPhaseAttribution}. */
+export interface LoopPhaseAttribution {
+	readonly label: string;
+	/** Total time this label was the innermost active phase inside the late window [start, end]. */
+	readonly ms: number;
+}
+
 /**
- * Live event-loop phase breadcrumb. Hot synchronous paths push a short label
- * before running and pop it after (via `try`/`finally`); the loop watchdog
- * reads {@link takeRecentLoopPhase} when it detects a block, so a stall is
- * logged with the work that caused it instead of an opaque "unknown".
+ * Process-global synchronous loop phases. The watchdog arms a late window and
+ * reads attribution via {@link takeLoopPhaseAttribution}; attribution totals
+ * only the innermost label's time inside that window. A label is named only
+ * when its total outweighs all unlabeled time, otherwise the block remains
+ * "unknown". Disarmed push/pop do not read the clock.
  *
  * This is deliberately a process-global stack and not part of the logger span
  * machinery: `main.ts` ends timing spans before the interactive TUI starts, so
@@ -15,95 +23,62 @@
  * misattribute or leak phases. Instrument only synchronous spans; for async
  * work, push/pop around each synchronous chunk, not across the await.
  */
-interface HeldPhase {
-	label: string;
-	/** When this phase last became the top of the stack. */
-	resumedAt: number;
-	/** Exclusive time accrued so far while it was on top. */
-	exclusiveMs: number;
-}
-const stack: HeldPhase[] = [];
-// Exclusive wall time per label since the watchdog last consumed it. A blocked
-// interval spans several macrotasks, and the label pushed LAST is rarely the one
-// that consumed the interval: a 900 ms compose followed by a 50 ms emit must be
-// reported as the compose. Attribution therefore goes to the label with the
-// most exclusive time, not the most recent one.
-const accrued = new Map<string, number>();
-let recentPhase: string | undefined;
+const stack: string[] = [];
+const defaultClock = () => performance.now();
+let windowStart = Number.POSITIVE_INFINITY;
+let segmentStart = windowStart;
+let clock = defaultClock;
+const totals = new Map<string, number>();
+let labeledMs = 0;
 
-function now(): number {
-	return performance.now();
-}
-
-function credit(label: string, ms: number): void {
-	if (ms <= 0) return;
-	accrued.set(label, (accrued.get(label) ?? 0) + ms);
+function boundary(t: number): void {
+	const ms = Math.max(0, t - Math.max(segmentStart, windowStart));
+	const label = stack[stack.length - 1];
+	if (label !== undefined && ms > 0) {
+		totals.set(label, (totals.get(label) ?? 0) + ms);
+		labeledMs += ms;
+	}
+	segmentStart = t;
 }
 
 export function pushLoopPhase(label: string): void {
-	const at = now();
-	const parent = stack[stack.length - 1];
-	if (parent !== undefined) {
-		// Nested phases accrue exclusively: pause the parent while a child holds
-		// the top, or the outer label would always win and sub-phases stay invisible.
-		parent.exclusiveMs += at - parent.resumedAt;
-	}
-	stack.push({ label, resumedAt: at, exclusiveMs: 0 });
-	recentPhase = label;
+	if (windowStart !== Number.POSITIVE_INFINITY) boundary(clock());
+	stack.push(label);
 }
 
 export function popLoopPhase(): void {
-	const at = now();
-	const top = stack.pop();
-	if (top === undefined) return;
-	credit(top.label, top.exclusiveMs + (at - top.resumedAt));
-	const parent = stack[stack.length - 1];
-	if (parent !== undefined) parent.resumedAt = at;
+	if (stack.length === 0) return;
+	if (windowStart !== Number.POSITIVE_INFINITY) boundary(clock());
+	stack.pop();
 }
 
 export function currentLoopPhase(): string | undefined {
-	return stack[stack.length - 1]?.label;
+	return stack[stack.length - 1];
 }
 
-/**
- * Phase to blame for a just-detected loop block: the label that accrued the
- * most exclusive time since the last call, including whatever the live top
- * phase has held so far. Falls back to the most recent label when nothing has
- * accrued (a phase pushed but not yet measurable). Consumes the accounting so a
- * later, phase-less interval is not blamed on work that already finished.
- */
-export function takeRecentLoopPhase(): string | undefined {
-	const at = now();
-	const totals = new Map(accrued);
-	const top = stack[stack.length - 1];
-	// Every held entry contributes what it accrued while on top; a parent
-	// paused under a child must not lose that at the tick, or attribution
-	// would drift toward leaf labels. Only the live top is still counting.
-	for (const held of stack) {
-		const live = held === top ? at - held.resumedAt : 0;
-		totals.set(held.label, (totals.get(held.label) ?? 0) + held.exclusiveMs + live);
-	}
-	let best: string | undefined;
-	let bestMs = 0;
+/** Arm an attribution window starting at `start` (a deadline on `now`'s clock). Called with no arguments it disarms and clears. */
+export function resetLoopPhaseWindow(start = Number.POSITIVE_INFINITY, now: () => number = defaultClock): void {
+	windowStart = segmentStart = start;
+	clock = now;
+	totals.clear();
+	labeledMs = 0;
+}
+
+/** Attribute the window [start, end] and disarm it. Returns undefined when no window is armed or no label outweighs unlabeled time. */
+export function takeLoopPhaseAttribution(end?: number): LoopPhaseAttribution | undefined {
+	if (windowStart === Number.POSITIVE_INFINITY) return undefined;
+	const t = end ?? clock();
+	boundary(t);
+	const unknownMs = Math.max(0, t - windowStart - labeledMs);
+	let winner: string | undefined;
+	let winnerMs = 0;
 	for (const [label, ms] of totals) {
-		if (ms > bestMs) {
-			best = label;
-			bestMs = ms;
+		if (ms >= winnerMs) {
+			winner = label;
+			winnerMs = ms;
 		}
 	}
-	// A still-held phase is where the block currently is; only a finished
-	// phase that clearly out-consumed it takes the blame away. Sub-millisecond
-	// differences are noise, not evidence.
-	let phase = best ?? top?.label ?? recentPhase;
-	if (top !== undefined && best !== top.label && bestMs - (totals.get(top.label) ?? 0) < 1) {
-		phase = top.label;
-	}
-	accrued.clear();
-	recentPhase = undefined;
-	// The live top keeps counting from now; what it held before is consumed.
-	for (const held of stack) {
-		held.exclusiveMs = 0;
-		held.resumedAt = at;
-	}
-	return phase;
+	const result = winner !== undefined && winnerMs > unknownMs ? { label: winner, ms: winnerMs } : undefined;
+	resetLoopPhaseWindow();
+	return result;
 }

@@ -84,8 +84,10 @@ export function getActiveAccountLabelParts(identity: OAuthAccountIdentity | unde
  *   recovered at all) matches on the org alone. When neither side carries
  *   an org, the base fallback applies unchanged (providers without orgs
  *   keep their former behavior).
+ * - `email`     ↔ report metadata `email` — decisive when both sides carry
+ *   one: Codex Team seats share an account id and Antigravity accounts share
+ *   one Google project, so only the email tells their reports apart
  * - `accountId` ↔ report metadata `accountId`/`account_id` or `limit.scope.accountId`
- * - `email`     ↔ report metadata `email`
  * - `projectId` ↔ report metadata `projectId` or `limit.scope.projectId`
  *   (Google-style providers key usage on the GCP project, not an account id)
  */
@@ -119,6 +121,10 @@ function matchesActiveAccount(
 			if (!activeAccountId && !activeEmail && !activeProjectId) return true;
 		}
 	}
+	// Two different emails are different accounts even when they share a project or Team id;
+	// the same email does not decide on its own, so stable ids can still tell siblings apart.
+	const reportEmail = normalizeIdentityValue(metadata.email);
+	if (activeEmail && reportEmail && activeEmail !== reportEmail) return false;
 	const reportAccountId =
 		normalizeIdentityValue(limit?.scope.accountId) ??
 		normalizeIdentityValue(metadata.accountId) ??
@@ -133,7 +139,8 @@ function matchesActiveAccount(
 		if (activeProjectId !== reportProjectId) return false;
 		matchedStableId = true;
 	}
-	return matchedStableId || !!(activeEmail && normalizeIdentityValue(metadata.email) === activeEmail);
+	// Stable IDs decide first, so accounts sharing an email stay distinct; email is only the last resort.
+	return matchedStableId || (activeEmail !== undefined && reportEmail === activeEmail);
 }
 
 /** True when a single usage-limit column belongs to the given OAuth identity. */

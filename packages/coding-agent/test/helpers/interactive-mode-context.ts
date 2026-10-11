@@ -31,6 +31,9 @@
  * that also import the module-level `settings` need the global initialized.
  */
 import { vi } from "bun:test";
+import * as runStatusModule from "@oh-my-pi/pi-coding-agent/utils/run-status";
+import * as titleGeneratorModule from "@oh-my-pi/pi-coding-agent/utils/title-generator";
+import type { RunStatus } from "@oh-my-pi/pi-coding-agent/utils/run-status";
 import { isSettingsInitialized, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import type { MCPServerConnection } from "@oh-my-pi/pi-coding-agent/mcp/types";
@@ -102,6 +105,8 @@ export function createSessionStub(
 		isCompacting: false,
 		isAborting: false,
 		isRetrying: false,
+		hasPostPromptWork: false,
+		queuedMessageCount: 0,
 		isTtsrAbortPending: false,
 		retryAttempt: 0,
 		messages: [],
@@ -128,6 +133,9 @@ export function createSessionStub(
 		setMCPPromptCommands: vi.fn(),
 		setActiveToolsByName: vi.fn(async () => {}),
 		runIdleCompaction: vi.fn(async () => {}),
+		waitForIdle: async () => {},
+		hasPendingAsyncWork: () => false,
+		settleAsyncWork: async () => {},
 		subscribe: vi.fn(() => () => {}),
 	} satisfies SessionOverrides;
 	if (overrides) layer(stub, overrides);
@@ -293,7 +301,11 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		updateEditorBorderColor: vi.fn(),
 		ensureLoadingAnimation: vi.fn(),
 		setWorkingMessage: vi.fn(),
-		setTerminalTitleState: vi.fn(),
+		// An undaemonized session writes the process title; keep the global function observable to spies.
+		setTerminalTitleState: (state: "idle" | "working" | "attention") =>
+			titleGeneratorModule.setTerminalTitleState(state),
+		// The real context routes through the run-status module; keep that path observable to spies.
+		setRunStatus: (status: RunStatus) => runStatusModule.setRunStatus(status),
 		syncRetryHintRow: vi.fn(),
 		clearTransientSessionUi: vi.fn(),
 		prepareSessionSwitch: vi.fn(async () => {}),

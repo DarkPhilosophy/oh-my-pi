@@ -134,6 +134,7 @@ export type SymbolKey =
 	| "icon.vimInsert"
 	| "icon.vimVisual"
 	| "icon.vimVisualLine"
+	| "icon.vimReplace"
 	// Slash-command type indicators (autocomplete); names without an existing
 	// icon.* equivalent — see SlashCommandIconName for the full vocabulary.
 	| "cmd.action"
@@ -520,6 +521,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"icon.vimInsert": "▎",
 	"icon.vimVisual": "◉",
 	"icon.vimVisualLine": "≡",
+	"icon.vimReplace": "▁",
 	// Slash-command type indicators
 	"cmd.action": "❯",
 	"cmd.prompt": "✎",
@@ -938,6 +940,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.vimVisual": "\uf06e",
 	// pick:  (nf-fa-bars) | alt:  (nf-fa-align_left)
 	"icon.vimVisualLine": "\uf0c9",
+	// pick:  (nf-fa-exchange) | alt:  (nf-fa-repeat)
+	"icon.vimReplace": "\uf0ec",
 	// Slash-command type indicators
 	// pick:  (nf-cod-terminal) | alt:  (nf-fa-terminal)
 	"cmd.action": "\uea85",
@@ -1310,6 +1314,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"icon.vimInsert": "I",
 	"icon.vimVisual": "V",
 	"icon.vimVisualLine": "L",
+	"icon.vimReplace": "R",
 	// Slash-command type indicators — unused; the icon column is disabled in ASCII mode
 	"cmd.action": "",
 	"cmd.prompt": "",

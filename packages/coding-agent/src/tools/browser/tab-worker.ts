@@ -200,6 +200,7 @@ import {
 	type ScreenshotChangeResult,
 	type ScreenshotHistory,
 	type ScreenshotOptions,
+	screenshotArea,
 	screenshotQuality,
 	screenshotScope,
 	screenshotThreshold,
@@ -263,7 +264,7 @@ declare module "puppeteer-core" {
 }
 
 declare global {
-	interface Element extends HTMLElement {}
+	interface Element extends HTMLElement { }
 	function getComputedStyle(element: Element): Record<string, unknown>;
 	var innerWidth: number;
 	var innerHeight: number;
@@ -322,6 +323,8 @@ const REQUEST_INTERCEPTION_CLEANUP_TIMEOUT_MS = 500;
 const HANDLE_ACTION_INVALIDATION_TIMEOUT_MS = 500;
 /** Bound on reading every iframe in one observation; a frame whose renderer is stuck in script never answers. */
 const FRAME_SNAPSHOT_TIMEOUT_MS = 5_000;
+/** Bound on Puppeteer exposing a page Chromium still has; the supervisor's init budget caps the whole attach anyway. */
+const ATTACHED_TARGET_EXPOSE_TIMEOUT_MS = 5_000;
 
 /** Queue a wheel event without treating a delayed renderer acknowledgement as dispatch failure. */
 export async function dispatchScroll(
@@ -486,7 +489,7 @@ export function normalizeSelector(selector: string): string {
 	) {
 		throw new ToolError(
 			`Playwright-only selector ${JSON.stringify(selector)} is not supported by the browser tool. ` +
-				`Use a puppeteer text selector ("text/Allow all"), an aria selector ("aria/Name"), CSS, or "xpath/...".`,
+			`Use a puppeteer text selector ("text/Allow all"), an aria selector ("aria/Name"), CSS, or "xpath/...".`,
 		);
 	}
 	if (selector.startsWith("p-") && !LEGACY_SELECTOR_PREFIXES.some(prefix => selector.startsWith(prefix))) {
@@ -587,7 +590,7 @@ async function runGuardedHandleAction<T>(
 	if (state.invalidatedBy) {
 		throw new ToolError(
 			`${label} cannot run: this handle was invalidated after ${state.invalidatedBy} timed out; ` +
-				"run tab.observe() or tab.ariaSnapshot() to resolve a fresh handle",
+			"run tab.observe() or tab.ariaSnapshot() to resolve a fresh handle",
 		);
 	}
 	throwIfAborted(signal);
@@ -873,11 +876,14 @@ function redactUrlCredentials(url: string): string {
 	}
 }
 
-class RequestInterceptionCleanupError extends ToolError {}
-class NavigationCleanupError extends ToolError {}
+class RequestInterceptionCleanupError extends ToolError { }
+class NavigationCleanupError extends ToolError { }
 
 /** `tab.goto` outlasted its budget; the page stays on what loaded. */
-class NavigationTimeoutError extends ToolError {}
+class NavigationTimeoutError extends ToolError { }
+
+/** The page's renderer crashed; every later call on the page stalls until its timeout. */
+class RendererCrashedError extends ToolError { }
 
 interface RunPageScope {
 	page: Page;
@@ -1155,6 +1161,7 @@ function errorPayload(error: unknown): RunErrorPayload {
 	const recoverTab =
 		error instanceof RequestInterceptionCleanupError || error instanceof NavigationCleanupError || undefined;
 	const navigationTimeout = error instanceof NavigationTimeoutError || undefined;
+	const rendererCrashed = error instanceof RendererCrashedError || undefined;
 	if (error instanceof ToolAbortError) {
 		return { name: error.name, message: error.message, stack: error.stack, isToolError: false, isAbort: true };
 	}
@@ -1167,6 +1174,7 @@ function errorPayload(error: unknown): RunErrorPayload {
 			isAbort: false,
 			recoverTab,
 			navigationTimeout,
+			rendererCrashed,
 		};
 	}
 	if (error instanceof Error) {
@@ -1459,11 +1467,11 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const boxMatch = /\[box=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]/.exec(metadata);
 		const box = boxMatch
 			? {
-					x: Number(boxMatch[1]),
-					y: Number(boxMatch[2]),
-					width: Number(boxMatch[3]),
-					height: Number(boxMatch[4]),
-				}
+				x: Number(boxMatch[1]),
+				y: Number(boxMatch[2]),
+				width: Number(boxMatch[3]),
+				height: Number(boxMatch[4]),
+			}
 			: undefined;
 		for (const depth of boxesByDepth.keys()) {
 			if (depth >= indent) boxesByDepth.delete(depth);
@@ -1551,9 +1559,9 @@ export async function collectBiDiObservationEntries(
 	const entries: ObservationEntry[] = [];
 	const viewport = options.viewportOnly
 		? ((await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))) as {
-				width: number;
-				height: number;
-			})
+			width: number;
+			height: number;
+		})
 		: undefined;
 	for (const node of parseAriaSnapshotLines(snapshot)) {
 		const requiresFocusCheck = !options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states);
@@ -1874,6 +1882,33 @@ export class WorkerCore {
 		if (event.type === "BackForwardCacheRestore") this.#clearElementCache();
 	};
 
+	/** The renderer crashed; the supervisor recycles this worker, so it runs nothing more. */
+	#crashed = false;
+	/** `ready` was sent; a crash before it fails the start instead. */
+	#started = false;
+	/** The run whose result is not sent yet; it outlives `#active` while the result is being put together. */
+	#unanswered: ActiveRun | null = null;
+	/**
+	 * Puppeteer's page `error` event is Chromium's `Inspector.targetCrashed`: the renderer is gone and every
+	 * later page call stalls. The unanswered run is answered now rather than after steps that wait on the
+	 * dead page, and cancelled so its code does not go on after its caller was told it failed.
+	 */
+	readonly #onPageCrashed = (): void => {
+		if (this.#crashed) return;
+		this.#crashed = true;
+		if (!this.#started) {
+			const error = new RendererCrashedError("Browser tab's renderer crashed while the tab was starting");
+			this.#transport.send({ type: "init-failed", error: errorPayload(error) });
+			return;
+		}
+		const run = this.#unanswered;
+		if (!run) return;
+		this.#unanswered = null;
+		run.ac.abort(postmortem.markExpectedCleanupError(new ToolAbortError("Browser tab's renderer crashed")));
+		const error = new RendererCrashedError("Browser tab's renderer crashed during this run");
+		this.#transport.send({ type: "result", id: run.id, ok: false, error: errorPayload(error) });
+	};
+
 	constructor(transport: Transport, isolated: boolean) {
 		this.#transport = transport;
 		this.#isolated = isolated;
@@ -2066,9 +2101,9 @@ export class WorkerCore {
 				this.#page = payload.targetId
 					? await findBiDiPageByTargetId(await this.#browser.pages(), payload.targetId)
 					: await pickElectronTarget(this.#browser, {
-							matcher: payload.targetMatcher,
-							preferVisible: payload.activateForScreenshot === false,
-						});
+						matcher: payload.targetMatcher,
+						preferVisible: payload.activateForScreenshot === false,
+					});
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
@@ -2083,6 +2118,7 @@ export class WorkerCore {
 			}
 			// BiDi pages have no CDP session; their element caches are keyed per target instead.
 			if (!this.#webDriverBiDi) this.#page.mainFrame().client.on("Page.frameNavigated", this.#onFrameNavigated);
+			this.#page.on("error", this.#onPageCrashed);
 			if (payload.mode === "headless" || payload.emulateFocus) {
 				// Background Chromium tabs stop producing frames, stalling rAF,
 				// IntersectionObserver, and input acknowledgements. Keep owned tabs
@@ -2095,7 +2131,9 @@ export class WorkerCore {
 			// viewport waits for the first navigation (see `#applyPendingBiDiViewport`).
 			this.#pendingBiDiViewport = this.#webDriverBiDi ? payload.viewport : undefined;
 			this.#targetId = await targetIdForPage(this.#page, !this.#webDriverBiDi);
-			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
+			const info = await this.#currentReadyInfo();
+			this.#started = true;
+			this.#transport.send({ type: "ready", info });
 		} catch (error) {
 			// A failed headless init leaves the worker's page orphaned in the shared
 			// browser (the supervisor retries with a fresh worker), so close it before
@@ -2159,7 +2197,9 @@ export class WorkerCore {
 		this.#targetId = await targetIdForPage(page, !this.#webDriverBiDi);
 		this.#pageState.initScripts = new InitScriptManager(page);
 		for (const source of payload.initScripts ?? []) await this.#pageState.initScripts.add(source);
-		this.#pageState.downloads = new DownloadManager(this.#requireBrowser(), page, this.#targetId);
+		this.#pageState.downloads = new DownloadManager(this.#requireBrowser(), page, this.#targetId, {
+			perTab: payload.mode === "headless" || payload.userDriven !== true,
+		});
 		if (payload.downloadsPath) await this.#pageState.downloads.enable(payload.downloadsPath);
 		const baseUserAgent = await page.evaluate(() => navigator.userAgent);
 		this.#pageState.emulation = new BrowserEmulationController(
@@ -2211,7 +2251,30 @@ export class WorkerCore {
 			if ((await targetIdForTarget(target).catch(() => "")) !== targetId) continue;
 			return target;
 		}
+		// Puppeteer lists a page only once its URL is non-empty, and a crashed page revived by this attach reloads
+		// with an empty URL for a moment. Wait for it while Chromium still has the target; fail at once when not.
+		if (await this.#browserHasTarget(this.#browser, targetId)) {
+			const target = await this.#browser
+				.waitForTarget(async candidate => (await targetIdForTarget(candidate).catch(() => "")) === targetId, {
+					timeout: ATTACHED_TARGET_EXPOSE_TIMEOUT_MS,
+				})
+				.catch(() => undefined);
+			if (target) return target;
+		}
 		throw new ToolError(`Target ${targetId} is no longer available on the attached browser`);
+	}
+
+	async #browserHasTarget(browser: Browser, targetId: string): Promise<boolean> {
+		let session: CDPSession | undefined;
+		try {
+			session = await browser.target().createCDPSession();
+			await session.send("Target.getTargetInfo", { targetId });
+			return true;
+		} catch {
+			return false;
+		} finally {
+			await session?.detach().catch(() => undefined);
+		}
 	}
 
 	/**
@@ -2244,6 +2307,10 @@ export class WorkerCore {
 		let session: CDPSession | undefined;
 		try {
 			session = await target.createCDPSession();
+			// A crashed page answers none of the steps below. `Inspector.enable` reports a renderer
+			// still dead (a relay attach leaves it so), the listener one that dies again as it reloads.
+			session.on("Inspector.targetCrashed", this.#onPageCrashed);
+			await session.send("Inspector.enable").catch(() => undefined);
 			await session.send("Page.enable").catch(() => undefined);
 			await session.send("Page.handleJavaScriptDialog", { accept: false }).catch(() => undefined);
 			await session.send("Page.stopLoading").catch(() => undefined);
@@ -2310,6 +2377,13 @@ export class WorkerCore {
 	}
 
 	async #run(msg: Extract<WorkerInbound, { type: "run" }>): Promise<void> {
+		if (this.#crashed) {
+			const error = new RendererCrashedError(
+				"Browser tab's renderer had crashed before this run, so its code did not run",
+			);
+			this.#transport.send({ type: "result", id: msg.id, ok: false, error: errorPayload(error) });
+			return;
+		}
 		if (this.#active) {
 			this.#transport.send({
 				type: "result",
@@ -2341,6 +2415,7 @@ export class WorkerCore {
 			opCounter: 0,
 		};
 		this.#active = active;
+		this.#unanswered = active;
 		let completed = false;
 		let returnValue: unknown;
 		let failure: { error: unknown } | undefined;
@@ -2472,7 +2547,10 @@ export class WorkerCore {
 			failure = this.#foldFloatingRejections(active, failure);
 			if (this.#active?.id === msg.id) this.#active = null;
 		}
+		// A renderer crash answers the run itself.
+		if (this.#unanswered !== active) return;
 		if (failure) {
+			this.#unanswered = null;
 			const error = errorPayload(failure.error);
 			if (this.#cleanupRequired) error.recoverTab = true;
 			this.#transport.send({ type: "result", id: msg.id, ok: false, error });
@@ -2480,6 +2558,8 @@ export class WorkerCore {
 		}
 		if (completed) {
 			if (!this.#cleanupRequired) await this.#postReadyInfo();
+			if (this.#unanswered !== active) return;
+			this.#unanswered = null;
 			this.#transport.send({
 				type: "result",
 				id: msg.id,
@@ -2651,7 +2731,7 @@ export class WorkerCore {
 				break;
 			}
 		}
-		return await new Promise<never>(() => {});
+		return await new Promise<never>(() => { });
 	}
 
 	/**
@@ -3365,8 +3445,8 @@ export class WorkerCore {
 				parseAriaRefSelector(options.selector) !== null
 					? await this.#resolveAriaRef(options.selector)
 					: ((await untilAborted(options.signal, () =>
-							page.$(normalizeSelector(options.selector!)),
-						)) as ElementHandle | null);
+						page.$(normalizeSelector(options.selector!)),
+					)) as ElementHandle | null);
 			if (!root) throw new ToolError(`tab.observe: selector ${JSON.stringify(options.selector)} matched no element`);
 		}
 		const entries: ObservationEntry[] = [];
@@ -3471,9 +3551,10 @@ export class WorkerCore {
 				});
 			}
 		}
+		const captureScale = opts.silent ? undefined : ((await this.#viewport(signal)).deviceScaleFactor ?? 1);
 		const cleanupAnnotations = opts.annotate
 			? await installScreenshotAnnotations(page, annotationTargets, signal)
-			: async (): Promise<void> => {};
+			: async (): Promise<void> => { };
 		const resolveSelector = async (selector: string): Promise<ElementHandle | null> =>
 			parseAriaRefSelector(selector) !== null
 				? await this.#resolveAriaRef(selector)
@@ -3511,9 +3592,9 @@ export class WorkerCore {
 		const ext = savedMimeType === "image/webp" ? "webp" : savedMimeType === "image/jpeg" ? "jpg" : "png";
 		const dest = session.browserScreenshotDir
 			? path.join(
-					session.browserScreenshotDir,
-					`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
-				)
+				session.browserScreenshotDir,
+				`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
+			)
 			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);
@@ -3531,6 +3612,7 @@ export class WorkerCore {
 				savedByteLength: savedBuffer.length,
 				dest,
 				resized,
+				capture: { area: screenshotArea(opts), scale: captureScale },
 			});
 			if (opts.annotate) lines.push(formatScreenshotLegend(annotationTargets));
 			output.push({ type: "text", text: lines.join("\n") });

@@ -5,6 +5,7 @@ import type { Terminal, TerminalAppearance } from "../terminal";
 import { colorLuma } from "@oh-my-pi/pi-utils/color";
 import { getCustomThemesDir } from "@oh-my-pi/pi-utils/dirs";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { terminalMultiplexerSessions } from "../terminal-multiplexer";
 import { ansi256ToHex, detectColorMode, resolveThemeColors, resolveVarRefs } from "./color";
 import { setActiveSymbolTheme } from "./active-symbols";
 import {
@@ -34,6 +35,7 @@ export {
 	createHighlightStream,
 	getEditorTheme,
 	getMarkdownTheme,
+	getMarkdownThemeWithLinkTargets,
 	getSelectListTheme,
 	getSettingsListTheme,
 	getSymbolTheme,
@@ -53,10 +55,12 @@ var themeEnvironment: NodeJS.ProcessEnv = Bun.env;
 var macOSReportedAppearance: "dark" | "light" | undefined;
 
 function shouldUseMacOSAppearanceFallback(env: NodeJS.ProcessEnv = themeEnvironment): boolean {
-	// Zellij currently breaks OSC 11 passthrough on macOS, so terminal-derived
-	// appearance cannot be trusted there. Fall back to host macOS appearance
-	// without letting it override valid terminal signals elsewhere.
-	return process.platform === "darwin" && !!env.ZELLIJ;
+	// Some multiplexers break OSC 11 passthrough on some platforms (Zellij on
+	// macOS), so terminal-derived appearance cannot be trusted there. Fall back
+	// to host macOS appearance without letting it override valid terminal
+	// signals elsewhere.
+	const platform = process.platform;
+	return terminalMultiplexerSessions(env).some(multiplexer => multiplexer.backgroundQueryBrokenOn?.includes(platform));
 }
 
 function detectTerminalBackground(env: NodeJS.ProcessEnv = themeEnvironment): "dark" | "light" {

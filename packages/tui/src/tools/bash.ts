@@ -26,9 +26,9 @@ import type {
 	RenderResultOptions,
 	ToolRenderer,
 } from "./renderer";
-import { ansi, compact, keyed } from "../native/describe";
-import type { NativeChild } from "../native/node";
-import { footnoteText, resultText } from "./native-view";
+import { INTENT_FIELD, type TspTone } from "@oh-my-pi/pi-wire";
+import { plainText } from "../native/spans";
+import { resultText, runBox, runFoot, runInput, runOutput, type RunState } from "./native-view";
 
 /** The `Output · <status>` separator label: static text, so the row only changes when the state does. */
 function bashOutputLabel(uiTheme: Theme, status: string, spinnerFrame?: number): string {
@@ -385,34 +385,41 @@ function bashStatsParts(
 }
 
 /**
- * Native head facts of a shell call: title, the command once (`cd`/env
- * prefix included), a `background` badge for a backgrounded job, the
- * `exit N` chip and a `timed out` note only when the deadline hit.
+ * Native head facts of a shell call: title, the model's intent as the target
+ * (none without one), the command line for Copy command, the `exit N` chip
+ * and a `timed out` note only when the deadline hit. The command itself and a
+ * backgrounded job's state draw in the run box.
  */
 function shellToolHead(
 	title: string,
 	command: string,
+	intent: string | undefined,
 	details: BashToolDetails | undefined,
 	settled: boolean,
 ): NativeToolHead {
 	const exit = settled && details?.exitCode !== undefined && details.exitCode !== 0 ? details.exitCode : undefined;
 	return {
 		title,
-		target: command,
-		targetKind: "command",
-		lang: "bash",
-		badges:
-			details?.async?.state === "running"
-				? [{ text: "background", title: `Backgrounded as job ${details.async.jobId}` }]
-				: undefined,
+		target: intent,
+		targetKind: intent ? "text" : undefined,
+		command,
 		exit,
 		note: settled && details?.timedOut === true ? "timed out" : undefined,
 	};
 }
 
-/** The quiet final line's facts under shell output: service state and the full-output artifact. */
+/** The model's intent line (`i` arg) as plain head text, or undefined when absent. */
+function callIntent(args: unknown): string | undefined {
+	if (!args || typeof args !== "object" || !(INTENT_FIELD in args)) return undefined;
+	const value = args[INTENT_FIELD];
+	if (typeof value !== "string") return undefined;
+	return plainText(value).trim() || undefined;
+}
+
+/** The run foot's facts under shell output: background job, service state and the full-output artifact. */
 function shellFootParts(details: BashToolDetails | undefined, artifactId: string | undefined): string[] {
 	const parts: string[] = [];
+	if (details?.async?.state === "running") parts.push(`Job ${details.async.jobId}`);
 	const service = details?.service;
 	if (service) {
 		parts.push(`Service ${service.name}`, service.state);
@@ -421,6 +428,27 @@ function shellFootParts(details: BashToolDetails | undefined, artifactId: string
 	}
 	if (artifactId) parts.push(`Artifact ${artifactId}`);
 	return parts;
+}
+
+/** The command line as a run's input: wrapped shell source. */
+const SHELL_INPUT = { role: "omp.tool.bash.command", lang: "bash", wrap: true } as const;
+
+/** Box tint per run state: failed runs read as errors, timed-out ones as warnings. */
+const RUN_BOX_TONE: Partial<Record<RunState, TspTone>> = { failed: "error", "timed-out": "warning" };
+
+/** The foot state of a shell call from its result. */
+function shellRunState(
+	details: BashToolDetails | undefined,
+	isError: boolean,
+	isPartial: boolean,
+	cancelled: boolean,
+): RunState {
+	if (cancelled) return "cancelled";
+	if (isPartial) return "running";
+	if (details?.timedOut === true) return "timed-out";
+	if (details?.async?.state === "running") return "background";
+	if (isError || (details?.exitCode !== undefined && details.exitCode !== 0)) return "failed";
+	return "done";
 }
 
 function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererConfig<TArgs>): BashRenderArgs {
@@ -447,16 +475,16 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					config.showHeader === false
 						? undefined
 						: renderStatusLine(
-								{
-									// Static glyph: the head row is the card's first native-history
-									// row, and a spinner there would change it every frame.
-									// Same glyph as a successful result, so the head row is
-									// byte-identical before and after execution.
-									iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-									title: config.resolveTitle(args, options),
-								},
-								uiTheme,
-							);
+							{
+								// Static glyph: the head row is the card's first native-history
+								// row, and a spinner there would change it every frame.
+								// Same glyph as a successful result, so the head row is
+								// byte-identical before and after execution.
+								iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+								title: config.resolveTitle(args, options),
+							},
+							uiTheme,
+						);
 				return {
 					header,
 					phase: options.spinnerFrame !== undefined ? "running" : "pending",
@@ -504,12 +532,12 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				config.showHeader === false
 					? undefined
 					: renderStatusLine(
-							{
-								iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-								title: config.resolveTitle(args, options),
-							},
-							uiTheme,
-						);
+						{
+							iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+							title: config.resolveTitle(args, options),
+						},
+						uiTheme,
+					);
 			// Per-instance cache for the expensive inner lines computation. Mirrors
 			// the eval-renderer pattern (`eval-render.ts:709-752`): without this,
 			// every TUI repaint (one per keystroke when a long transcript is on
@@ -532,6 +560,19 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedStageExpanded: boolean | undefined;
 			let cachedSpinnerFrame: number | undefined;
 			let cachedSnapshot: ToolCardSnapshot | undefined;
+			const dropSnapshot = () => {
+				cachedSnapshot = undefined;
+				cachedWidth = undefined;
+				cachedPreviewLines = undefined;
+				cachedExpanded = undefined;
+				cachedRawOutput = undefined;
+				cachedIsPartial = undefined;
+				cachedPreviewWindow = undefined;
+				cachedMinLiveWidth = undefined;
+				cachedStageWindow = undefined;
+				cachedStageExpanded = undefined;
+				cachedSpinnerFrame = undefined;
+			};
 
 			return framedToolCard(
 				uiTheme,
@@ -578,9 +619,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const timeoutLine =
 						statsParts.length > 0
 							? uiTheme.fg(
-									"dim",
-									`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
-								)
+								"dim",
+								`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
+							)
 							: undefined;
 					let warningLine: string | undefined;
 					if (details?.meta?.artifactError || (details?.meta?.truncation && !showingFullOutput)) {
@@ -660,29 +701,26 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedSnapshot = snapshot;
 					return snapshot;
 				},
-				{
-					onInvalidate: () => {
-						cachedSnapshot = undefined;
-						cachedWidth = undefined;
-						cachedPreviewLines = undefined;
-						cachedExpanded = undefined;
-						cachedRawOutput = undefined;
-						cachedIsPartial = undefined;
-						cachedPreviewWindow = undefined;
-						cachedMinLiveWidth = undefined;
-						cachedStageWindow = undefined;
-						cachedStageExpanded = undefined;
-						cachedSpinnerFrame = undefined;
-					},
-				},
+				{ onInvalidate: dropSnapshot, onReleaseRenderCaches: dropSnapshot },
 			);
 		},
 		describeCall(args: TArgs, options: RenderResultOptions): NativeToolView {
 			const command = formatBashCommandText(toBashRenderArgs(args, config));
-			// The command shows once, in the head; the body is only the output.
+			// No foot until the command starts; once it runs (before any output) the clock shows.
+			const started = options.executionStarted === true;
 			return {
-				tool: shellToolHead(config.resolveTitle(args, options), command, undefined, false),
-				preview: { tail: BASH_DEFAULT_PREVIEW_LINES },
+				tool: shellToolHead(config.resolveTitle(args, options), command, callIntent(args), undefined, false),
+				body: [
+					runBox(
+						[
+							runInput(command, SHELL_INPUT),
+							started &&
+							runFoot({ state: options.cancelled ? "cancelled" : "running", elapsedMs: options.elapsedMs }),
+						],
+						{ key: "run" },
+					),
+				],
+				preview: "children",
 			};
 		},
 
@@ -706,22 +744,34 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const showingFullOutput = expanded && renderContext?.isFullOutput === true;
 			const command = formatBashCommandText(toBashRenderArgs(args, config));
 			const previewLines = renderContext?.previewLines ?? BASH_DEFAULT_PREVIEW_LINES;
-			// Wall time is the head timer, the timeout a note only when hit, the exit a head chip:
-			// what is left (service state, artifact, truncation) is one quiet final line.
+			const state = shellRunState(details, isError, isPartial, options.cancelled === true);
+			// Settled: the measured wall time wins. A background job outlives the call: its run time is unknown here.
+			const elapsedMs =
+				state === "background"
+					? undefined
+					: isPartial
+						? options.elapsedMs
+						: (details?.wallTimeMs ?? options.elapsedMs);
 			const meta = details?.meta;
-			const body: NativeChild[] = compact([
-				output.trim().length > 0 &&
-					keyed(ansi(output, { follow: isPartial, role: "omp.tool.bash.output" }), "output"),
-				footnoteText(shellFootParts(details, stripped.artifactId), {
-					...meta,
-					truncation: showingFullOutput ? undefined : meta?.truncation,
-				}),
-			]);
+			const box = runBox(
+				[
+					runInput(command, SHELL_INPUT),
+					output.trim().length > 0 && runOutput(output, { role: "omp.tool.bash.output", previewLines }),
+					runFoot({
+						state,
+						exitCode: details?.exitCode,
+						elapsedMs,
+						facts: shellFootParts(details, stripped.artifactId),
+						meta: { ...meta, truncation: showingFullOutput ? undefined : meta?.truncation },
+					}),
+				],
+				{ key: "run", tone: RUN_BOX_TONE[state] },
+			);
 			return {
-				tool: shellToolHead(config.resolveTitle(args, options), command, details, !isPartial),
-				body,
-				tone: !isPartial && isError && details?.timedOut === true ? "warning" : undefined,
-				preview: { tail: previewLines },
+				tool: shellToolHead(config.resolveTitle(args, options), command, callIntent(args), details, !isPartial),
+				body: [box],
+				tone: state === "timed-out" ? "warning" : undefined,
+				preview: "children",
 			};
 		},
 		mergeCallAndResult: true,

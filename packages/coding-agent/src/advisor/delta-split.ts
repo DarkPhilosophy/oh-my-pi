@@ -19,16 +19,35 @@
 // (candidate 3) so a wip/final flip never changes the stable prefix.
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TextContent } from "@oh-my-pi/pi-ai";
-import { buildToolResultPairing, formatSessionHistoryMarkdown } from "../session/session-history-format";
+import {
+	buildToolResultPairing,
+	formatSessionHistoryMarkdown,
+	type ToolIOTransform,
+} from "../session/session-history-format";
 
 /**
- * Obfuscation surface the split renderer needs: a single text redaction pass.
- * Narrowed from the full SecretObfuscator class to the method actually
- * consumed, so tests can satisfy the contract with a typed helper instead of
- * an `as any` escape. A SecretObfuscator instance is structurally assignable.
+ * Obfuscation surface the split renderer needs: a text redaction pass, plus
+ * the optional prefix probe that keeps one-line previews from scanning text
+ * they hide. Narrowed from the full SecretObfuscator class so tests can
+ * satisfy the contract with a typed helper instead of an `as any` escape. A
+ * SecretObfuscator instance is structurally assignable.
  */
 export interface AdvisorObfuscator {
 	obfuscate(text: string, sharedRegexSecretValues?: ReadonlySet<string>): string;
+	redactionPrefixEnd?(text: string, limit: number, sharedRegexSecretValues?: ReadonlySet<string>): number;
+}
+
+/** The advisor's tool-I/O redaction, sharing one batch's regex secret values. */
+export function advisorToolIOTransform(
+	obfuscator: AdvisorObfuscator,
+	sharedRegexSecretValues: ReadonlySet<string>,
+): ToolIOTransform {
+	const transform: ToolIOTransform = text => obfuscator.obfuscate(text, sharedRegexSecretValues);
+	if (obfuscator.redactionPrefixEnd) {
+		transform.redactionPrefixEnd = (text, limit) =>
+			obfuscator.redactionPrefixEnd!(text, limit, sharedRegexSecretValues);
+	}
+	return transform;
 }
 
 /** Render options shared by the advisor single-block and multi-message paths. */
@@ -103,7 +122,7 @@ function createChunkRenderState(delta: AgentMessage[], opts: RenderAdvisorDeltaC
 			toolResultPairing: pairing,
 			watchedRoleState,
 			transformExpandedToolIO: opts.obfuscator
-				? text => opts.obfuscator!.obfuscate(text, opts.advisorRegexSecretValues)
+				? advisorToolIOTransform(opts.obfuscator, opts.advisorRegexSecretValues)
 				: undefined,
 		});
 	return { renderChunk };

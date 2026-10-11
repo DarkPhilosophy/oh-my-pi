@@ -53,8 +53,10 @@ import type { UsageLogger } from "./usage";
 import { defaultRankingStrategy, defaultUsageProvider } from "./usage/registry";
 
 export {
+	isSameOAuthAccount,
 	isSqliteBusyError,
 	isSqliteCorruptionError,
+	matchesReplacementCredential,
 	resolveCredentialIdentityKey,
 	SqliteAuthCredentialStore,
 } from "./auth/sqlite-credential-store";
@@ -185,7 +187,13 @@ export class AuthStorage {
 				affinity.clearProvider(provider);
 			},
 		});
-		const refresher = new OAuthRefresher({ store, pool, policies, override: options.refreshOAuthCredential });
+		const refresher = new OAuthRefresher({
+			store,
+			pool,
+			policies,
+			override: options.refreshOAuthCredential,
+			overrideMints: options.refreshOAuthCredentialMints,
+		});
 		const usageProviders = options.usageProviderResolver ?? defaultUsageProvider;
 		// Key reports by the effective provider (runtime extension override first), so an
 		// override's `cacheVersion` separates its rows from other processes sharing the store.

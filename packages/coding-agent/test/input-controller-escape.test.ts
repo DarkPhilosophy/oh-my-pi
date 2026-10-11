@@ -172,7 +172,6 @@ function createContext(): {
 			abortEval,
 			clearQueue,
 			getQueuedMessages,
-			maybeStartTitleGeneration: vi.fn(),
 			prompt,
 			subscribe: vi.fn((listener: (event: { type: string }) => void) => {
 				sessionListeners.push(listener);

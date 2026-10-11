@@ -145,6 +145,13 @@ import { modelMentionDisplayName } from "@oh-my-pi/pi-tui/prompt/model-mention-s
 import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
+import {
+	canAutoCreateWorktree,
+	planWorktreeExit,
+	removeExitWorktrees,
+	type SessionWorktree,
+	type WorktreeExitPlan,
+} from "../session/session-worktree";
 import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { buildStaticInlineHint } from "../slash-commands/builtin-completions";
@@ -207,6 +214,14 @@ import { resumeCommand } from "../utils/resume-command";
 import { getSessionAccentAnsi, getSessionAccentHex } from "@oh-my-pi/pi-tui/theme/session-color";
 import { messageHasDisplayableThinking } from "@oh-my-pi/pi-tui/chat/thinking-display";
 import type { TokenRateMeter } from "../utils/token-rate";
+import {
+	disposeProgramStatus,
+	initProgramStatus,
+	type RunStatus,
+	setProgramStatusEnabled,
+	setRunStatus,
+	titleState,
+} from "../utils/run-status";
 import {
 	disposeTerminalTitleState,
 	initTerminalTitleState,
@@ -279,8 +294,7 @@ import { SessionFocusController } from "./controllers/session-focus-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
 import { TanCommandController } from "./controllers/tan-command-controller";
 import { TodoCommandController } from "./controllers/todo-command-controller";
-import { imageReferenceHyperlink, materializeImageReferenceLinks } from "@oh-my-pi/pi-tui/prompt/image-references";
-import { imageLinkTarget } from "./utils/image-source-link";
+import { imageReferenceHyperlink } from "@oh-my-pi/pi-tui/prompt/image-references";
 import { describeLoopCondition, evaluateLoopCondition, type LoopConditionVerdict } from "./loop-condition";
 import {
 	consumeLoopLimitIteration,
@@ -337,11 +351,12 @@ import type {
 	SubmittedUserInput,
 } from "./types";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import { UiHelpers } from "./utils/ui-helpers";
+import { materializeImageChipLinks, UiHelpers } from "./utils/ui-helpers";
 
 import {
 	cfgAutocompleteMaxVisible,
 	cfgDisplayAutocompleteSuggestionsPopup,
+	cfgComposerPredictions,
 	cfgComposerShape,
 	cfgComposerTokenRate,
 	cfgDisplayCacheMissMarker,
@@ -378,6 +393,7 @@ import {
 	cfgStatusLineShowHookStatus,
 	cfgStatusLineTransparent,
 	cfgSymbolPreset,
+	cfgTerminalProgramStatus,
 	cfgTerminalShowImages,
 	cfgTuiHyperlinks,
 	cfgTuiImeSafeCursor,
@@ -395,6 +411,7 @@ import {
 	cfgTuiVimModeDisplay,
 } from "./settings";
 import { cfgTasksTodoClearDelay } from "../tools/settings";
+import { cfgWorktreeOnExit, cfgWorktreeOnStart } from "../task/settings";
 import { cfgExpandThinkingBlocks, cfgProseOnlyThinking } from "../session/settings";
 import { cfgHideThinkingBlock } from "../session/settings";
 import { cfgCycleOrder, cfgModelRoles } from "../config/model-settings";
@@ -443,10 +460,12 @@ const cfgLiveUiSettings = combine({
 	"compaction.idleTimeoutSeconds": cfgCompactionIdleTimeoutSeconds,
 	"recap.enabled": cfgRecapEnabled,
 	"recap.idleSeconds": cfgRecapIdleSeconds,
+	"composer.predictions": cfgComposerPredictions,
 	"compaction.enabled": cfgCompactionEnabled,
 	"compaction.methodOrder": cfgCompactionMethodOrder,
 	"display.hideToolActivity": cfgDisplayHideToolActivity,
 	"terminal.showImages": cfgTerminalShowImages,
+	"terminal.programStatus": cfgTerminalProgramStatus,
 	hideThinkingBlock: cfgHideThinkingBlock,
 	proseOnlyThinking: cfgProseOnlyThinking,
 	expandThinkingBlocks: cfgExpandThinkingBlocks,
@@ -1471,6 +1490,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	get teardownFailed(): boolean {
 		return this.#teardownFailed;
 	}
+	/** Worktrees this launch created (auto-start or `/wt`), considered on exit per `worktree.onExit`. */
+	#ownedWorktrees: SessionWorktree[] = [];
 	/** True once `shutdown()` has begun teardown. Surfaced to the input
 	 *  controller so a Ctrl+C arriving while teardown is in flight can hard-
 	 *  abort the remaining work instead of stacking another no-op call. */
@@ -1789,6 +1810,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.editor = this.composer.editor;
 		this.editor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
 		this.editor.placeholder = () => this.#composerHint();
+		this.editor.prediction = () => this.#eventController.composerPrediction.text;
 		this.editor.composerState = () => this.#composerNativeState();
 		this.editor.imageReferenceHyperlink = imageReferenceHyperlink;
 		this.editor.skillFilePath = name => this.skillCommands.get(`skill:${name}`)?.filePath;
@@ -1936,16 +1958,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const attachmentChips = new AttachmentChipsBand(this.editor, this.ui.imageBudget, () => this.ui.requestRender());
 		this.attachmentChipsContainer.addChild(attachmentChips);
 		this.editor.attachmentChips = attachmentChips;
-		// Restored drafts (esc-esc, /tree, branch) re-materialize blob-store links off the render
+		// Restored drafts (esc-esc, /tree, branch) re-materialize chip links off the render
 		// path so their chip tokens become clickable again instead of degrading to dead text.
-		this.editor.draftImageLinkMaterializer = async images => {
-			const blobs = await materializeImageReferenceLinks(images, this.sessionManager.putBlob.bind(this.sessionManager));
-			const localProtocolOptions = {
-				getArtifactsDir: () => this.sessionManager.getArtifactsDir(),
-				getSessionId: () => this.sessionManager.getSessionId(),
-			};
-			return images.map((image, index) => imageLinkTarget(image, localProtocolOptions, blobs?.[index]));
-		};
+		this.editor.draftImageLinkMaterializer = images => materializeImageChipLinks(images, this.sessionManager);
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor);
 		this.statusLine = new StatusLineComponent(session, createStatusLineHost(this.settings));
@@ -2377,12 +2392,16 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.session.sessionManager.getCwd(),
 			);
 		} else {
+			// A hosted session does not own the process terminal, so OSC 7501 program
+			// status (written to the process stdout) stays off for it.
+			initProgramStatus();
+			setProgramStatusEnabled(cfgTerminalProgramStatus.get(this.settings));
 			setTerminalSessionSource({
 				file: () => this.sessionManager.getSessionFile(),
 				cwd: () => this.sessionManager.getCwd(),
 			});
 			setTerminalTitleStateEnabled(cfgTuiTitleState.get(this.settings));
-			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.session.sessionManager.getCwd());
+			setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		}
 		// Seeds the border, the status-line `vim` segment, and the cursor shape in one call.
 		// Deliberately here rather than beside #applyVimMode in the constructor: that runs before
@@ -2668,6 +2687,14 @@ export class InteractiveMode implements InteractiveModeContext {
 			onTerminalAppearanceChange(mode, appearanceRefreshWasRequested ? {} : undefined);
 		});
 
+		// Keys pressed while a Tern startup loaded were held until hooks ran, the
+		// session mode settled, the draft was restored and every subscription
+		// above was installed. They replay into the restored draft, never over
+		// it, a startup shortcut (Alt+P, Ctrl+G, extension shortcuts) acts on the
+		// final mode, editor contents and observed session, and a held Enter
+		// still meets the bootstrap submit gate lifted just below.
+		this.ui.releaseHeldInput();
+
 		// Everything is wired: subscriptions observe agent events, the session
 		// mode is reconciled, and the submit handler is installed. Lift the
 		// composer's bootstrap submit gate (`disableSubmit = true` since
@@ -2684,6 +2711,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	setTerminalTitleState(state: "idle" | "working" | "attention"): void {
 		if (this.#terminalTitleController) this.#terminalTitleController.setState(state);
 		else setTerminalTitleState(state);
+	}
+
+	setRunStatus(status: RunStatus): void {
+		// A hosted session does not own the process terminal: only its own title
+		// moves, and no OSC 7501 record is written for a terminal it does not hold.
+		if (this.#terminalTitleController) this.#terminalTitleController.setState(titleState(status));
+		else setRunStatus(status);
 	}
 
 	/** Reload the title-generation system prompt override for the provided working
@@ -2973,7 +3007,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#scheduleLoopAutoSubmit(): void {
 		this.#cancelLoopAutoSubmit();
-		if (!this.loopModeEnabled || !this.loopPrompt) return;
+		if (!this.loopModeEnabled || !this.loopPrompt || this.#isShuttingDown) return;
 		const prompt = this.loopPrompt;
 		const loopAction = cfgLoopMode.get(this.settings);
 		this.#deferLoopAutoSubmit(() => {
@@ -3659,6 +3693,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#eventController.refreshIdleCompactionTimer();
 		}
 		if (any("recap.enabled", "recap.idleSeconds")) this.#eventController.refreshIdleRecapTimer();
+		if (any("composer.predictions") && !next["composer.predictions"]) {
+			this.#eventController.composerPrediction.cancel();
+		}
 		if (any("compaction.enabled", "compaction.methodOrder")) {
 			this.statusLine.setAutoCompactEnabled(this.session.autoCompactionEnabled);
 			this.ui.requestRender();
@@ -3759,6 +3796,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (any("tui.titleState")) setTerminalTitleStateEnabled(cfgTuiTitleState.get(this.settings));
 		if (any("tui.titleSpinner")) setTerminalTitleSpinnerStyle(cfgTuiTitleSpinner.get(this.settings));
+		if (any("terminal.programStatus")) setProgramStatusEnabled(cfgTerminalProgramStatus.get(this.settings));
 
 		if (
 			any(
@@ -3876,7 +3914,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.editor.borderColor = theme.getPythonModeBorderColor();
 		} else if (vimMode === "visual" || vimMode === "visual-line") {
 			this.editor.borderColor = (str: string) => theme.fg("warning", str);
-		} else if (vimMode === "normal") {
+		} else if (vimMode === "normal" || vimMode === "replace") {
 			this.editor.borderColor = (str: string) => theme.fg("accent", str);
 		} else if (vimMode === "insert") {
 			// Insert gets its own colour rather than falling through to the session accent: with Normal
@@ -7242,12 +7280,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 			return;
 		}
-		this.#isShuttingDown = true;
+		this.#beginClose();
+		const worktreePlan = await this.#planOwnedWorktreeExit();
 		try {
 			await this.#teardown();
 		} catch (error) {
 			this.#handleTeardownError("close", error);
 			return;
+		}
+		for (const message of await removeExitWorktrees(worktreePlan)) {
+			process.stderr.write(`${chalk.yellow(message)}\n`);
 		}
 		if (this.#hostedDetach) {
 			this.#hostedDetach("exit");
@@ -7282,6 +7324,30 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/**
+	 * Apply `worktree.onExit` to worktrees this launch created and return the ones
+	 * to remove after teardown. Stops the agent turn and live commands first so the
+	 * prompts describe a worktree nothing is still writing to. Never throws.
+	 */
+	async #planOwnedWorktreeExit(): Promise<WorktreeExitPlan[]> {
+		const policy = cfgWorktreeOnExit.get(this.settings);
+		if (policy === "keep" || this.#ownedWorktrees.length === 0) return [];
+		this.#abortLoopCondition();
+		this.#cancelLoopAutoSubmit();
+		try {
+			await this.session.abort();
+			await this.#liveCommandController.stop();
+		} catch (err) {
+			this.showWarning(err instanceof Error ? err.message : String(err));
+		}
+		return planWorktreeExit(
+			this.#ownedWorktrees,
+			policy,
+			(title, message) => this.showHookConfirm(title, message),
+			message => this.showWarning(message),
+		);
+	}
+
+	/**
 	 * Tear down like {@link shutdown}, then relaunch the CLI with the original
 	 * launch argv (session-source flags and positional prompts stripped, see
 	 * {@link restartArgv}), resuming this session when it exists on disk.
@@ -7294,7 +7360,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 */
 	async restart(): Promise<void> {
 		if (this.#isShuttingDown) return;
-		this.#isShuttingDown = true;
+		this.#beginClose();
 		try {
 			await this.#teardown();
 		} catch (error) {
@@ -7338,6 +7404,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		return sessionId && sessionFile && this.sessionManager.isSessionOnDisk() ? sessionId : undefined;
 	}
 
+	/**
+	 * Claim the one-shot `shutdown()`/`restart()` close and acknowledge it before
+	 * any await: worktree exit planning, live commands, and BTW history writes can
+	 * all stall, and the user must see a reason for the pause.
+	 */
+	#beginClose(): void {
+		this.#isShuttingDown = true;
+		this.showStatus("Closing session…");
+		// Paint now: the awaits that follow can stall, and the user must see why.
+		this.ui.renderNow();
+	}
+
 	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
 	async #teardown(): Promise<void> {
 		// An in-flight loop condition (or a deferred auto-submit timer) must not
@@ -7347,11 +7425,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
 
-		// Surface progress before any asynchronous cleanup, including live commands
-		// and BTW history writes, so the user sees a reason for the pause.
-		this.showStatus("Closing session…");
-		this.ui.renderNow();
-
+		// `#beginClose()` already acknowledged the close; escalate only once the
+		// teardown itself lingers, so time spent in exit prompts never counts.
 		const stillClosingTimer = setTimeout(() => {
 			this.showStatus("Still closing… (flushing memory backend / network)");
 		}, STILL_CLOSING_DELAY_MS);
@@ -7401,6 +7476,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// terminal back (which would leave the parent shell with a `π ⠋ …` tab).
 		if (!this.#hostedTerminal) {
 			disposeTerminalTitleState();
+			disposeProgramStatus();
 			popTerminalTitle();
 		}
 		this.stop();
@@ -7481,6 +7557,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.referenceTitle = this.#referenceTitleResolver;
 		nextEditor.magicKeywordsEnabled = () => cfgMagicKeywordsEnabled.get(this.settings);
 		nextEditor.placeholder = () => this.#composerHint();
+		nextEditor.prediction = () => this.#eventController.composerPrediction.text;
 		nextEditor.composerState = () => this.#composerNativeState();
 		nextEditor.attachmentChips = previousEditor.attachmentChips;
 		nextEditor.imageReferenceHyperlink = imageReferenceHyperlink;
@@ -7497,6 +7574,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		nextEditor.onAutocompleteUpdate = () => {
 			this.ui.requestRender();
 		};
+		// A swap during startup keeps the bootstrap submit gate until init lifts it.
+		nextEditor.disableSubmit = previousEditor.disableSubmit;
 		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(nextEditor));
 		this.editor = nextEditor;
 		this.composer.setEditor(nextEditor);
@@ -7512,6 +7591,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.setFocus(nextEditor);
 
 		this.#inputController.setupKeyHandlers();
+		this.#inputController.setupEditorSubmitHandler();
+
+		void this.refreshSlashCommandState().catch(error => {
+			logger.warn("Failed to refresh slash command state for custom editor", {
+				error: String(error),
+			});
+		});
 	}
 
 	// UI helpers
@@ -8111,6 +8197,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleDumpAllCommand();
 	}
 
+	async handleDumpAnonCommand(): Promise<void> {
+		return this.#commandController.handleDumpAnonCommand();
+	}
+
 	handleAdvisorDumpCommand(isRaw?: boolean) {
 		return this.#commandController.handleAdvisorDumpCommand(isRaw);
 	}
@@ -8195,12 +8285,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#commandController.handleDeleteCommand();
 	}
 
-	async handleForkCommand(): Promise<void> {
+	async handleForkCommand(placement?: "pane" | "window"): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
-		await this.#btwController.dispose();
-		this.#omfgController.dispose();
-		this.#cleanseController.dispose();
-		await this.#commandController.handleForkCommand();
+		if (!placement) {
+			await this.#btwController.dispose();
+			this.#omfgController.dispose();
+			this.#cleanseController.dispose();
+		}
+		await this.#commandController.handleForkCommand(placement);
 	}
 
 	async handleMoveCommand(targetPath?: string): Promise<void> {
@@ -8208,9 +8300,34 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#commandController.handleMoveCommand(targetPath);
 	}
 
-	async handleWorktreeCommand(branch?: string): Promise<void> {
+	async handleWorktreeCommand(branch?: string, options?: { keepChanges?: boolean }): Promise<void> {
 		if (this.#vibeSessionTransitionBlocked()) return;
-		await this.#commandController.handleWorktreeCommand(branch);
+		const worktree = await this.#commandController.handleWorktreeCommand(branch, options);
+		if (worktree) this.#ownedWorktrees.push(worktree);
+	}
+
+	/**
+	 * Apply `worktree.onStart` to a fresh launch: optionally move the session into
+	 * a new worktree forked from clean `HEAD`. Silent no-op outside git checkouts;
+	 * failures become a warning so startup continues.
+	 */
+	async maybeAutoCreateWorktree(): Promise<void> {
+		try {
+			const policy = cfgWorktreeOnStart.get(this.settings);
+			if (policy === "off" || !(await canAutoCreateWorktree(this.sessionManager.getCwd()))) return;
+			if (
+				policy === "ask" &&
+				!(await this.showHookConfirm(
+					"Create a worktree for this session?",
+					"Work happens on a new wt/* branch; this checkout stays untouched.",
+				))
+			) {
+				return;
+			}
+			await this.handleWorktreeCommand(undefined, { keepChanges: false });
+		} catch (err) {
+			this.showWarning(`Worktree not created: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	withBtwSessionMove(operation: () => Promise<boolean>): Promise<boolean> {
@@ -8466,8 +8583,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		await runProviderSetupWizard(this);
 	}
 
-	showHookConfirm(title: string, message: string): Promise<boolean> {
-		return this.#extensionUiController.showHookConfirm(title, message);
+	showHookConfirm(title: string, message: string, dialogOptions?: InteractiveSelectorDialogOptions): Promise<boolean> {
+		return this.#extensionUiController.showHookConfirm(title, message, dialogOptions);
 	}
 
 	// Input handling

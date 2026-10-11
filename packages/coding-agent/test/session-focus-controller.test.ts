@@ -129,6 +129,7 @@ function makeHarness(options: { renderInitialMessages?: () => void | Promise<voi
 		updatePendingMessagesDisplay: () => uiHelpers.updatePendingMessagesDisplay(),
 		updateEditorBorderColor() {},
 		setTerminalTitleState() {},
+		setRunStatus() {},
 		ui: { requestRender() {}, requestComponentRender() {} },
 		showStatus() {},
 		collabGuest: undefined,

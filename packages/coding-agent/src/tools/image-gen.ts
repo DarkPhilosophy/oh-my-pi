@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -38,9 +39,9 @@ import { settings } from "../config/settings";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import { resolveXAIHttpCredentials } from "../lib/xai-http";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
-import { AUTO_IMAGE_PROVIDER_ORDER, type ImageProvider, isImageProviderId } from "./image-providers";
-import { resolveReadPath } from "./path-utils";
 import { cfgProvidersAntigravityEndpoint } from "../session/settings";
+import { AUTO_IMAGE_PROVIDER_ORDER, type ImageProvider, isImageProviderId } from "./image-providers";
+import { resolveReadPath, specialFileKind } from "./path-utils";
 
 const DEFAULT_MODEL = "gemini-3-pro-image-preview";
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-pro-image-preview";
@@ -670,11 +671,11 @@ async function resolveAntigravityImageTarget(
 	});
 	const target: AntigravityImageTarget = advertised
 		? {
-				model: advertised.id,
-				// Keep the discovered endpoint first but retain the other configured
-				// fallbacks so generation retries (429/5xx/network) still fail over.
-				endpoints: [advertised.endpoint, ...endpoints.filter(endpoint => endpoint !== advertised.endpoint)],
-			}
+			model: advertised.id,
+			// Keep the discovered endpoint first but retain the other configured
+			// fallbacks so generation retries (429/5xx/network) still fail over.
+			endpoints: [advertised.endpoint, ...endpoints.filter(endpoint => endpoint !== advertised.endpoint)],
+		}
 		: { model: DEFAULT_ANTIGRAVITY_MODEL, endpoints };
 	cache.set(bearer, target);
 	return target;
@@ -860,6 +861,10 @@ async function findImageApiKey(
 async function loadImageFromPath(imagePath: string, cwd: string): Promise<InlineImageData> {
 	const resolved = resolveReadPath(imagePath, cwd);
 	try {
+		const stat = await fs.stat(resolved);
+		const kind = specialFileKind(stat);
+		if (kind) throw new Error(`Cannot load '${imagePath}': it is a ${kind}, not a regular file or directory.`);
+		if (stat.size > MAX_IMAGE_SIZE) throw new Error(`Image file too large: ${imagePath}`);
 		const buffer = await Bun.file(resolved).bytes();
 		if (buffer.length > MAX_IMAGE_SIZE) {
 			throw new Error(`Image file too large: ${imagePath}`);
@@ -1009,9 +1014,9 @@ function buildOpenAIHostedImageRequest(
 		store: false,
 		...(stream
 			? {
-					instructions:
-						"You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.",
-				}
+				instructions:
+					"You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.",
+			}
 			: {}),
 		...(stream ? { stream: true } : {}),
 	};

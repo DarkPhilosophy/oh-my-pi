@@ -451,6 +451,19 @@ export const cfgTerminalShowProgress = register({
 	},
 });
 
+export const cfgTerminalProgramStatus = register({
+	id: "terminal.programStatus",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Program Status (OSC 7501)",
+		description:
+			"Report whether the agent is working, waiting on you, done, or failed over OSC 7501, for terminal tab indicators and agent inboxes",
+	},
+});
+
 export const cfgTuiTextSizing = register({
 	id: "tui.textSizing",
 	type: "boolean",
@@ -905,7 +918,7 @@ export const cfgTuiVimModeDisplay = register({
 		description: "How the current Vim mode appears in the status line",
 		condition: "vimModeEnabled",
 		options: [
-			{ value: "text", label: "Text", description: "Full mode name — NORMAL, INSERT, VISUAL, V-LINE" },
+			{ value: "text", label: "Text", description: "Full mode name — NORMAL, INSERT, VISUAL, V-LINE, REPLACE" },
 			{ value: "icon", label: "Icon", description: "Single compact glyph per mode" },
 			{ value: "none", label: "Hidden", description: "Do not show the mode in the status line" },
 		],
@@ -1088,6 +1101,20 @@ export const cfgSpellingAutocomplete = register({
 				? [{ value: "apple" as const, label: "Apple", description: "macOS dictionary completions" }]
 				: []),
 		],
+	},
+});
+
+export const cfgComposerPredictions = register({
+	id: "composer.predictions",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "interaction",
+		group: "Input",
+		label: "Composer Predictions",
+		get description() {
+			return `After a completed turn, ask the active model to predict your next message and show it as ghost text in the empty composer; ${formatKeyHint("tab")} or ${formatKeyHint("right")} inserts it without sending. Extra usage: every completed turn sends one more billed request over the whole conversation (counted in /stats)`;
+		},
 	},
 });
 

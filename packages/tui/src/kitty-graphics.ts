@@ -15,7 +15,12 @@
  * forms. Protocol gating (`imageProtocol === Kitty`) lives in the caller.
  */
 
-import { canUseHerdrKittyGraphics, isInsideHerdr, isInsideTerminalMultiplexer } from "./terminal-multiplexer";
+import {
+	canUseHerdrKittyGraphics,
+	isInsideHerdr,
+	isInsideTerminalMultiplexer,
+	terminalMultiplexerSessions,
+} from "./terminal-multiplexer";
 import { wrapTmuxPassthroughIfNeeded } from "./tmux";
 
 /** Kitty Unicode placeholder base character (U+10EEEE, Plane 16 PUA). */
@@ -67,8 +72,10 @@ export interface KittyGraphicsFeatures {
  * cannot use cursor-positioned placements because the outer terminal does not
  * know pane scroll/reflow state. An explicit `PI_FORCE_IMAGE_PROTOCOL=kitty`
  * opts into placeholders under any multiplexer — matching `timg -pk`.
- * Herdr stays off unless the pane announces `HERDR_KITTY_GRAPHICS=1` (our fork:
- * its VT engine tracks the virtual placement and blanks the placeholder cells
+ * Automatic fallback stays off inside multiplexers whose pane marker does not
+ * prove that a Kitty renderer is enabled (Herdr's is experimental). Herdr is
+ * the exception when the pane announces `HERDR_KITTY_GRAPHICS=1` (our fork: its
+ * VT engine tracks the virtual placement and blanks the placeholder cells
  * itself); an upstream marker does not prove its Kitty renderer is enabled.
  *
  * `PI_NO_KITTY_PLACEHOLDERS=1` and `PI_KITTY_PLACEHOLDERS=0` remain hard
@@ -83,6 +90,7 @@ export function detectKittyUnicodePlaceholdersSupport(terminalId: string, env: N
 	const insideMultiplexer = isInsideTerminalMultiplexer(env);
 	if (insideMultiplexer && env.PI_FORCE_IMAGE_PROTOCOL?.trim().toLowerCase() === "kitty") return true;
 	if (isInsideHerdr(env)) return canUseHerdrKittyGraphics(env);
+	if (terminalMultiplexerSessions(env).some(multiplexer => multiplexer.imagesRequireOverride)) return false;
 	return (
 		terminalId === "kitty" ||
 		terminalId === "ghostty" ||

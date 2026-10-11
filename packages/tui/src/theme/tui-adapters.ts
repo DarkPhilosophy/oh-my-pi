@@ -217,8 +217,88 @@ export function getSymbolTheme(): SymbolTheme {
 
 let cachedMarkdownTheme: MarkdownTheme | undefined;
 let cachedMarkdownThemeRef: Theme | undefined;
+const cacheableMarkdownThemes = new WeakMap<
+	MarkdownTheme,
+	{
+		theme: Theme;
+		fields: ReadonlyArray<readonly [PropertyKey, unknown]>;
+		symbolFields: ReadonlyArray<readonly [PropertyKey, unknown]>;
+		symbolValues: string;
+	}
+>();
+const linkTargetSnapshots = new WeakMap<ReadonlyMap<string, string>, ReadonlyMap<string, string>>();
 let markdownMermaidRendering = true;
 let codeGuidanceTrail = true;
+
+function ownFields(object: object): ReadonlyArray<readonly [PropertyKey, unknown]> {
+	// Accessors (e.g. `copyChipTarget`) are compared by getter identity: their
+	// value is live state, but the getter itself is stable for a built theme.
+	return Reflect.ownKeys(object).map(key => {
+		const descriptor = Object.getOwnPropertyDescriptor(object, key);
+		return [key, descriptor !== undefined && "value" in descriptor ? descriptor.value : descriptor?.get];
+	});
+}
+
+function hasUnchangedOwnFields(object: object, fields: ReadonlyArray<readonly [PropertyKey, unknown]>): boolean {
+	if (Reflect.ownKeys(object).length !== fields.length) return false;
+	return fields.every(([key, value]) => {
+		const descriptor = Object.getOwnPropertyDescriptor(object, key);
+		if (descriptor === undefined) return false;
+		return ("value" in descriptor ? descriptor.value : descriptor.get) === value;
+	});
+}
+
+/** Only themes assembled here have stable callbacks and private link state. */
+export function canCacheMarkdownListItems(candidate: MarkdownTheme): boolean {
+	const registered = cacheableMarkdownThemes.get(candidate);
+	if (registered === undefined || registered.theme !== theme || candidate.symbols === undefined) return false;
+	if (!hasUnchangedOwnFields(candidate, registered.fields)) return false;
+	if (!hasUnchangedOwnFields(candidate.symbols, registered.symbolFields)) return false;
+	try {
+		return JSON.stringify(candidate.symbols) === registered.symbolValues;
+	} catch {
+		return false;
+	}
+}
+
+function registerCacheableMarkdownTheme(markdownTheme: MarkdownTheme): void {
+	if (markdownTheme.symbols === undefined) return;
+	cacheableMarkdownThemes.set(markdownTheme, {
+		theme,
+		fields: ownFields(markdownTheme),
+		symbolFields: ownFields(markdownTheme.symbols),
+		symbolValues: JSON.stringify(markdownTheme.symbols),
+	});
+}
+
+export function getMarkdownThemeWithLinkTargets(targets: ReadonlyMap<string, string>): MarkdownTheme {
+	const base = getMarkdownTheme();
+	let snapshot = linkTargetSnapshots.get(targets);
+	let matches = snapshot?.size === targets.size;
+	if (matches && snapshot !== undefined) {
+		for (const [href, target] of targets) {
+			if (snapshot.get(href) !== target) {
+				matches = false;
+				break;
+			}
+		}
+	}
+	if (snapshot === undefined || !matches) {
+		snapshot = new Map(targets);
+		linkTargetSnapshots.set(targets, snapshot);
+	}
+	const stableSnapshot = snapshot;
+	const linked: MarkdownTheme = {
+		...base,
+		// Spread would freeze the live readiness getter at its current value.
+		get copyChipTarget() {
+			return base.copyChipTarget;
+		},
+		resolveLink: href => stableSnapshot.get(href),
+	};
+	if (canCacheMarkdownListItems(base)) registerCacheableMarkdownTheme(linked);
+	return linked;
+}
 export function setMarkdownMermaidRendering(enabled: boolean): void {
 	if (markdownMermaidRendering === enabled) return;
 	markdownMermaidRendering = enabled;
@@ -238,20 +318,20 @@ export function getMarkdownTheme(): MarkdownTheme {
 	}
 	const mermaid = markdownMermaidRendering
 		? (() => {
-				// Diagram geometry is content, so keep every structural stroke on the
-				// theme's readable muted foreground instead of subtle UI chrome borders.
-				const mermaidColorMode =
-					theme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
-				const mermaidTheme = {
-					fg: theme.getColorHex("text"),
-					border: theme.getColorHex("muted"),
-					line: theme.getColorHex("muted"),
-					arrow: theme.getColorHex("accent"),
-					corner: theme.getColorHex("muted"),
-					junction: theme.getColorHex("muted"),
-				};
-				return { mermaidColorMode, mermaidTheme };
-			})()
+			// Diagram geometry is content, so keep every structural stroke on the
+			// theme's readable muted foreground instead of subtle UI chrome borders.
+			const mermaidColorMode =
+				theme.getColorMode() === "truecolor" ? ("truecolor" as const) : ("ansi256" as const);
+			const mermaidTheme = {
+				fg: theme.getColorHex("text"),
+				border: theme.getColorHex("muted"),
+				line: theme.getColorHex("muted"),
+				arrow: theme.getColorHex("accent"),
+				corner: theme.getColorHex("muted"),
+				junction: theme.getColorHex("muted"),
+			};
+			return { mermaidColorMode, mermaidTheme };
+		})()
 		: undefined;
 	const markdownTheme: MarkdownTheme = {
 		heading: (text: string) => theme.fg("mdHeading", text),
@@ -280,11 +360,11 @@ export function getMarkdownTheme(): MarkdownTheme {
 		symbols: getSymbolTheme(),
 		resolveMermaidAscii: mermaid
 			? (source, maxWidth) =>
-					resolveMermaidAscii(source, {
-						maxWidth,
-						theme: mermaid.mermaidTheme,
-						colorMode: mermaid.mermaidColorMode,
-					})
+				resolveMermaidAscii(source, {
+					maxWidth,
+					theme: mermaid.mermaidTheme,
+					colorMode: mermaid.mermaidColorMode,
+				})
 			: undefined,
 		highlightCode: (code: string, lang?: string): string[] => {
 			const validLang = lang && nativeSupportsLanguage(lang) ? lang : undefined;
@@ -300,6 +380,7 @@ export function getMarkdownTheme(): MarkdownTheme {
 	};
 	cachedMarkdownTheme = markdownTheme;
 	cachedMarkdownThemeRef = theme;
+	registerCacheableMarkdownTheme(markdownTheme);
 	return markdownTheme;
 }
 

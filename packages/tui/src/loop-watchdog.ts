@@ -1,5 +1,5 @@
 import { performance } from "node:perf_hooks";
-import { logger, takeRecentLoopPhase } from "@oh-my-pi/pi-utils";
+import { logger, resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils";
 import { LoopProfiler } from "./loop-profile";
 
 export interface LoopWatchdogOptions {
@@ -36,13 +36,14 @@ interface LoopWatchdogTimer {
 const CPU_BUSY_RATIO = 0.01;
 
 /**
- * Always-on event-loop lag probe. Each tick is scheduled `intervalMs` ahead of
- * a recorded deadline; a tick that fires `thresholdMs` past its deadline means
- * the loop was blocked that long. The overshoot is logged once on the rising
- * edge (one block ⇒ one line, deduped via `#wasBlocked`), tagged with the phase
- * active during the elapsed interval via {@link takeRecentLoopPhase} — which
- * survives the synchronous push/pop the instrumented hot paths do before this
- * delayed tick can run — so the stall names its cause instead of "unknown".
+ * Always-on event-loop lag probe. Each tick is scheduled `intervalMs` ahead,
+ * with that target recorded as its deadline; a tick that fires `thresholdMs`
+ * past its deadline means the loop was blocked that long. The overshoot is
+ * logged once on the rising edge (one block ⇒ one line, deduped via
+ * `#wasBlocked`). Attribution via
+ * {@link takeLoopPhaseAttribution} totals each innermost phase only after the tick's
+ * deadline. A phase is named, with `phaseMs`, only when its total outweighs all
+ * unlabeled time in that late window; otherwise the block remains "unknown".
  *
  * The handle is `unref`'d so the probe never keeps the process alive, and stop()
  * cancels the armed timer when the handle exposes `cancel` (the default
@@ -104,12 +105,15 @@ export class LoopWatchdog {
 	}
 
 	stop(): void {
+		// Attribution state is process-global: a watchdog that is not running must not disarm another's window.
+		if (!this.#running) return;
 		this.#running = false;
 		this.#wasBlocked = false;
 		this.#stallEndedAt = Number.NEGATIVE_INFINITY;
 		this.#generation++;
 		this.#handle?.cancel?.();
 		this.#handle = undefined;
+		resetLoopPhaseWindow();
 	}
 
 	/**
@@ -133,9 +137,20 @@ export class LoopWatchdog {
 		return blockedMs > this.#sleepMs && cpuMs < blockedMs * CPU_BUSY_RATIO;
 	}
 
+	/** Profiler evidence for a block; empty unless OMP_LOOP_PROFILE armed the sampler, so the default log record is unchanged. */
+	#profileFields(blockedMs: number, phase: string | undefined): Record<string, unknown> {
+		if (!this.#profiler.enabled) return {};
+		return {
+			rssMb: Math.round(process.memoryUsage.rss() / 1_048_576),
+			heapMb: Math.round(process.memoryUsage().heapUsed / 1_048_576),
+			profile: this.#profiler.report(Math.round(blockedMs), phase ?? "unknown"),
+		};
+	}
+
 	#armTick(): void {
 		const generation = this.#generation;
 		this.#expected = this.#now() + this.#intervalMs;
+		resetLoopPhaseWindow(this.#expected, this.#now);
 		this.#expectedCpu = this.#cpuNow();
 		this.#handle = this.#schedule(() => this.#tick(generation), this.#intervalMs);
 		this.#handle.unref?.();
@@ -146,10 +161,9 @@ export class LoopWatchdog {
 		const now = this.#now();
 		const blockedMs = now - this.#expected;
 		const cpuMs = this.#cpuNow() - this.#expectedCpu;
-		// Consume the recent phase every tick (block or not) so attribution is
-		// scoped to the just-elapsed interval and never carries a stale phase
-		// forward to a later, phase-less block.
-		const phase = takeRecentLoopPhase();
+		// Consume every valid tick, even without a warning, so no phase carries
+		// forward into a later, phase-less block.
+		const phase = takeLoopPhaseAttribution(now);
 		if (blockedMs > this.#thresholdMs) {
 			if (this.#isSuspension(blockedMs, cpuMs)) {
 				this.#wasBlocked = false;
@@ -160,10 +174,9 @@ export class LoopWatchdog {
 					logger.warn("ui.loop-blocked", {
 						blockedMs: Math.round(blockedMs),
 						cpuMs: Math.round(cpuMs),
-						phase: phase ?? "unknown",
-						rssMb: Math.round(process.memoryUsage.rss() / 1_048_576),
-						heapMb: Math.round(process.memoryUsage().heapUsed / 1_048_576),
-						profile: this.#profiler.report(Math.round(blockedMs), phase ?? "unknown"),
+						phase: phase?.label ?? "unknown",
+						...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
+						...this.#profileFields(blockedMs, phase?.label),
 					});
 				}
 			}

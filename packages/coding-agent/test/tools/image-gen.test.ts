@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -9,7 +11,7 @@ import {
 	imageGenTool,
 	setImageProviderOrder,
 } from "@oh-my-pi/pi-coding-agent/tools/image-gen";
-import { removeWithRetries, USER_AGENT } from "@oh-my-pi/pi-utils";
+import { hasFsCode, removeWithRetries, TempDir, USER_AGENT } from "@oh-my-pi/pi-utils";
 
 const originalOpenRouterKey = Bun.env.OPENROUTER_API_KEY;
 const generatedImagePaths: string[] = [];
@@ -1203,4 +1205,51 @@ describe("imageGenTool", () => {
 			else Bun.env.GOOGLE_API_KEY = originalGoogleKey;
 		}
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"rejects a FIFO image input before reading or contacting the provider",
+		async () => {
+			// Real kernel FIFO I/O cannot be driven by fake timers; the race proves the async read rejects boundedly.
+			const tempDir = TempDir.createSync("@omp-image-special-file-");
+			const fifo = path.join(tempDir.path(), "input.png");
+			try {
+				expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+				setImageProviderOrder(["xai"]);
+				let fetchCalls = 0;
+				const ctx = createAntigravityXAIContext(undefined, (async () => {
+					fetchCalls++;
+					return new Response(null, { status: 500 });
+				}) as unknown as typeof fetch);
+				const loading = imageGenTool
+					.execute(
+						"special-image",
+						{ subject: "edit", input: [{ path: fifo }] },
+						undefined,
+						ctx,
+					)
+					.then(
+						() => undefined,
+						error => error,
+					);
+				const outcome = await Promise.race([loading, Bun.sleep(1_500).then(() => "HUNG" as const)]);
+				if (outcome === "HUNG") {
+					try {
+						fs.closeSync(fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK));
+					} catch (error) {
+						if (!hasFsCode(error, "ENXIO")) throw error;
+					}
+					await loading;
+				}
+				expect(outcome).toBeInstanceOf(Error);
+				expect(outcome).toHaveProperty(
+					"message",
+					`Cannot load '${fifo}': it is a FIFO, not a regular file or directory.`,
+				);
+				expect(fetchCalls).toBe(0);
+			} finally {
+				tempDir.removeSync();
+			}
+		},
+		10_000,
+	);
 });

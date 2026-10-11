@@ -46,7 +46,7 @@ function createInitialRenderHarness(): { ctx: InteractiveModeContext; helpers: U
 			renderChunk?: () => void,
 		) => helpers.renderSessionContextIncrementally(context, options, renderChunk),
 		addMessageToChat: (message: AgentMessage) => helpers.addMessageToChat(message),
-		settings: { get: () => false },
+		settings: Settings.isolated(),
 		session: {
 			retryAttempt: 0,
 			getToolByName: () => undefined,

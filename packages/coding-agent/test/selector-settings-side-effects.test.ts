@@ -140,7 +140,10 @@ it("organization privacy seeds both reports and temporary overlay controls witho
 		expect(Bun.stripANSI(mounted!.render(120).join("\n"))).not.toContain("Team");
 		mounted!.handleInput("o");
 		expect(Bun.stripANSI(mounted!.render(120).join("\n"))).toContain("Team");
-		mounted!.dispose();
+		// Close it the way a user does: a repeat `/usage` focuses a dashboard that is still registered
+		// instead of stacking a copy, so a bare dispose() would leave the revealed one in place.
+		mounted!.handleInput("\x1b"); // detail -> overview
+		mounted!.handleInput("\x1b"); // overview -> closed
 		selector.showUsageDashboard(reports);
 		expect(Bun.stripANSI(mounted!.render(120).join("\n"))).not.toContain("Team");
 		const text = await buildUsageReportText({
