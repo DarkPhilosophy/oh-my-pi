@@ -690,7 +690,8 @@ describe("terminal launch dispatcher", () => {
 	});
 
 	it("preserves Unicode argv and pane cwd through ASCII-only CMUX shell input", async () => {
-		const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "cmux-unicode-"));
+		// Canonical path: the child reports its realpath cwd (macOS tmpdir sits behind /var -> /private/var).
+		const tempRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "cmux-unicode-")));
 		try {
 			const cwd = path.join(tempRoot, "cwd-Ω-雪");
 			const recorder = path.join(tempRoot, "recorder.js");

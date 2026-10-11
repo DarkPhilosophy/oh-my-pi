@@ -52,6 +52,7 @@ import type {
 } from "./tab-protocol";
 
 import { cfgBrowserScreenshotDir } from "./settings";
+import { listTernBlocks, noTernBlockError, pickTernBlock } from "./tern/blocks";
 import { TernTab } from "./tern/tern-tab";
 
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
@@ -136,7 +137,7 @@ export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
 	cmuxAttachedSurface?: string;
 }
 
-/** A tab shown as a Tern browser picture-in-picture over omp's pane. */
+/** A tab shown as a Tern browser picture-in-picture over omp's pane, or the user's browser block it adopted. */
 export interface TernTabSession extends TabSessionBase<TernBrowserHandle> {
 	backend: "tern";
 	/** The PiP's driver. */
@@ -268,11 +269,11 @@ const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 const RECYCLE_RESETS =
 	"Tab state set since it was opened was reset (tab.route routes, emulation and user agent, init scripts, element ids, the request log, HAR recording, run globals), any open dialog was dismissed, and any page still loading was stopped.";
 const RENDERER_RELOADED_NOTE = `This tab's renderer had crashed, so the tab was reattached to a new worker and its page reloaded. ${RECYCLE_RESETS}`;
-class RecoverableWorkerError extends ToolError { }
+class RecoverableWorkerError extends ToolError {}
 /** A worker `tab.goto` outlasted its budget; the page stays on what loaded. */
-class NavigationTimeoutError extends ToolError { }
+class NavigationTimeoutError extends ToolError {}
 /** The page's renderer crashed; the run that reports it recycles the worker. */
-class RendererCrashedError extends ToolError { }
+class RendererCrashedError extends ToolError {}
 const REPORTED_INIT_FAILURE = Symbol("reported-init-failure");
 
 type ReportedInitFailure = Error & { [REPORTED_INIT_FAILURE]?: true };
@@ -422,8 +423,8 @@ async function acquireTabImpl(
 				tempHold = true;
 				await releaseExistingTab();
 			} else if (
-				opts.allowedDomains !== undefined &&
-				!sameAllowedDomains(opts.allowedDomains, existing.allowedDomains)
+				(opts.allowedDomains !== undefined && !sameAllowedDomains(opts.allowedDomains, existing.allowedDomains)) ||
+				(existing.backend === "tern" && opts.target !== undefined && !(await adoptsSameBlock(existing, opts)))
 			) {
 				holdBrowser(browser);
 				tempHold = true;
@@ -490,6 +491,8 @@ async function acquireTabImpl(
 					note = RENDERER_RELOADED_NOTE;
 					await reuse();
 				}
+				// The user may have navigated or switched tabs since: the result reports where the page is now.
+				if (existing.backend === "tern") existing.info = await existing.ternTab.readyInfo();
 				return { tab: tabs.get(name)!, created: false, note };
 			}
 		} else {
@@ -812,20 +815,39 @@ async function acquireCmuxTab(
 }
 
 /**
+ * Browser blocks the live Tern tabs of this process (other than `except`)
+ * drive, by block id to tab name: never adopted twice.
+ */
+export function ternBlocksTaken(except?: string): Map<number, string> {
+	const taken = new Map<number, string>();
+	for (const [name, tab] of tabs) {
+		if (name !== except && tab.backend === "tern" && tab.state === "alive") taken.set(tab.ternTab.block, name);
+	}
+	return taken;
+}
+
+/** Whether reopening Tern tab `existing` with `opts.target` names the block it already adopted. */
+async function adoptsSameBlock(existing: TernTabSession, opts: AcquireTabOptions): Promise<boolean> {
+	if (!existing.ternTab.adopted || opts.target === undefined) return false;
+	const blocks = await listTernBlocks(existing.browser.tern, { timeoutMs: opts.timeoutMs, signal: opts.signal });
+	return pickTernBlock(blocks, opts.target, ternBlocksTaken(existing.name))?.block === existing.ternTab.block;
+}
+
+/**
  * Open a Tern browser PiP over omp's pane and configure it before its first
- * real navigation. The PiP closes again when anything after `open` fails.
+ * real navigation (the PiP closes again when anything after `open` fails), or
+ * with `opts.target` adopt the user's browser block it names (released again,
+ * never closed, on failure and on close).
  */
 async function acquireTernTab(
 	name: string,
 	browser: TernBrowserHandle,
 	opts: AcquireTabOptions,
 ): Promise<AcquireTabResult> {
-	const ternTab = await TernTab.open(browser.tern, {
+	const settings = {
 		name,
-		pane: browser.kind.pane,
 		url: opts.url,
 		waitUntil: opts.waitUntil,
-		viewport: opts.viewport ?? DEFAULT_VIEWPORT,
 		timeoutMs: opts.timeoutMs,
 		signal: opts.signal,
 		dialogs: opts.dialogs,
@@ -834,7 +856,21 @@ async function acquireTernTab(
 		downloadsPath: opts.downloadsPath,
 		userAgent: opts.userAgent,
 		ignoreHttpsErrors: opts.ignoreHttpsErrors,
-	});
+	};
+	let ternTab: TernTab;
+	if (opts.target === undefined) {
+		ternTab = await TernTab.open(browser.tern, {
+			...settings,
+			pane: browser.kind.pane,
+			viewport: opts.viewport ?? DEFAULT_VIEWPORT,
+		});
+	} else {
+		const blocks = await listTernBlocks(browser.tern, { timeoutMs: opts.timeoutMs, signal: opts.signal });
+		const taken = ternBlocksTaken(name);
+		const block = pickTernBlock(blocks, opts.target, taken);
+		if (!block) throw noTernBlockError(blocks, opts.target, taken);
+		ternTab = await TernTab.adopt(browser.tern, { ...settings, block, viewport: opts.viewport });
+	}
 	try {
 		const info = await ternTab.readyInfo();
 		if (opts.signal?.aborted) throw new ToolAbortError("Browser tab open aborted");
@@ -1304,7 +1340,7 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		if (tab.backend === "worker") {
 			try {
 				tab.worker.send({ type: "abort", id, expectedCleanup: true });
-			} catch { }
+			} catch {}
 		}
 		for (const ctrl of pending.toolCalls.values()) ctrl.abort(closeError);
 		// Propagate the closure into the in-process run's abort signal so
@@ -1533,9 +1569,9 @@ function isSettleManaged(tab: TabSession): boolean {
 }
 
 /**
- * Tabs idle-close may reap: every settle-managed tab plus OMP-opened Tern
- * PiPs (live, visible pages never frozen, but closed when abandoned like
- * headless tabs), minus `persist` opt-outs.
+ * Tabs idle-close may reap: every settle-managed tab plus Tern tabs (live,
+ * visible pages never frozen, but closed when abandoned like headless tabs;
+ * an adopted user block is released, not closed), minus `persist` opt-outs.
  */
 function isIdleManaged(tab: TabSession): boolean {
 	return isSettleManaged(tab) || (tab.backend === "tern" && tab.state === "alive" && !tab.persist);
@@ -2542,7 +2578,7 @@ async function spawnInlineWorker(browser?: BrowserHandle): Promise<WorkerHandle>
 			workerListeners.add(typed);
 			return () => workerListeners.delete(typed);
 		},
-		close: () => { },
+		close: () => {},
 	};
 	const { WorkerCore } = await import("./tab-worker");
 	new WorkerCore(workerTransport, false);
@@ -2565,7 +2601,7 @@ async function spawnInlineWorker(browser?: BrowserHandle): Promise<WorkerHandle>
 			hostListeners.add(handler);
 			return () => hostListeners.delete(handler);
 		},
-		onError: () => () => { },
+		onError: () => () => {},
 		terminate() {
 			if (termination) return termination;
 			termination = raceWithTimeout(closed.promise, GRACE_MS, "Timed out closing inline browser worker").catch(

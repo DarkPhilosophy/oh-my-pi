@@ -61,7 +61,7 @@ const runtimeFactory = async ({
 				slowModeEnabled: false,
 				messageCount: commands.length,
 				queuedMessageCount: 0,
-				queuedMessages: { steering: [], followUp: [] },
+				queuedMessages: { steering: [], followUp: [], liveSteered: 0 },
 				hasPendingAsyncWork: false,
 				isSettled: true,
 				goal: null,

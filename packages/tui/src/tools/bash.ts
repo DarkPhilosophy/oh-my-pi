@@ -475,16 +475,16 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					config.showHeader === false
 						? undefined
 						: renderStatusLine(
-							{
-								// Static glyph: the head row is the card's first native-history
-								// row, and a spinner there would change it every frame.
-								// Same glyph as a successful result, so the head row is
-								// byte-identical before and after execution.
-								iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-								title: config.resolveTitle(args, options),
-							},
-							uiTheme,
-						);
+								{
+									// Static glyph: the head row is the card's first native-history
+									// row, and a spinner there would change it every frame.
+									// Same glyph as a successful result, so the head row is
+									// byte-identical before and after execution.
+									iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+									title: config.resolveTitle(args, options),
+								},
+								uiTheme,
+							);
 				return {
 					header,
 					phase: options.spinnerFrame !== undefined ? "running" : "pending",
@@ -532,12 +532,12 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				config.showHeader === false
 					? undefined
 					: renderStatusLine(
-						{
-							iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-							title: config.resolveTitle(args, options),
-						},
-						uiTheme,
-					);
+							{
+								iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+								title: config.resolveTitle(args, options),
+							},
+							uiTheme,
+						);
 			// Per-instance cache for the expensive inner lines computation. Mirrors
 			// the eval-renderer pattern (`eval-render.ts:709-752`): without this,
 			// every TUI repaint (one per keystroke when a long transcript is on
@@ -619,9 +619,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const timeoutLine =
 						statsParts.length > 0
 							? uiTheme.fg(
-								"dim",
-								`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
-							)
+									"dim",
+									`${uiTheme.format.bracketLeft}${statsParts.join(" | ")}${uiTheme.format.bracketRight}`,
+								)
 							: undefined;
 					let warningLine: string | undefined;
 					if (details?.meta?.artifactError || (details?.meta?.truncation && !showingFullOutput)) {
@@ -715,7 +715,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						[
 							runInput(command, SHELL_INPUT),
 							started &&
-							runFoot({ state: options.cancelled ? "cancelled" : "running", elapsedMs: options.elapsedMs }),
+								runFoot({ state: options.cancelled ? "cancelled" : "running", elapsedMs: options.elapsedMs }),
 						],
 						{ key: "run" },
 					),

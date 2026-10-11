@@ -4,6 +4,11 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import {
+	type GeneratedImage,
+	generateImage,
+	type ImageGenerationRequest,
+	type ImageGenerationResult,
+	isImageGenerationApi,
 	type ApiKey,
 	type FetchImpl,
 	getEnvApiKey,
@@ -25,6 +30,7 @@ import {
 import { getAntigravityUserAgent } from "@oh-my-pi/pi-catalog/wire/gemini-headers";
 import {
 	$env,
+	logger,
 	isEnoent,
 	parseImageMetadata,
 	prompt,
@@ -34,12 +40,15 @@ import {
 	USER_AGENT,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
+import { type RoleChainCandidate, resolveModelRoleValue, resolveRoleChain } from "../config/model-resolver";
+import { roleCandidatePool } from "../config/model-roles";
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import { settings } from "../config/settings";
-import type { CustomTool } from "../extensibility/custom-tools/types";
+import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
 import { resolveXAIHttpCredentials } from "../lib/xai-http";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
 import { cfgProvidersAntigravityEndpoint } from "../session/settings";
+import { resolveConfiguredModelTarget } from "../session/role-models";
 import { AUTO_IMAGE_PROVIDER_ORDER, type ImageProvider, isImageProviderId } from "./image-providers";
 import { resolveReadPath, specialFileKind } from "./path-utils";
 
@@ -113,6 +122,7 @@ export const imageGenSchema = type({
 	"aspect_ratio?": aspectRatioSchema,
 	"image_size?": imageSizeSchema,
 	"input?": inputImageSchema.array().describe("input images"),
+	"model?": type("string").describe("image model selector for this request"),
 	"provider?": imageProviderSchema,
 });
 export type ImageGenParams = typeof imageGenSchema.infer;
@@ -360,15 +370,15 @@ interface AntigravityResponseChunk {
 }
 
 interface ImageGenToolDetails {
-	provider: ImageProvider;
+	provider: string;
 	model: string;
 	imageCount: number;
 	imagePaths: string[];
-	images: InlineImageData[];
+	images: GeneratedImage[];
 	responseText?: string;
 	promptFeedback?: GeminiPromptFeedback;
 	revisedPrompt?: string;
-	usage?: ImageUsageMetadata;
+	usage?: ImageUsageMetadata | ImageGenerationResult["usage"];
 }
 
 interface ImageInput {
@@ -671,11 +681,11 @@ async function resolveAntigravityImageTarget(
 	});
 	const target: AntigravityImageTarget = advertised
 		? {
-			model: advertised.id,
-			// Keep the discovered endpoint first but retain the other configured
-			// fallbacks so generation retries (429/5xx/network) still fail over.
-			endpoints: [advertised.endpoint, ...endpoints.filter(endpoint => endpoint !== advertised.endpoint)],
-		}
+				model: advertised.id,
+				// Keep the discovered endpoint first but retain the other configured
+				// fallbacks so generation retries (429/5xx/network) still fail over.
+				endpoints: [advertised.endpoint, ...endpoints.filter(endpoint => endpoint !== advertised.endpoint)],
+			}
 		: { model: DEFAULT_ANTIGRAVITY_MODEL, endpoints };
 	cache.set(bearer, target);
 	return target;
@@ -1014,9 +1024,9 @@ function buildOpenAIHostedImageRequest(
 		store: false,
 		...(stream
 			? {
-				instructions:
-					"You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.",
-			}
+					instructions:
+						"You are an AI image generator. Generate images based on user descriptions. Focus on creating high-quality, visually appealing images that match the user's request.",
+				}
 			: {}),
 		...(stream ? { stream: true } : {}),
 	};
@@ -1304,6 +1314,197 @@ async function parseAntigravitySseForImage(response: Response, signal?: AbortSig
 
 	return { images, text: textParts, usage };
 }
+function resolveHostedImageCarrier(
+	modelRegistry: ModelRegistry,
+	selectedModel: Model,
+	activeModel: Model | undefined,
+): Model | undefined {
+	if (activeModel?.provider === selectedModel.provider && activeModel.hostedImage) return activeModel;
+	let carrier: Model | undefined;
+	for (const model of modelRegistry.getAvailable()) {
+		if (model.provider !== selectedModel.provider || !model.hostedImage) continue;
+		if (!carrier || model.cost.input < carrier.cost.input) carrier = model;
+	}
+	return carrier;
+}
+
+/**
+ * Default image candidates: explicit role entries first, then the session's
+ * own provider (its `imageModel` swap, then the session model itself when it
+ * carries the hosted image tool), then the remaining built-in chain.
+ */
+function defaultImageCandidates(chain: RoleChainCandidate[], sessionModel: Model | undefined, pool: Model[]): Model[] {
+	const sessionCandidates = sessionModel
+		? [
+				resolveConfiguredModelTarget(sessionModel.imageModel, sessionModel, pool),
+				sessionModel.hostedImage ? sessionModel : undefined,
+			]
+		: [];
+	const ordered = [
+		...chain.filter(candidate => candidate.explicit).map(candidate => candidate.model),
+		...sessionCandidates,
+		...chain.filter(candidate => !candidate.explicit).map(candidate => candidate.model),
+	];
+	const seen = new Set<string>();
+	return ordered.filter((model): model is Model => {
+		if (!model) return false;
+		const key = `${model.provider}/${model.id}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+async function buildToolResult(
+	model: Model,
+	result: ImageGenerationResult,
+): Promise<AgentToolResult<ImageGenToolDetails, ImageGenParams>> {
+	const imagePaths = await saveImagesToTemp(result.images);
+	// Hosted backends may run a different model than the selected catalog entry; report what actually ran.
+	const ranModel = result.model ?? model.id;
+	if (imagePaths.length === 0) {
+		return {
+			content: [{ type: "text", text: `No image data returned.${result.text ? `\n\n${result.text}` : ""}` }],
+			details: {
+				provider: model.provider,
+				model: ranModel,
+				imageCount: 0,
+				imagePaths: [],
+				images: [],
+				responseText: result.text,
+				usage: result.usage,
+			},
+		};
+	}
+	const modelLine =
+		ranModel === model.id ? `Model: ${ranModel}` : `Model: ${ranModel} (catalog entry ${model.provider}/${model.id})`;
+	const lines = [`Provider: ${model.provider}`, modelLine, `Generated ${imagePaths.length} image(s):`];
+	for (const [index, imagePath] of imagePaths.entries()) {
+		const { size, quality } = result.images[index] ?? {};
+		const meta = [size, quality && `quality ${quality}`].filter(Boolean).join(", ");
+		lines.push(meta ? `  ${imagePath} (${meta})` : `  ${imagePath}`);
+	}
+	if (result.text) lines.push("", result.text.trim());
+	return {
+		content: [{ type: "text", text: lines.join("\n") }],
+		details: {
+			provider: model.provider,
+			model: ranModel,
+			imageCount: result.images.length,
+			imagePaths,
+			images: result.images,
+			responseText: result.text,
+			usage: result.usage,
+		},
+	};
+}
+
+async function executeCatalogImageGeneration(
+	params: ImageGenParams,
+	ctx: CustomToolContext,
+	signal?: AbortSignal,
+): Promise<AgentToolResult<ImageGenToolDetails, ImageGenParams>> {
+	return untilAborted(signal, async () => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const requestSignal = ptree.combineSignals(signal, IMAGE_TIMEOUT);
+		const effectiveSettings = ctx.settings ?? settings;
+		const pool = roleCandidatePool("image", effectiveSettings, ctx.modelRegistry);
+		let candidates: Model[];
+		if (params.model) {
+			const selected = resolveModelRoleValue(params.model, pool, { settings: effectiveSettings }).model;
+			if (!selected) throw new Error(`Image model selector did not match an available image model: ${params.model}`);
+			candidates = [selected];
+		} else {
+			candidates = defaultImageCandidates(resolveRoleChain("image", effectiveSettings, pool), ctx.model, pool);
+		}
+
+		const failures: ProviderHttpError[] = [];
+		const skipped: string[] = [];
+		let inputImages: ImageGenerationRequest["inputImages"];
+		for (const model of candidates) {
+			if (!isImageGenerationApi(model.api)) {
+				logger.warn("Skipping unsupported image model API", {
+					provider: model.provider,
+					model: model.id,
+					api: model.api,
+				});
+				skipped.push(`${model.provider}/${model.id} (unsupported ${model.api})`);
+				continue;
+			}
+
+			const initialKey = await ctx.modelRegistry.getApiKey(model, sessionId, { signal: requestSignal });
+			if (!isAuthenticated(initialKey)) {
+				skipped.push(`${model.provider}/${model.id} (credentials unavailable)`);
+				continue;
+			}
+			if (model.api === "google-gemini-cli" && !parseAntigravityCredentials(initialKey)) {
+				skipped.push(`${model.provider}/${model.id} (invalid credentials)`);
+				continue;
+			}
+
+			let carrier: Model | undefined;
+			let apiKey = ctx.modelRegistry.resolver(model, sessionId);
+			if (model.api === "openai-responses" || model.api === "openai-codex-responses") {
+				carrier = model.hostedImage ? model : resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
+				if (!carrier) {
+					skipped.push(`${model.provider}/${model.id} (hosted chat carrier unavailable)`);
+					continue;
+				}
+				const carrierKey = await ctx.modelRegistry.getApiKey(carrier, sessionId, { signal: requestSignal });
+				if (!isAuthenticated(carrierKey)) {
+					skipped.push(`${model.provider}/${model.id} (carrier credentials unavailable)`);
+					continue;
+				}
+				apiKey = ctx.modelRegistry.resolver(carrier, sessionId);
+			}
+
+			if (!inputImages) {
+				inputImages = [];
+				for (const input of params.input ?? []) {
+					inputImages.push(await resolveInputImage(input, ctx.sessionManager.getCwd()));
+				}
+			}
+			const request: ImageGenerationRequest = {
+				prompt: assemblePrompt(params),
+				inputImages,
+				aspectRatio: params.aspect_ratio,
+				imageSize: params.image_size,
+				count: 1,
+			};
+			const resolvedModel = {
+				...model,
+				resolveHeaders: (headerSignal?: AbortSignal) => ctx.modelRegistry.resolveModelHeaders(model, headerSignal),
+			};
+			const resolvedCarrier = carrier
+				? {
+						...carrier,
+						resolveHeaders: (headerSignal?: AbortSignal) =>
+							ctx.modelRegistry.resolveModelHeaders(carrier, headerSignal),
+					}
+				: undefined;
+			try {
+				const result = await generateImage(resolvedModel, request, {
+					apiKey,
+					fetch: ctx.fetch ?? fetch,
+					signal: requestSignal,
+					carrier: resolvedCarrier,
+					sessionId,
+				});
+				return buildToolResult(model, result);
+			} catch (error) {
+				if (!(error instanceof ProviderHttpError) || requestSignal?.aborted) throw error;
+				failures.push(error);
+			}
+		}
+
+		const attempted = candidates.map(model => `${model.provider}/${model.id}`).join(", ");
+		const suffix = skipped.length > 0 ? ` Skipped: ${skipped.join(", ")}.` : "";
+		throw new AggregateError(
+			failures,
+			`Image generation exhausted the resolved image chain${attempted ? `: ${attempted}` : "."}${suffix}`,
+		);
+	});
+}
 
 export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails> = {
 	name: "generate_image",
@@ -1313,6 +1514,14 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 	description: prompt.render(imageGenDescription),
 	parameters: imageGenSchema,
 	async execute(_toolCallId, params, _onUpdate, ctx, signal) {
+		if (
+			params.model ||
+			(params.provider === undefined &&
+				configuredImageProviderOrder.length === 0 &&
+				typeof ctx.modelRegistry.getAvailable === "function")
+		) {
+			return executeCatalogImageGeneration(params, ctx, signal);
+		}
 		return untilAborted(signal, async () => {
 			const sessionId = ctx.sessionManager.getSessionId();
 			const providerOrder = imageProviderOrder(ctx.model, params.provider);

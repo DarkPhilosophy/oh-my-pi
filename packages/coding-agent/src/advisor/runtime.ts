@@ -489,7 +489,7 @@ export class AdvisorRuntime {
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
-	) { }
+	) {}
 
 	get backlog(): number {
 		return this.#backlog;
@@ -627,16 +627,16 @@ export class AdvisorRuntime {
 			parts.length === 1
 				? last
 				: {
-					text: parts.map(part => part.text).join("\n\n"),
-					rawMessages: parts.flatMap(part => part.rawMessages),
-					// The merged review covers everything from the first held part, so the cursor it
-					// started at is the earliest one.
-					cursorBefore: parts[0]!.cursorBefore,
-					// Revisions only grow; the oldest part decides whether the drain re-renders.
-					renderRevision: Math.min(...parts.map(part => part.renderRevision)),
-					turns: 1,
-					wip: last.wip,
-				},
+						text: parts.map(part => part.text).join("\n\n"),
+						rawMessages: parts.flatMap(part => part.rawMessages),
+						// The merged review covers everything from the first held part, so the cursor it
+						// started at is the earliest one.
+						cursorBefore: parts[0]!.cursorBefore,
+						// Revisions only grow; the oldest part decides whether the drain re-renders.
+						renderRevision: Math.min(...parts.map(part => part.renderRevision)),
+						turns: 1,
+						wip: last.wip,
+					},
 		);
 		this.#backlog++;
 		this.#notifyWaiters();
@@ -715,7 +715,7 @@ export class AdvisorRuntime {
 		this.#wakeAllWaiters();
 		try {
 			this.agent.abort("advisor disposed");
-		} catch { }
+		} catch {}
 	}
 
 	/**
@@ -752,10 +752,10 @@ export class AdvisorRuntime {
 		this.#clearSeenContext();
 		try {
 			this.agent.reset();
-		} catch { }
+		} catch {}
 		try {
 			this.agent.abort("advisor reset");
-		} catch { }
+		} catch {}
 	}
 
 	#resetAdvisorContext(clearBacklog: boolean, wakeWaiters: boolean, reason?: string): void {
@@ -808,12 +808,12 @@ export class AdvisorRuntime {
 			this.#iterationAbort?.abort("advisor session transition");
 			try {
 				this.agent.abort("advisor session transition");
-			} catch { }
+			} catch {}
 		}
 		return (
 			this.#promptInFlight?.then(
-				() => { },
-				() => { },
+				() => {},
+				() => {},
 			) ?? Promise.resolve()
 		);
 	}
@@ -1404,7 +1404,7 @@ export class AdvisorRuntime {
 						if (JSON.stringify(oldMsg[key]) !== JSON.stringify(newMsg[key])) differingFields.push(key);
 					}
 					logger.debug("advisor delivered prefix changed", { index: i, role: newMsg.role, differingFields });
-				} catch { }
+				} catch {}
 				break;
 			}
 			delivered.message = current;
@@ -2421,9 +2421,9 @@ function scrubAdvisorHistory(
 		const message = messages[index]!;
 		const replay =
 			message.role === "user" ||
-				message.role === "developer" ||
-				message.role === "assistant" ||
-				message.role === "compactionSummary"
+			message.role === "developer" ||
+			message.role === "assistant" ||
+			message.role === "compactionSummary"
 				? obfuscateNativeReplay(obfuscator, message, sharedRegexSecretValues)
 				: message;
 		const next = obfuscateAdvisorMessage(obfuscator, replay, sharedRegexSecretValues);

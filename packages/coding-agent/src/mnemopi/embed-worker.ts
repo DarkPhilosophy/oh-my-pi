@@ -132,7 +132,10 @@ function confineToHalfTheCpus(): void {
 	const taskset = $which("taskset");
 	if (!taskset) return;
 	const allowed = Math.max(1, Math.floor(cpus / 2));
-	Bun.spawnSync([taskset, "-a", "-cp", `0-${allowed - 1}`, String(process.pid)], { stdout: "ignore", stderr: "ignore" });
+	Bun.spawnSync([taskset, "-a", "-cp", `0-${allowed - 1}`, String(process.pid)], {
+		stdout: "ignore",
+		stderr: "ignore",
+	});
 }
 
 /**

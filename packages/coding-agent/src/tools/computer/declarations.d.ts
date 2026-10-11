@@ -143,6 +143,8 @@ interface ComputerScreenshotResult {
 	coordinateHeight: number;
 	/** Captured rectangle in the full screenshot coordinate frame; absent for full screenshots. */
 	region?: CaptureRegion;
+	/** macOS lock screen was up: a display capture shows it; a window capture shows that window's last frame. */
+	screenLocked?: true;
 }
 
 /** Native desktop backend and permission state. */
@@ -169,6 +171,10 @@ interface ComputerCapabilities {
 	menus: boolean;
 	heldInput: boolean;
 	spaces: boolean;
+	/** macOS lock screen is up: captures show it, and keystrokes, takeover and AX actions fail until someone unlocks. */
+	screenLocked: boolean;
+	/** macOS session display is asleep (the display id the session was opened on, else every display): nothing can be captured or clicked there until it wakes. */
+	displayAsleep: boolean;
 }
 
 /** Live accessibility element resolved from a snapshot ref; expired refs throw `StaleRef`. */
@@ -193,6 +199,7 @@ interface ComputerElement {
 	press(): Promise<void>;
 	/** Click the element's center with native input; `count: 2` double-clicks. */
 	click(options?: ComputerClickOptions): Promise<void>;
+	doubleClick(options?: Omit<ComputerClickOptions, "count">): Promise<void>;
 	focus(): Promise<void>;
 	parent(): Promise<ComputerElement | null>;
 	children(): Promise<ComputerElement[]>;
@@ -212,6 +219,7 @@ interface ComputerElementRef
 			| "perform"
 			| "press"
 			| "click"
+			| "doubleClick"
 			| "focus"
 			| "parent"
 			| "children"
@@ -258,11 +266,12 @@ interface ComputerWindow extends ComputerInputTarget {
 	bringToCurrentSpace(): Promise<void>;
 	/** Emit one full screenshot and AX snapshot without exposing a partial failed observation. */
 	observe(options?: ComputerScreenshotOptions & ComputerAxOptions): Promise<ComputerObservationResult>;
+	/** Menu paths take one title, an array of titles, or the titles as separate arguments: `select("File", "Export…")`. */
 	readonly menu: {
 		/** Inspect a menu path without activating the application. */
-		items(path?: string | string[]): Promise<ComputerMenuItem[]>;
+		items(...path: string[] | [path?: string | string[]]): Promise<ComputerMenuItem[]>;
 		/** Select one unambiguous enabled command using the window's native menu context. */
-		select(path: string[]): Promise<void>;
+		select(...path: [string, ...string[]] | [string[]]): Promise<void>;
 	};
 	/** Formatted accessibility tree as one string, one node per line with `[ref=eN]` tags. */
 	ax(options?: ComputerAxOptions): Promise<string>;

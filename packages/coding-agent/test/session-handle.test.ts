@@ -640,6 +640,9 @@ describe("LocalSessionHandle", () => {
 			hasPendingAsyncWork: () => false,
 			model,
 			thinkingLevel: "medium",
+			getGoalModeState: () => null,
+			isSlowModeSupported: () => false,
+			isSlowModeEnabled: () => false,
 			isFastModeEnabled: () => false,
 			isFastModeActive: () => false,
 			isStreaming: false,
@@ -650,7 +653,7 @@ describe("LocalSessionHandle", () => {
 			autoCompactionEnabled: true,
 			state: { messages: [] },
 			queuedMessageCount: 0,
-			getQueuedMessages: () => ({ steering: [], followUp: [] }),
+			getQueuedMessages: () => ({ steering: [], followUp: [], liveSteered: 0 }),
 			getTodoPhases: () => [],
 			getContextUsage: () => undefined,
 			prompt: async (text: string) => {
@@ -668,7 +671,7 @@ describe("LocalSessionHandle", () => {
 			followUpMode: "all",
 			interruptMode: "immediate",
 			queuedMessageCount: 0,
-			queuedMessages: { steering: [], followUp: [] },
+			queuedMessages: { steering: [], followUp: [], liveSteered: 0 },
 			hasPendingAsyncWork: false,
 			isSettled: true,
 		});

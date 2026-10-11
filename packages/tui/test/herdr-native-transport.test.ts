@@ -24,7 +24,12 @@ describe("Herdr transport API fallback", () => {
 		});
 		await new Promise<void>(resolve => server.listen(path, resolve));
 		try {
-			const result = await queryHerdrNativeTransport({ HERDR_PANE_ID: "pane-old", HERDR_SOCKET_PATH: path, TERM: "xterm-256color", ...env });
+			const result = await queryHerdrNativeTransport({
+				HERDR_PANE_ID: "pane-old",
+				HERDR_SOCKET_PATH: path,
+				TERM: "xterm-256color",
+				...env,
+			});
 			if (requests) expect(method).toBe("ping");
 			return { result, requests };
 		} finally {
@@ -35,20 +40,40 @@ describe("Herdr transport API fallback", () => {
 	it("accepts an existing pane without the spawn marker", async () => {
 		expect(await check({ native_transport: true })).toEqual({ result: true, requests: 1 });
 	});
-	it.each([undefined, {}, { native_transport: false }, { native_transport: "true" }])("fails closed for absent or invalid capability %j", async capabilities => {
-		expect((await check(capabilities)).result).toBe(false);
-	});
-	it.each(["TMUX", "STY", "ZELLIJ", "CMUX_WORKSPACE_ID", "CMUX_SOCKET_PATH", "WMUX", "WMUX_SURFACE_ID", "HERDR_PLUGIN_ID"])("does not contact the API in nested %s", async key => {
+	it.each([undefined, {}, { native_transport: false }, { native_transport: "true" }])(
+		"fails closed for absent or invalid capability %j",
+		async capabilities => {
+			expect((await check(capabilities)).result).toBe(false);
+		},
+	);
+	it.each([
+		"TMUX",
+		"STY",
+		"ZELLIJ",
+		"CMUX_WORKSPACE_ID",
+		"CMUX_SOCKET_PATH",
+		"WMUX",
+		"WMUX_SURFACE_ID",
+		"HERDR_PLUGIN_ID",
+	])("does not contact the API in nested %s", async key => {
 		expect(await check({ native_transport: true }, { [key]: "" })).toEqual({ result: false, requests: 0 });
 	});
 	it.each(["tmux-256color", "SCREEN-256color"])("does not contact API with nested TERM %s", async TERM => {
 		expect(await check({ native_transport: true }, { TERM })).toEqual({ result: false, requests: 0 });
 	});
 	it("preserves explicit transport opt-out", async () => {
-		expect(await check({ native_transport: true }, { HERDR_NATIVE_TRANSPORT: "0" })).toEqual({ result: false, requests: 0 });
+		expect(await check({ native_transport: true }, { HERDR_NATIVE_TRANSPORT: "0" })).toEqual({
+			result: false,
+			requests: 0,
+		});
 	});
 	it("fails closed when the socket is unavailable", async () => {
-		expect(await queryHerdrNativeTransport({ HERDR_PANE_ID: "old", HERDR_SOCKET_PATH: join(tmpdir(), "missing-herdr.sock") })).toBe(false);
+		expect(
+			await queryHerdrNativeTransport({
+				HERDR_PANE_ID: "old",
+				HERDR_SOCKET_PATH: join(tmpdir(), "missing-herdr.sock"),
+			}),
+		).toBe(false);
 	});
 	it("bounds a connected but unresponsive daemon", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "herdr-silent-"));

@@ -354,6 +354,7 @@ import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { materializeImageChipLinks, UiHelpers } from "./utils/ui-helpers";
 
 import {
+	askTimeoutMs,
 	cfgAutocompleteMaxVisible,
 	cfgDisplayAutocompleteSuggestionsPopup,
 	cfgComposerPredictions,
@@ -590,8 +591,6 @@ const PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT = 95;
 const PLAN_SAVE_AND_QUIT_OPTION = "Save and quit";
 const PLAN_SAVE_TITLE_LINE_LIMIT = 6;
 
-/** How long a `cfg://` approval prompt waits for an answer before the write fails as unanswered. */
-const CFG_APPROVAL_TIMEOUT_MS = 10_000;
 const CFG_APPROVE_SESSION = "Always for this session";
 const CFG_APPROVE_ONCE = "Allow once";
 const CFG_DENY = "Deny";
@@ -1617,6 +1616,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#eventBus;
 	}
 	readonly #extensionUiController: ExtensionUiController;
+	/**
+	 * Settles pending `cfg://` approval prompts when the mode stops, so a
+	 * prompt armed without a deadline cannot outlive the UI waiting on it.
+	 * Stays aborted after a stop: queued approvals behind the approval mutex
+	 * then deny instead of prompting onto a torn-down UI. Refreshed by `init`.
+	 */
+	#dialogLifetime = new AbortController();
 	readonly #inputController: InputController;
 	readonly #selectorController: SelectorController;
 	readonly #focusController: SessionFocusController;
@@ -1991,6 +1997,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.statusLine.setCodexResetFireworksHandler(event => {
 			this.#codexResetFireworksController.show(event);
 		});
+		this.statusLine.setResetExpiryNoticeHandler(notice => this.showWarning(notice));
 		// Vibe worker tok/s aggregator — keeps the status-line render layer off
 		// the heavy vibe/task dependency graph. The director is often idle while
 		// workers stream, so without this the tok/s badge would show a stale
@@ -2135,6 +2142,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
 
+		// Fresh dialog lifetime: a previous stop (if this mode is ever
+		// re-initialized) left the old controller aborted, and approvals queued
+		// behind the approval mutex must prompt on a live signal, not a dead one.
+		this.#dialogLifetime.abort();
+		this.#dialogLifetime = new AbortController();
+
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
 		// Before first paint, so hints the user already learned never flash on.
 		await logger.time("InteractiveMode.init:hintUsage", () => hintUsage.load());
@@ -2180,7 +2193,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// to this session's settings get the settings panel's in-process side
 		// effects (a `defaultThinkingLevel` change also switches the live session).
 		setCfgApprovalHost({
-			approve: request => this.#promptCfgChange(request),
+			approve: (request, options) => this.#promptCfgChange(request, options?.signal),
 			applied: change => {
 				if (change.settings !== this.session.settings) return;
 				this.#selectorController.handleSettingChange(change.path, change.value);
@@ -2485,13 +2498,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// not be titled. Deferred via setImmediate so it runs AFTER the render
 		// callback requestRender(true) queued above (immediates are FIFO) — the
 		// spawn syscall never lands in the same loop turn ahead of the first paint.
-		// The native syntax set (syntect defaults plus the vendored TypeScript/TSX/
-		// Julia grammars, parsed from YAML) costs ~1s to build on first use, and each
-		// language's regexes compile on its first highlight (~250ms for TS/TSX).
-		// Warm both on the native worker pool now so the first highlighted code
-		// block, bash command preview, or file diff does not stall the render thread.
 		setImmediate(() => {
-			void warmHighlighter();
+			// Resumed sessions paint their restored transcript (code blocks, diffs)
+			// right after init; warm the native syntax set (~60ms, ~24 MiB) off-thread
+			// so that paint does not build it on the JS thread. Fresh sessions skip it
+			// and pay the cost lazily on the first highlight, if any.
+			if (this.session.messages.length > 0) void warmHighlighter();
 			if (!$env.PI_NO_TITLE && !this.sessionManager.getSessionName()) {
 				this.#inputController.prewarmTinyTitleModel();
 			}
@@ -7149,11 +7161,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/**
 	 * Ask the user to approve one `cfg://` settings change; writable `/collab` guests get the
-	 * same prompt and the first answer wins. Dismissing the dialog denies it; leaving it
-	 * unanswered for {@link CFG_APPROVAL_TIMEOUT_MS} (any host keypress restarts the
-	 * countdown) drops it as `timeout`.
+	 * same prompt and the first answer wins. Dismissing the dialog denies it, as does
+	 * aborting the calling turn or stopping the mode. The wait honors `ask.timeout`
+	 * (seconds, 0 waits indefinitely); while a deadline is armed, any host
+	 * keypress restarts the countdown, and an unanswered prompt drops the write as `timeout`.
 	 */
-	async #promptCfgChange(request: CfgChangeRequest): Promise<CfgApproval> {
+	async #promptCfgChange(request: CfgChangeRequest, callerSignal?: AbortSignal): Promise<CfgApproval> {
 		const headline = request.save
 			? `💾 Your agent wants to save \`${request.path}\` to your config.`
 			: `⚙️ Your agent wants to change \`${request.path}\` for this session.`;
@@ -7161,14 +7174,23 @@ export class InteractiveMode implements InteractiveModeContext {
 			? `\n⚠️ Overridden by your ${request.shadowedBy}: the saved value won't take effect here.`
 			: "";
 		let timedOut = false;
+		const timeout = askTimeoutMs(this.session.settings);
+		// Settle dismissed when the caller's turn aborts (a collab guest
+		// interrupting the agent) or when the mode stops, whichever first.
+		const signal =
+			callerSignal === undefined
+				? this.#dialogLifetime.signal
+				: AbortSignal.any([callerSignal, this.#dialogLifetime.signal]);
 		const choice = await this.#extensionUiController.showCollabAwareSelector(
 			`${headline}\n${request.previous} → ${request.value}${warning}`,
 			[CFG_APPROVE_SESSION, CFG_APPROVE_ONCE, CFG_DENY],
 			{
 				// A reflexive Enter approves this change only, never the whole session.
 				initialIndex: 1,
-				timeout: CFG_APPROVAL_TIMEOUT_MS,
-				// The selector auto-picks the highlighted option on expiry; an unanswered prompt approves nothing.
+				timeout,
+				signal,
+				// With a deadline armed the selector auto-picks the highlighted option on
+				// expiry; an unanswered prompt approves nothing.
 				onTimeout: () => {
 					timedOut = true;
 				},
@@ -7182,6 +7204,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	stop(): void {
 		this.#appearanceRefreshRequest = undefined;
+		// Settle any pending approval prompt as dismissed (deny). The
+		// controller stays aborted: approvals still queued behind the approval
+		// mutex deny on arrival instead of prompting a torn-down UI. `init`
+		// installs a fresh one.
+		this.#dialogLifetime.abort();
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
 		void this.#recorder?.stop();

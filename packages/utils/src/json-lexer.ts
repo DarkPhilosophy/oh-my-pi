@@ -186,6 +186,17 @@ const enum QuoteLook {
  */
 export class JsonLexer {
 	pos: number;
+	/**
+	 * Shared across {@link string} calls: `src` has no backslash in
+	 * `[#backslashFrom, #backslashAt)` and `#backslashAt` is a backslash or
+	 * `src.length`. An escape-free run can extend past its string's closing
+	 * quote to the end of the document, so searching per string would rescan
+	 * the same tail for every sibling string (quadratic on objects with many
+	 * short values). `src` is immutable, so the range never goes stale; a
+	 * cursor outside it (e.g. a rollback) re-searches.
+	 */
+	#backslashFrom = 0;
+	#backslashAt = -1;
 
 	constructor(
 		readonly src: string,
@@ -228,13 +239,16 @@ export class JsonLexer {
 		// malformed structure fails loudly instead of silently swallowing
 		// commas/colons or sibling members.
 		const lenient = quote === SQUOTE || this.mode === "streaming";
-		const quoteChar = quote === QUOTE ? '"' : "'";
+		// Any delimiter code unit, not just `"`/`'`; a value above 0xFFFF matches
+		// no code unit, so such a string never closes.
+		const quoteChar = String.fromCharCode(quote);
 		// Next quote / backslash at or after the cursor, cached across iterations
 		// and re-searched only once the cursor passes them, so every character is
 		// scanned at most once per kind and the bulk path stays linear even on
 		// escape-dense input (re-searching the far closing quote after each
-		// escape would be quadratic). `n` means "none before end of input".
-		let nextQuote = -1;
+		// escape would be quadratic). `n` means "none before end of input". The
+		// backslash search result is shared across calls via `#backslashAt`.
+		let nextQuote = quoteChar.charCodeAt(0) === quote ? -1 : n;
 		let nextBackslash = -1;
 		while (i < n) {
 			// Bulk-skip a run of ordinary characters: jump to the nearest quote or
@@ -249,8 +263,12 @@ export class JsonLexer {
 					nextQuote = q === -1 ? n : q;
 				}
 				if (nextBackslash < i) {
-					const b = s.indexOf("\\", i);
-					nextBackslash = b === -1 ? n : b;
+					if (i < this.#backslashFrom || i > this.#backslashAt) {
+						const b = s.indexOf("\\", i);
+						this.#backslashFrom = i;
+						this.#backslashAt = b === -1 ? n : b;
+					}
+					nextBackslash = this.#backslashAt;
 				}
 				i = nextQuote < nextBackslash ? nextQuote : nextBackslash;
 				if (i >= n) break;

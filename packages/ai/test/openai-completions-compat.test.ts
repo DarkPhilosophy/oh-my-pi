@@ -1229,6 +1229,7 @@ describe("openai-completions compatibility", () => {
 			type: "thinking",
 			thinking: "inspect tool output",
 			thinkingSignature: "reasoning_text",
+			summary: false,
 		});
 
 		const compat = { ...model.compat, requiresReasoningContentForToolCalls: true };
@@ -2845,5 +2846,19 @@ describe("mistral prompt_cache_key regression (#15079)", () => {
 		});
 		const payloadObject = toObject(payload);
 		expect(payloadObject === null || !("prompt_cache_key" in payloadObject)).toBe(true);
+	});
+});
+
+describe("Groq Qwen reasoning_effort on the wire", () => {
+	it("sends each Qwen only an effort value Groq accepts", async () => {
+		// Qwen 3.6 takes `default` (thinking) or `none`; Qwen 3.8 takes low/medium/high.
+		const qwen36 = getBundledModel<"openai-completions">("groq", "qwen/qwen3.6-27b");
+		const on36 = toObject(await captureOpenAICompletionsPayload(qwen36, undefined, { reasoning: "high" }));
+		expect(on36?.reasoning_effort).toBe("default");
+		expect(on36?.enable_thinking).toBeUndefined();
+
+		const qwen38 = getBundledModel<"openai-completions">("groq", "qwen/qwen3.8-27b");
+		const on38 = toObject(await captureOpenAICompletionsPayload(qwen38, undefined, { reasoning: "low" }));
+		expect(on38?.reasoning_effort).toBe("low");
 	});
 });

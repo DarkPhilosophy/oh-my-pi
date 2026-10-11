@@ -9,7 +9,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { authPolicyFor } from "@oh-my-pi/pi-catalog/compat/auth";
 import { parseAlibabaTokenPlanCredential } from "@oh-my-pi/pi-catalog/wire/alibaba-token-plan";
-import { parseCloudflareAiGatewayCredential } from "@oh-my-pi/pi-catalog/wire/cloudflare-ai-gateway";
+import { parseCloudflareCredential } from "@oh-my-pi/pi-catalog/wire/cloudflare";
 import {
 	getAgentDbPath,
 	getDbBusyTimeoutMs,
@@ -254,9 +254,9 @@ export function matchesReplacementCredential(
 			const incomingToken = parseAlibabaTokenPlanCredential(incoming.key)?.token;
 			return existingToken !== undefined && existingToken === incomingToken;
 		}
-		if (provider === "cloudflare-ai-gateway") {
-			const existingToken = parseCloudflareAiGatewayCredential(existing.key)?.token;
-			const incomingToken = parseCloudflareAiGatewayCredential(incoming.key)?.token;
+		if (provider === "cloudflare-ai-gateway" || provider === "cloudflare-workers-ai") {
+			const existingToken = parseCloudflareCredential(existing.key)?.token;
+			const incomingToken = parseCloudflareCredential(incoming.key)?.token;
 			return existingToken !== undefined && existingToken === incomingToken;
 		}
 		return false;

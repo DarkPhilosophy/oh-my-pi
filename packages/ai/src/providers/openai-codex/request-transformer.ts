@@ -122,18 +122,21 @@ function concurrentSummariesEnabled(): boolean {
 	return env === "1" || env === "true";
 }
 
+/** Wire tier of the model's lowest effort, which a `minimizeEffort` request runs at. */
+export function lowestCodexWireEffort(model: Model<"openai-codex-responses">): ReasoningConfig["effort"] | undefined {
+	const lowest = model.thinking?.efforts[0];
+	return lowest === undefined ? undefined : codexWireEffort(model, lowest);
+}
+
 /**
- * Clamp a user-facing effort to the model's ladder, then remap to the wire
- * tier. User efforts map 1:1 onto wire tiers; the effort map only covers
- * host quirks where a wire tier genuinely does not exist (e.g. `minimal→none`).
- * A mapped value outside the Codex wire vocabulary is a broken compat/model
- * effort map — fail loudly rather than silently sending a different tier.
+ * Remap a supported effort to the wire tier. User efforts map 1:1 onto wire
+ * tiers; the effort map only covers host quirks where a wire tier genuinely
+ * does not exist (e.g. `minimal→none`). A mapped value outside the Codex wire
+ * vocabulary is a broken compat/model effort map — fail loudly rather than
+ * silently sending a different tier.
  */
-function mapCodexWireEffort(
-	model: Model<"openai-codex-responses">,
-	effort: CodexCallerEffort,
-): ReasoningConfig["effort"] {
-	const mapped = mapOpenAIReasoningEffort(model, model.compat, requireSupportedEffort(model, EFFORT_BY_NAME[effort]));
+function codexWireEffort(model: Model<"openai-codex-responses">, effort: Effort): ReasoningConfig["effort"] {
+	const mapped = mapOpenAIReasoningEffort(model, model.compat, effort);
 	switch (mapped) {
 		case "none":
 		case "minimal":
@@ -158,7 +161,7 @@ function getReasoningConfig(
 	const requested = effort === "none" ? minimumSupportedEffort(model) : EFFORT_BY_NAME[effort];
 	if (requested === undefined)
 		throw new Error(`Model ${model.provider}/${model.id} has no supported reasoning efforts`);
-	const config: ReasoningConfig = { effort: mapCodexWireEffort(model, requested) };
+	const config: ReasoningConfig = { effort: codexWireEffort(model, requireSupportedEffort(model, requested)) };
 	// The backend only emits reasoning summaries when `reasoning.summary` is
 	// present: omitting it yields zero `response.reasoning_summary_text.*`
 	// events (measured against gpt-5.5, gpt-5.6-sol and gpt-5.6-terra). So
@@ -493,7 +496,7 @@ export async function transformRequestBody(
 			throw new Error(`Model ${model.provider}/${model.id} has no supported reasoning efforts`);
 		}
 		const reasoningConfig: Partial<ReasoningConfig> = options.reasoningOff
-			? { effort: mapCodexWireEffort(model, requestedEffort as Effort) }
+			? { effort: codexWireEffort(model, requestedEffort as Effort) }
 			: options.reasoningEffort !== undefined
 				? getReasoningConfig(model, options.reasoningEffort, options)
 				: {};

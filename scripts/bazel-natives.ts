@@ -430,9 +430,15 @@ async function main(): Promise<void> {
 		// endpoint composition stays in .github/actions/bazel-cache.
 		const rcPath = Bun.env.OMP_BAZEL_RC?.trim();
 		const startupArgs = rcPath ? [`--bazelrc=${rcPath}`] : [];
-
-		const buildArgs = [...startupArgs, "build", ...options.bazelArgs, "--", ...labels];
-		console.log(`$ ${path.basename(bazel)} ${buildArgs.join(" ")}`);
+		// Exec linkers must remain discoverable under Bazel's strict environment.
+		// Prefer system tools on Linux without hiding user-installed ld.lld/cmake.
+		const hostPath =
+			host.platform === "linux"
+				? ["/usr/bin", "/bin", "/usr/local/bin", Bun.env.PATH ?? ""].join(path.delimiter)
+				: Bun.env.PATH;
+		const hostEnvironmentArgs = hostPath ? [`--host_action_env=PATH=${hostPath}`] : [];
+		const buildArgs = [...startupArgs, "build", ...hostEnvironmentArgs, ...options.bazelArgs, "--", ...labels];
+		console.log(`$ ${path.basename(bazel)} build ${[...options.bazelArgs, "--", ...labels].join(" ")}`);
 		const build = await runBazel(bazel, buildArgs, "inherit");
 		if (build.exitCode !== 0) {
 			console.error(`\nbazel build failed (exit ${build.exitCode}). stderr tail:\n${build.stderrTail}`);
@@ -444,7 +450,7 @@ async function main(): Promise<void> {
 		// into a single union rather than positional args.
 		const cquery = await runBazel(
 			bazel,
-			[...startupArgs, "cquery", ...options.bazelArgs, "--output=files", labels.join(" + ")],
+			[...startupArgs, "cquery", ...hostEnvironmentArgs, ...options.bazelArgs, "--output=files", labels.join(" + ")],
 			"pipe",
 		);
 		if (cquery.exitCode === 0) {

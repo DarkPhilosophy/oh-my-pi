@@ -28,6 +28,7 @@ import {
 	setTerminalGlyphProtocol,
 	TERMINAL,
 } from "./terminal-capabilities";
+import { tmuxMultiplexer } from "./multiplexers/tmux";
 import type { TerminalMultiplexerBackgroundColorCache } from "./multiplexers/types";
 import {
 	canDiscoverHerdrNativeTransport,
@@ -36,6 +37,7 @@ import {
 	queryHerdrNativeTransport,
 	terminalMultiplexerSessions,
 } from "./terminal-multiplexer";
+import { setTmuxPaneApcTitles, tmuxSessionSpeaksTsp } from "./tmux";
 import { setHangulCompatibilityJamoWidth } from "./utils";
 import { translateWindowsAltGrSequence } from "./windows-altgr";
 import { Win32InputModeDecoder, Win32PasteMarkerNormalizer } from "./windows-input-mode";
@@ -55,6 +57,9 @@ const WIN32_RELAYED_ESCAPE_TIMEOUT_MS = 75;
  * `ESC ] 877 ; tsp;… ESC \` there instead of `ESC _ tsp;… ESC \`.
  */
 const TSP_OSC_PREFIX = `\x1b]877;${TSP_PREFIX.slice(2)}`;
+
+/** How long a TSP hello waits for its reply inside tmux, which answers DA1 itself. */
+const TSP_TMUX_HELLO_TIMEOUT_MS = 1000;
 
 /**
  * The TSP message a reassembled input string holds, in APC form, or
@@ -889,6 +894,10 @@ export class ProcessTerminal implements Terminal {
 	#tspResult: TspHello | null | undefined;
 	#tspQueryGeneration = 0;
 	#tspCallbacks: TspHelloHandler[] = [];
+	/** Hello deadline inside tmux, where no DA1 sentinel can end the probe. */
+	#tspTimeout: NodeJS.Timeout | undefined;
+	/** This tmux pane's APC titles are off for TSP and must be restored. */
+	#tspTmuxPaneGated = false;
 	#tspReplyBuffer = "";
 	#privateCsiResponseBuffer = "";
 	#da1SentinelOwners: Da1SentinelOwner[] = [];
@@ -1850,6 +1859,9 @@ export class ProcessTerminal implements Terminal {
 	#shouldQueryTspSupport(): boolean {
 		const override = $env.PI_TUI_NATIVE;
 		if (override === "0") return false;
+		// tmux makes APC bodies the pane title unless the hosting terminal asked
+		// for TSP through `@tern-tsp`: no override may force the probe there.
+		if (tmuxMultiplexer.isInside($env)) return tmuxSessionSpeaksTsp($env);
 		if (override === "1") return true;
 		if (canQueryHerdrNativeTransport($env)) return true;
 		// Multiplexers swallow APC, so the reply could never arrive.
@@ -1871,6 +1883,17 @@ export class ProcessTerminal implements Terminal {
 				return;
 			}
 			this.#tspPending = true;
+			if (tmuxMultiplexer.isInside($env)) {
+				// tmux answers DA1 itself, ahead of any reply: wait for the reply instead.
+				this.#tspTmuxPaneGated = true;
+				setTmuxPaneApcTitles(false, $env);
+				this.#tspTimeout = setTimeout(() => {
+					this.#tspTimeout = undefined;
+					this.#resolveTspSupport(null);
+				}, TSP_TMUX_HELLO_TIMEOUT_MS);
+				this.#safeWrite(encodeTspHelloQuery());
+				return;
+			}
 			this.#da1SentinelOwners.push({ kind: "tsp" });
 			this.#safeWrite(`${encodeTspHelloQuery()}\x1b[c`);
 		};
@@ -1879,6 +1902,15 @@ export class ProcessTerminal implements Terminal {
 			this.#tspPending = true;
 			void queryHerdrNativeTransport({ ...$env }).then(probe, () => probe(false));
 		} else probe(false);
+	}
+
+	/** Hand APC titles back to tmux once this pane stops speaking TSP. */
+	#endTspTmuxPane(): void {
+		clearTimeout(this.#tspTimeout);
+		this.#tspTimeout = undefined;
+		if (!this.#tspTmuxPaneGated) return;
+		this.#tspTmuxPaneGated = false;
+		setTmuxPaneApcTitles(true, $env);
 	}
 
 	#handleTspMessage(sequence: string): void {
@@ -1896,6 +1928,12 @@ export class ProcessTerminal implements Terminal {
 		this.#tspPending = false;
 		const result = hello !== null && hello.v === TSP_VERSION ? hello : null;
 		if (hello !== null && result === null) logger.warn("TSP: unsupported protocol version", { v: hello.v });
+		if (result === null) {
+			this.#endTspTmuxPane();
+		} else {
+			clearTimeout(this.#tspTimeout);
+			this.#tspTimeout = undefined;
+		}
 		this.#tspResult = result;
 		for (const cb of this.#tspCallbacks) {
 			try {
@@ -2285,6 +2323,7 @@ export class ProcessTerminal implements Terminal {
 		this.#sixelSupportCallbacks = [];
 		setTerminalGlyphProtocol(false);
 		this.#tspPending = false;
+		this.#endTspTmuxPane();
 		this.#tspResult = undefined;
 		this.#tspReplyBuffer = "";
 		this.#tspCallbacks = [];

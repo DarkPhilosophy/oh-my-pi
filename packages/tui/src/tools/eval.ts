@@ -165,7 +165,7 @@ type AgentEventStatus = "pending" | "running" | "completed" | "failed" | "aborte
  * actions (everything else) have no key. Shared by {@link upsertStatusEvent}
  * and the executors' display collectors so both coalesce identically.
  */
-export function statusEventKey(event: { op: string;[key: string]: unknown }): string | undefined {
+export function statusEventKey(event: { op: string; [key: string]: unknown }): string | undefined {
 	if ((event.op === "agent" || event.op === "judge_batch") && typeof event.id === "string") {
 		return `${event.op}\0${event.id}`;
 	}
@@ -716,19 +716,19 @@ function evalOutputNodes(output: string, markdown: boolean, previewLines: number
 		part.kind === "text"
 			? runOutput(part.text, { role: "omp.tool.eval.output", previewLines, key: i === 0 ? "output" : `output-${i}` })
 			: node(
-				"table",
-				{
-					// Node's index column header is noise in a real table.
-					cols: part.head.map((head, c) => ({ id: `c${c}`, head: head === "(index)" ? "" : head })),
-					rows: part.rows.map((cells, r) => ({
-						id: `r${r}`,
-						cells: Object.fromEntries(cells.map((cell, c) => [`c${c}`, cell])),
-					})),
-					role: "omp.tool.eval.table",
-				},
-				undefined,
-				`table-${i}`,
-			),
+					"table",
+					{
+						// Node's index column header is noise in a real table.
+						cols: part.head.map((head, c) => ({ id: `c${c}`, head: head === "(index)" ? "" : head })),
+						rows: part.rows.map((cells, r) => ({
+							id: `r${r}`,
+							cells: Object.fromEntries(cells.map((cell, c) => [`c${c}`, cell])),
+						})),
+						role: "omp.tool.eval.table",
+					},
+					undefined,
+					`table-${i}`,
+				),
 	);
 }
 
@@ -796,11 +796,11 @@ function evalCellBox(cell: EvalCellRun, index: number, total: number): NativeNod
 		[
 			caption,
 			cell.code.trim().length > 0 &&
-			runInput(cell.code, {
-				role: "omp.tool.eval.input",
-				lang: languageForHighlighter(cell.language),
-				wrap: false,
-			}),
+				runInput(cell.code, {
+					role: "omp.tool.eval.input",
+					lang: languageForHighlighter(cell.language),
+					wrap: false,
+				}),
 			...(cell.outputs ?? []),
 			cell.status,
 			cell.foot && runFoot(cell.foot),
@@ -958,7 +958,6 @@ export const evalToolRenderer = {
 					if (cached && cached.key === key && cached.width === width) {
 						return cached.result;
 					}
-
 
 					const lines: string[] = [];
 					let topStageRows = 0;

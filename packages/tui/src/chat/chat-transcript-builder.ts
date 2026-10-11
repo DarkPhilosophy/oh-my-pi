@@ -474,6 +474,7 @@ export class ChatTranscriptBuilder {
 			this.#resolveWaitingPoll(content.name);
 
 			const afterToolSegment = timeline.afterToolCalls.get(content.id);
+			if (content.name === "read") this.#readArgs.set(content.id, normalizeToolArgs(content.arguments));
 			if (content.name === "read" && readArgsCollapseIntoGroup(content.arguments)) {
 				if (hasErrorStop && errorMessage) {
 					const group = this.#ensureReadGroup();

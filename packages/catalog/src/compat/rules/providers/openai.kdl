@@ -84,8 +84,23 @@ provider "openai" {
 			limits context=8192
 			supports-tools #false
 		}
+		// Decisions API (`POST /v1/decisions`, public beta,
+		// developers.openai.com/api/docs/guides/decisions) answers typed questions
+		// with GPT-6 Luna. The wire id is the chat row's `gpt-6-luna`, so the judge
+		// row takes its own id. Billed $0.10 per 1M input tokens, no output charge.
+		model "gpt-6-luna-decisions" name="GPT-6 Luna Decisions" api="openai-decisions" base-url="https://api.openai.com/v1" {
+			request-model-id "gpt-6-luna"
+			reasoning #false
+			input "text" "image"
+			cost input=0.1 output=0 cache-read=0 cache-write=0
+			limits context=1050000
+			supports-tools #false
+		}
 	}
 
+	models "gpt-6-luna-decisions" {
+		kind "judge"
+	}
 	models "whisper-1" "gpt-4o-transcribe" "gpt-4o-mini-transcribe" {
 		kind "stt"
 	}

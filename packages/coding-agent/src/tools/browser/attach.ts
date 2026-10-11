@@ -3,7 +3,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
-import { getBrowserProfilesDir, untilAborted } from "@oh-my-pi/pi-utils";
+import { getBrowserProfilesDir, isRecord, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Socket } from "bun";
 import type { Browser, Page, Target } from "puppeteer-core";
 import { throwIfAborted } from "../tool-errors";
@@ -577,6 +577,60 @@ async function fetchRelayEntries(
 	}
 }
 
+/** A relay page `app.target` may pick: not discarded by Chrome, and not internal (devtools, service workers…). */
+function isAdoptableRelayEntry(entry: RelayJsonEntry): boolean {
+	return (
+		entry.discarded !== "true" &&
+		!ATTACH_TARGET_SKIP_PATTERN.test(entry.url) &&
+		!ATTACH_TARGET_SKIP_PATTERN.test(entry.title)
+	);
+}
+
+/** One of the user's Chrome tabs as `browser.targets()` lists it: `app.target` adopts it by `target` (its URL). */
+export interface RelayTarget {
+	/** The page URL, as `app.target` takes it (a URL/title substring). */
+	target: string;
+	title: string;
+	url: string;
+	/** Whether it is the active tab of its Chrome window. */
+	shown: boolean;
+}
+
+/** The adoptable pages among relay `/json` entries; malformed, discarded, and internal entries are skipped. */
+export function relayTargets(entries: readonly unknown[]): RelayTarget[] {
+	const targets: RelayTarget[] = [];
+	for (const raw of entries) {
+		if (!isRecord(raw) || raw.type !== "page" || typeof raw.url !== "string") continue;
+		const entry: RelayJsonEntry = {
+			id: typeof raw.id === "string" ? raw.id : "",
+			type: raw.type,
+			url: raw.url,
+			title: typeof raw.title === "string" ? raw.title : "",
+			active: typeof raw.active === "string" ? raw.active : undefined,
+			discarded: typeof raw.discarded === "string" ? raw.discarded : undefined,
+		};
+		if (!isAdoptableRelayEntry(entry)) continue;
+		targets.push({ target: entry.url, title: entry.title, url: entry.url, shown: entry.active === "true" });
+	}
+	return targets;
+}
+
+/** The `browser.targets()` listing of relay pages: `- "Title" https://… (active)`. */
+export function describeRelayTargets(targets: readonly RelayTarget[]): string {
+	if (targets.length === 0) return "The relay lists no Chrome pages to adopt.";
+	const list = targets
+		.map(entry => `- ${JSON.stringify(entry.title)} ${entry.url}${entry.shown ? " (active)" : ""}`)
+		.join("\n");
+	return `Chrome pages via the relay (adopt one with app.target set to its URL or a title substring):\n${list}`;
+}
+
+/** The pages of the user's Chrome the relay at `relayJson` can adopt. */
+export async function listRelayTargets(relayJson: string, signal?: AbortSignal): Promise<RelayTarget[]> {
+	const entries = await fetchRelayEntries(relayJson, signal);
+	if (!entries) throw new ToolError(`omp browser relay at ${relayJson} did not list its pages (GET /json failed).`);
+	return relayTargets(entries);
+}
+
 function relayEntryMatches(entry: RelayJsonEntry, needle: string): boolean {
 	return entry.url.toLowerCase().includes(needle) || entry.title.toLowerCase().includes(needle);
 }
@@ -594,13 +648,10 @@ function selectRelayEntry(entries: RelayJsonEntry[], options: PickTargetOptions)
 		}
 		const summary = entries.map(e => `- ${e.title || "(untitled)"}  ${e.url}`).join("\n");
 		throw new ToolError(
-			`No page target matched ${JSON.stringify(options.matcher)} after waiting ${RELAY_MATCH_SETTLE_MS / 1000}s for a newly opened tab. Pass a target from these URLs or titles, or omit it to use the active tab. Available pages:\n${summary}`,
+			`No page target matched ${JSON.stringify(options.matcher)} after waiting ${RELAY_MATCH_SETTLE_MS / 1000}s for a newly opened tab. Pass a target from these URLs or titles (browser.targets() lists them before adopting), or omit it to use the active tab. Available pages:\n${summary}`,
 		);
 	}
-	const usable = entries.filter(
-		e =>
-			e.discarded !== "true" && !ATTACH_TARGET_SKIP_PATTERN.test(e.url) && !ATTACH_TARGET_SKIP_PATTERN.test(e.title),
-	);
+	const usable = entries.filter(isAdoptableRelayEntry);
 	return usable.find(e => e.active === "true") ?? usable[0] ?? null;
 }
 
@@ -632,13 +683,7 @@ export async function pickElectronTarget(browser: Browser, options: PickTargetOp
 			const selected = pageEntries.length > 0 ? selectRelayEntry(pageEntries, options) : null;
 			const targets = browser.targets();
 			if (options.preferVisible && !options.matcher) {
-				const active = pageEntries.filter(
-					e =>
-						e.active === "true" &&
-						e.discarded !== "true" &&
-						!ATTACH_TARGET_SKIP_PATTERN.test(e.url) &&
-						!ATTACH_TARGET_SKIP_PATTERN.test(e.title),
-				);
+				const active = pageEntries.filter(e => e.active === "true" && isAdoptableRelayEntry(e));
 				if (active.length > 1) {
 					let firstPage: Page | null = null;
 					let unreadableActive = false;

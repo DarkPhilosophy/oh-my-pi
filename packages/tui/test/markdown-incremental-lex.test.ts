@@ -162,7 +162,7 @@ describe("Markdown incremental streaming lex (E2)", () => {
 		).join("\n");
 		let lexedCharacters = 0;
 		const blockTokens = Lexer.prototype.blockTokens;
-		const spy = vi.spyOn(Lexer.prototype, "blockTokens").mockImplementation(function(this: Lexer, source, tokens) {
+		const spy = vi.spyOn(Lexer.prototype, "blockTokens").mockImplementation(function (this: Lexer, source, tokens) {
 			lexedCharacters += source.length;
 			return blockTokens.call(this, source, tokens);
 		});

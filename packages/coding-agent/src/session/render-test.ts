@@ -134,7 +134,8 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 					// so the stream has to move rows from the viewport into native history.
 					const body = Array.from(
 						{ length: 60 },
-						(_, row) => `CODE_${++outputRow}: context line ${row + 1} of 60 streamed into the viewport and history`,
+						(_, row) =>
+							`CODE_${++outputRow}: context line ${row + 1} of 60 streamed into the viewport and history`,
 					);
 					textParts.push(`\`\`\`markdown\n${body.join("\n")}\n\`\`\`\n`);
 				} else if (!step?.silent) {

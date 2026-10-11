@@ -176,6 +176,7 @@ import {
 	AgentSession,
 	coreQueueMode,
 	type InitialRetryFallbackState,
+	MCP_DISCOVERY_TURN_WAIT_MS,
 	type PlanYolo,
 	type Prewalk,
 } from "./session/agent-session";
@@ -866,7 +867,8 @@ export interface CreateAgentSessionOptions {
 	/**
 	 * A human can answer synchronous prompts even without a terminal UI (e.g. an
 	 * ACP client rendering elicitation forms). Enables `ask` without enabling
-	 * TUI-only session behavior such as eager LSP warmup. Default: `hasUI`.
+	 * TUI-only session behavior such as eager LSP warmup. An explicit `false` also
+	 * keeps saved-reset consent off the extension UI context. Default: `hasUI`.
 	 */
 	interactivePrompts?: boolean;
 	/**
@@ -2542,7 +2544,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 				const deferredMCPManager = mcpManager;
 				startDeferredMCPDiscovery = liveSession => {
-					void (async () => {
+					const discovery = (async () => {
 						try {
 							const mcpResult = await logger.time("discoverAndLoadMCPTools", () =>
 								deferredMCPManager.discoverAndConnect({
@@ -2559,8 +2561,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							}
 							applyMCPEnvironment(mcpResult);
 							logMCPLoadErrors(mcpResult.errors);
-							// Connected MCP tools are enabled and mounted under xd:// devices.
+							// Connected MCP tools (and cached routes of servers still connecting) are
+							// enabled and mounted under xd:// devices right away, so a turn whose
+							// wait runs out still carries them.
 							await liveSession.refreshMCPTools(mcpResult.tools);
+							// Discovery returns after the startup window while slower servers keep
+							// connecting. Give them the first turn's wait budget, then publish the
+							// final snapshot so that turn's prompt carries their instructions too.
+							await deferredMCPManager.waitForStartup(MCP_DISCOVERY_TURN_WAIT_MS);
+							if (liveSession.isDisposed) return;
+							await liveSession.refreshMCPTools(deferredMCPManager.getTools());
 						} catch (error) {
 							logger.error("MCP tool load failed", {
 								path: ".mcp.json",
@@ -2568,6 +2578,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							});
 						}
 					})();
+					liveSession.setPendingMCPDiscovery(discovery);
 				};
 			} else {
 				const mcpResult = await logger.time("discoverAndLoadMCPTools", discoverAndLoadMCPTools, cwd, {
@@ -4617,6 +4628,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			skillsSettings: cfgSkills.get(settings),
 			modelRegistry,
 			allowSessionModelFallback: options.hasUI === true && options.allowSessionModelFallback !== false,
+			interactivePrompts: options.interactivePrompts,
 			rebindModelAfterDiscovery: options.model === undefined || options.rebindModelAfterDiscovery === true,
 			toolRegistry,
 			reconcileBrowserMcpFilter: mcpManager

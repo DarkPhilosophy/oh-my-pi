@@ -1,4 +1,5 @@
 import { combine, effect, register, type Setting } from "../config/registry";
+import type { Settings } from "../config/settings";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
 import { cfgReadGroupAcrossStreams, cfgReadToolResultPreview } from "../tools/settings";
 import { MAGIC_KEYWORDS, type MagicKeywordId } from "./magic-keywords";
@@ -517,7 +518,8 @@ export const cfgTuiAutoGraph = register({
 			{
 				value: "smart",
 				label: "Smart",
-				description: "The judge model picks the chart kind and columns for tables with several numeric columns",
+				description:
+					"The judge model refines each chart: kind, columns, row names and grouping, scales, which way is better, and its title",
 			},
 			{
 				value: "always",
@@ -1350,7 +1352,8 @@ export const cfgAskTimeout = register({
 		tab: "interaction",
 		group: "Notifications",
 		label: "Ask Timeout",
-		description: "Auto-select the recommended ask option after this many seconds (0 disables)",
+		description:
+			"Auto-select the recommended ask option after this many seconds (0 disables). Also bounds cfg:// approval prompts; an unanswered approval denies the write instead of auto-selecting",
 		options: [
 			{ value: "0", label: "Disabled" },
 			{ value: "15", label: "15 seconds" },
@@ -1360,6 +1363,16 @@ export const cfgAskTimeout = register({
 		],
 	},
 });
+
+/**
+ * `ask.timeout` in the milliseconds dialogs consume, or `undefined` for no
+ * deadline. Shared by the ask tool and the `cfg://` approval prompt so the
+ * setting means the same thing everywhere it is honored.
+ */
+export function askTimeoutMs(settings: Settings): number | undefined {
+	const timeoutSeconds = cfgAskTimeout.get(settings);
+	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
+}
 
 export const cfgAskNotify = register({
 	id: "ask.notify",

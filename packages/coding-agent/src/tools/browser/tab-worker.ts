@@ -264,7 +264,7 @@ declare module "puppeteer-core" {
 }
 
 declare global {
-	interface Element extends HTMLElement { }
+	interface Element extends HTMLElement {}
 	function getComputedStyle(element: Element): Record<string, unknown>;
 	var innerWidth: number;
 	var innerHeight: number;
@@ -489,7 +489,7 @@ export function normalizeSelector(selector: string): string {
 	) {
 		throw new ToolError(
 			`Playwright-only selector ${JSON.stringify(selector)} is not supported by the browser tool. ` +
-			`Use a puppeteer text selector ("text/Allow all"), an aria selector ("aria/Name"), CSS, or "xpath/...".`,
+				`Use a puppeteer text selector ("text/Allow all"), an aria selector ("aria/Name"), CSS, or "xpath/...".`,
 		);
 	}
 	if (selector.startsWith("p-") && !LEGACY_SELECTOR_PREFIXES.some(prefix => selector.startsWith(prefix))) {
@@ -590,7 +590,7 @@ async function runGuardedHandleAction<T>(
 	if (state.invalidatedBy) {
 		throw new ToolError(
 			`${label} cannot run: this handle was invalidated after ${state.invalidatedBy} timed out; ` +
-			"run tab.observe() or tab.ariaSnapshot() to resolve a fresh handle",
+				"run tab.observe() or tab.ariaSnapshot() to resolve a fresh handle",
 		);
 	}
 	throwIfAborted(signal);
@@ -876,14 +876,14 @@ function redactUrlCredentials(url: string): string {
 	}
 }
 
-class RequestInterceptionCleanupError extends ToolError { }
-class NavigationCleanupError extends ToolError { }
+class RequestInterceptionCleanupError extends ToolError {}
+class NavigationCleanupError extends ToolError {}
 
 /** `tab.goto` outlasted its budget; the page stays on what loaded. */
-class NavigationTimeoutError extends ToolError { }
+class NavigationTimeoutError extends ToolError {}
 
 /** The page's renderer crashed; every later call on the page stalls until its timeout. */
-class RendererCrashedError extends ToolError { }
+class RendererCrashedError extends ToolError {}
 
 interface RunPageScope {
 	page: Page;
@@ -1467,11 +1467,11 @@ export function parseAriaSnapshotLines(snapshot: string): AriaSnapshotLine[] {
 		const boxMatch = /\[box=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\]/.exec(metadata);
 		const box = boxMatch
 			? {
-				x: Number(boxMatch[1]),
-				y: Number(boxMatch[2]),
-				width: Number(boxMatch[3]),
-				height: Number(boxMatch[4]),
-			}
+					x: Number(boxMatch[1]),
+					y: Number(boxMatch[2]),
+					width: Number(boxMatch[3]),
+					height: Number(boxMatch[4]),
+				}
 			: undefined;
 		for (const depth of boxesByDepth.keys()) {
 			if (depth >= indent) boxesByDepth.delete(depth);
@@ -1559,9 +1559,9 @@ export async function collectBiDiObservationEntries(
 	const entries: ObservationEntry[] = [];
 	const viewport = options.viewportOnly
 		? ((await page.evaluate(() => ({ width: innerWidth, height: innerHeight }))) as {
-			width: number;
-			height: number;
-		})
+				width: number;
+				height: number;
+			})
 		: undefined;
 	for (const node of parseAriaSnapshotLines(snapshot)) {
 		const requiresFocusCheck = !options.includeAll && !isInteractiveAriaSnapshotNode(node.role, node.states);
@@ -2101,9 +2101,9 @@ export class WorkerCore {
 				this.#page = payload.targetId
 					? await findBiDiPageByTargetId(await this.#browser.pages(), payload.targetId)
 					: await pickElectronTarget(this.#browser, {
-						matcher: payload.targetMatcher,
-						preferVisible: payload.activateForScreenshot === false,
-					});
+							matcher: payload.targetMatcher,
+							preferVisible: payload.activateForScreenshot === false,
+						});
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
@@ -2731,7 +2731,7 @@ export class WorkerCore {
 				break;
 			}
 		}
-		return await new Promise<never>(() => { });
+		return await new Promise<never>(() => {});
 	}
 
 	/**
@@ -3445,8 +3445,8 @@ export class WorkerCore {
 				parseAriaRefSelector(options.selector) !== null
 					? await this.#resolveAriaRef(options.selector)
 					: ((await untilAborted(options.signal, () =>
-						page.$(normalizeSelector(options.selector!)),
-					)) as ElementHandle | null);
+							page.$(normalizeSelector(options.selector!)),
+						)) as ElementHandle | null);
 			if (!root) throw new ToolError(`tab.observe: selector ${JSON.stringify(options.selector)} matched no element`);
 		}
 		const entries: ObservationEntry[] = [];
@@ -3554,7 +3554,7 @@ export class WorkerCore {
 		const captureScale = opts.silent ? undefined : ((await this.#viewport(signal)).deviceScaleFactor ?? 1);
 		const cleanupAnnotations = opts.annotate
 			? await installScreenshotAnnotations(page, annotationTargets, signal)
-			: async (): Promise<void> => { };
+			: async (): Promise<void> => {};
 		const resolveSelector = async (selector: string): Promise<ElementHandle | null> =>
 			parseAriaRefSelector(selector) !== null
 				? await this.#resolveAriaRef(selector)
@@ -3592,9 +3592,9 @@ export class WorkerCore {
 		const ext = savedMimeType === "image/webp" ? "webp" : savedMimeType === "image/jpeg" ? "jpg" : "png";
 		const dest = session.browserScreenshotDir
 			? path.join(
-				session.browserScreenshotDir,
-				`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
-			)
+					session.browserScreenshotDir,
+					`screenshot-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, -1)}.${ext}`,
+				)
 			: path.join(os.tmpdir(), `omp-sshots-${Snowflake.next()}.${ext}`);
 		await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 		await Bun.write(dest, savedBuffer);

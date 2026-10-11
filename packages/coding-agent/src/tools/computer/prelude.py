@@ -107,6 +107,9 @@ def _make_computer():
         async def click(self, *args, **kwargs):
             return await self._method("click", args, kwargs)
 
+        async def doubleClick(self, *args, **kwargs):
+            return await self._method("doubleClick", args, kwargs)
+
         async def focus(self, *args, **kwargs):
             return await self._method("focus", args, kwargs)
 
@@ -126,6 +129,23 @@ def _make_computer():
 
         def __repr__(self):
             return f"<computer.Element ref={self.ref!r} role={self.role!r}>"
+
+    class _FoundElements(list):
+        """`find()`'s list answers element attributes with how to pick one, instead of a bare AttributeError."""
+
+        __slots__ = ()
+
+        def __getattr__(self, name):
+            if hasattr(_Element, name) and not name.startswith("_"):
+                raise AttributeError(
+                    f"find() returns a list (length {len(self)}), not one element, so it has no {name}; "
+                    "pick one first: el = (await win.find(query))[0]"
+                )
+            raise AttributeError(f"'list' object has no attribute {name!r}")
+
+        def __reduce__(self):
+            # Pickle and copy as the plain list: this class is local to the prelude.
+            return (list, (list(self),))
 
     class _ElementRef(_ElementMethods, collections.abc.Coroutine):
         """`await ref("e5")` resolves the element; `await ref("e5").click()` calls it directly.
@@ -175,12 +195,20 @@ def _make_computer():
         async def _method(self, method, args, kwargs):
             return await self._root._method(f"{self._namespace}.{method}", args, kwargs)
 
-    class _Menu(_Namespace):
-        async def items(self, path=None):
-            return await self._method("items", (path,), {})
+    def _menu_path(method, segments, path):
+        if path is not None:
+            if segments:
+                raise TypeError(f"menu.{method}() takes the path positionally or as path=, not both")
+            return (path,)
+        # Send separate titles as one list so a trailing None reaches the worker instead of being trimmed.
+        return (list(segments),) if len(segments) > 1 else segments
 
-        async def select(self, path):
-            return await self._method("select", (path,), {})
+    class _Menu(_Namespace):
+        async def items(self, *segments, path=None):
+            return await self._method("items", _menu_path("items", segments, path), {})
+
+        async def select(self, *segments, path=None):
+            return await self._method("select", _menu_path("select", segments, path), {})
 
     class _Apps(_Namespace):
         async def list(self, options=None, **kwargs):
@@ -278,7 +306,7 @@ def _make_computer():
             return await self._method("ax", args, kwargs)
 
         async def find(self, *args, **kwargs):
-            return [_Element(snapshot) for snapshot in await self._method("find", args, kwargs)]
+            return _FoundElements(_Element(snapshot) for snapshot in await self._method("find", args, kwargs))
 
         def ref(self, ref):
             """Live accessibility element by its `[ref=eN]` tag: await it, or call element methods on it."""

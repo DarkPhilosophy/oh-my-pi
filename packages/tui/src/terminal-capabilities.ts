@@ -1003,8 +1003,7 @@ export function encodeKittyPlacement(options: {
 /**
  * Exact shape of the direct-placement line {@link Image} emits as its block's
  * last row: optional `ESC 7` + `CUU(rows-1)` prefix, the {@link encodeKittyPlacement}
- * APC, optional `ESC 8` suffix. tmux-passthrough-wrapped lines deliberately do
- * not match (passthrough placements stay untouched).
+ * APC, optional `ESC 8` suffix. The parser unwraps tmux passthrough first.
  */
 const KITTY_DIRECT_PLACEMENT_LINE =
 	/^(?:\x1b7(?:\x1b\[(\d+)A)?)?\x1b_Ga=p,q=2,C=1,i=(\d+)(?:,p=(\d+))?(?:,c=(\d+))?(?:,r=(\d+))?(?:,z=-2147483648)?\x1b\\(?:\x1b8)?$/;
@@ -1019,10 +1018,15 @@ export interface ParsedKittyPlacementLine {
 /**
  * Parse a frame line that consists solely of a Kitty direct placement (the
  * last line of an {@link Image} block). Returns null for anything else —
- * placeholder grids, tmux-wrapped placements, sixel/iTerm2 payloads — so
+ * placeholder grids, sixel/iTerm2 payloads — so
  * callers fall back to writing the line verbatim.
  */
 export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacementLine | null {
+	if (line.includes("\x1bPtmux;")) {
+		line = line.replace(/\x1bPtmux;((?:[^\x1b]|\x1b\x1b)*)\x1b\\/g, (_match, payload: string) =>
+			payload.replaceAll("\x1b\x1b", "\x1b"),
+		);
+	}
 	const m = KITTY_DIRECT_PLACEMENT_LINE.exec(line);
 	if (!m) return null;
 	const columns = m[4] !== undefined ? Number(m[4]) : 0;
@@ -1068,9 +1072,7 @@ export function encodeKittyPlacementLine(options: {
 		params.push(`y=${srcY}`, `h=${Math.max(1, options.imageHeightPx - srcY)}`);
 	}
 	params.push("z=-2147483648");
-	// No tmux passthrough: inside tmux the component's own line arrives
-	// wrapped, never parses, and never reaches this rewrite.
-	const apc = `\x1b_G${params.join(",")}\x1b\\`;
+	const apc = wrapTmuxPassthroughIfNeeded(`\x1b_G${params.join(",")}\x1b\\`);
 	const cuu = visibleRows - 1;
 	return cuu > 0 ? `\x1b7\x1b[${cuu}A${apc}\x1b8` : apc;
 }
@@ -1097,8 +1099,8 @@ export function encodeKittyDeleteAllImages(): string {
 /**
  * Delete a single placement of an image (`d=i`, lowercase): removes its cells
  * and registry entry but keeps the transmitted data, so a later `a=p` under a
- * fresh placement id needs no retransmit. Used to clear stale placement-epoch
- * entries after a destructive history clear.
+ * fresh placement id needs no retransmit. The frame writer uses this before
+ * replacing a live image without deleting its archived copies.
  */
 export function encodeKittyDeletePlacement(imageId: number, placementId: number): string {
 	return wrapTmuxPassthroughIfNeeded(`\x1b_Ga=d,d=i,i=${imageId},p=${placementId},q=2\x1b\\`);

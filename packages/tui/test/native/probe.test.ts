@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { TspHello } from "@oh-my-pi/pi-tui/native/encode";
 import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
+import * as utils from "@oh-my-pi/pi-utils";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import { TtyWriter } from "@oh-my-pi/pi-natives";
 import { createServer, type Socket } from "node:net";
@@ -15,6 +16,31 @@ const stdinIsTty = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 const stdinSetRawMode = Object.getOwnPropertyDescriptor(process.stdin, "setRawMode");
 const originalNative = Bun.env.PI_TUI_NATIVE;
+const originalTmux = Bun.env.TMUX;
+const originalTmuxPane = Bun.env.TMUX_PANE;
+
+function restoreEnv(key: string, value: string | undefined): void {
+	if (value === undefined) delete Bun.env[key];
+	else Bun.env[key] = value;
+}
+
+/** Run inside tmux pane %3 whose session option `@tern-tsp` reads `ternTsp`; returns the tmux argvs run. */
+function mockTmux(ternTsp: string): string[][] {
+	Bun.env.TMUX = "/tmp/tmux-501/default,1,0";
+	Bun.env.TMUX_PANE = "%3";
+	const commands: string[][] = [];
+	vi.spyOn(utils, "$which").mockImplementation(name => (name === "tmux" ? "/usr/bin/tmux" : null));
+	vi.spyOn(Bun, "spawnSync").mockImplementation(((cmd: string[]) => {
+		const args = cmd.slice(1);
+		if (cmd[0] === "/usr/bin/tmux") commands.push(args);
+		const stdout = args[0] === "show-options" ? `${ternTsp}\n` : "";
+		return { exitCode: 0, stdout: Buffer.from(stdout), success: true };
+	}) as never);
+	return commands;
+}
+
+const GATE_OFF = ["set-option", "-p", "-t", "%3", "allow-set-title", "off"];
+const GATE_RESTORE = ["set-option", "-pu", "-t", "%3", "allow-set-title"];
 
 function restoreProperty(target: object, key: string, descriptor: PropertyDescriptor | undefined): void {
 	if (descriptor) Object.defineProperty(target, key, descriptor);
@@ -32,7 +58,10 @@ function setup() {
 	vi.spyOn(process.stdin, "resume").mockImplementation(() => process.stdin);
 	vi.spyOn(process.stdin, "pause").mockImplementation(() => process.stdin);
 	vi.spyOn(process.stdin, "setEncoding").mockImplementation(() => process.stdin);
-	vi.spyOn(TtyWriter.prototype, "write").mockImplementation(data => { writes.push(data); return data.length; });
+	vi.spyOn(TtyWriter.prototype, "write").mockImplementation(data => {
+		writes.push(data);
+		return data.length;
+	});
 	vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
 		writes.push(typeof chunk === "string" ? chunk : chunk.toString());
 		return true;
@@ -52,10 +81,16 @@ describe("TSP hello probe", () => {
 	beforeEach(() => {
 		previousHeadless = setTerminalHeadless(false);
 		Bun.env.PI_TUI_NATIVE = "1";
+		// Whatever tmux runs the test suite must not count.
+		delete Bun.env.TMUX;
+		delete Bun.env.TMUX_PANE;
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		vi.restoreAllMocks();
+		restoreEnv("TMUX", originalTmux);
+		restoreEnv("TMUX_PANE", originalTmuxPane);
 		setTerminalHeadless(previousHeadless);
 		if (originalNative === undefined) delete Bun.env.PI_TUI_NATIVE;
 		else Bun.env.PI_TUI_NATIVE = originalNative;
@@ -142,11 +177,17 @@ describe("TSP hello probe", () => {
 		["native Herdr", { HERDR_NATIVE_TRANSPORT: "1" }, true],
 		["Herdr without transport", {}, false],
 		["Herdr with transport disabled", { HERDR_NATIVE_TRANSPORT: "0" }, false],
-		...["TMUX", "STY", "ZELLIJ", "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_REMOTE_TRANSPORT", "CMUX_SOCKET_PATH", "WMUX", "WMUX_SURFACE_ID"].map(key =>
-			[
-				"native Herdr inside " + key,
-				{ HERDR_NATIVE_TRANSPORT: "1", [key]: "1" }, false,
-			] as const),
+		...[
+			"TMUX",
+			"STY",
+			"ZELLIJ",
+			"CMUX_WORKSPACE_ID",
+			"CMUX_SURFACE_ID",
+			"CMUX_REMOTE_TRANSPORT",
+			"CMUX_SOCKET_PATH",
+			"WMUX",
+			"WMUX_SURFACE_ID",
+		].map(key => ["native Herdr inside " + key, { HERDR_NATIVE_TRANSPORT: "1", [key]: "1" }, false] as const),
 		["native Herdr with tmux TERM", { HERDR_NATIVE_TRANSPORT: "1", TERM: "tmux-256color" }, false],
 		["native Herdr with screen TERM", { HERDR_NATIVE_TRANSPORT: "1", TERM: "screen-256color" }, false],
 		["native Herdr opted out", { HERDR_NATIVE_TRANSPORT: "1", PI_TUI_NATIVE: "0" }, false],
@@ -188,15 +229,21 @@ describe("TSP hello probe", () => {
 		let peer: Socket | undefined;
 		let requestId = "";
 		let received!: () => void;
-		const request = new Promise<void>(resolve => { received = resolve; });
+		const request = new Promise<void>(resolve => {
+			received = resolve;
+		});
 		const server = createServer(socket => {
 			peer = socket;
-			socket.once("data", data => { requestId = JSON.parse(data.toString()).id; received(); });
+			socket.once("data", data => {
+				requestId = JSON.parse(data.toString()).id;
+				received();
+			});
 		});
 		await new Promise<void>(resolve => server.listen(path, resolve));
 		let result: ReturnType<typeof setup> | undefined;
 		try {
-			for (const key of Object.keys(Bun.env)) if (/^(TMUX|STY|ZELLIJ|HERDR_|CMUX_|WMUX|PI_TUI_NATIVE)/.test(key)) delete Bun.env[key];
+			for (const key of Object.keys(Bun.env))
+				if (/^(TMUX|STY|ZELLIJ|HERDR_|CMUX_|WMUX|PI_TUI_NATIVE)/.test(key)) delete Bun.env[key];
 			delete Bun.env.PI_TEST_RUNTIME;
 			delete Bun.env.BUN_ENV;
 			delete Bun.env.NODE_ENV;
@@ -207,7 +254,12 @@ describe("TSP hello probe", () => {
 			await request;
 			if (mode === "stop") result.terminal.stop();
 			const before = result.writes.length;
-			peer!.end(JSON.stringify({ id: requestId, result: { type: "pong", capabilities: { native_transport: mode !== "reject" } } }) + "\n");
+			peer!.end(
+				JSON.stringify({
+					id: requestId,
+					result: { type: "pong", capabilities: { native_transport: mode !== "reject" } },
+				}) + "\n",
+			);
 			await Bun.sleep(20);
 			if (mode === "stop") expect(result.writes.length).toBe(before);
 			else if (mode === "reject") {
@@ -220,11 +272,73 @@ describe("TSP hello probe", () => {
 				expect(result.hellos[0]?.term).toBe("tern");
 			}
 		} finally {
-			result?.terminal.stop(); peer?.destroy();
+			result?.terminal.stop();
+			peer?.destroy();
 			await new Promise<void>(resolve => server.close(() => resolve()));
 			rmSync(dir, { recursive: true });
 			for (const key of Object.keys(Bun.env)) if (!(key in saved)) delete Bun.env[key];
 			Object.assign(Bun.env, saved);
+		}
+	});
+
+	it("never probes inside tmux without @tern-tsp, even with PI_TUI_NATIVE=1", () => {
+		const commands = mockTmux("");
+		const { terminal, writes, hellos } = setup();
+		try {
+			expect(writes.join("")).not.toContain("tsp;");
+			expect(hellos).toEqual([null]);
+			expect(terminal.tspExpected).toBe(false);
+			terminal.stop();
+			expect(commands).not.toContainEqual(GATE_OFF);
+			expect(commands).not.toContainEqual(GATE_RESTORE);
+		} finally {
+			terminal.stop();
+		}
+	});
+
+	it("probes inside tmux with @tern-tsp: gates APC titles, sends hello without DA1, resolves on the reply", () => {
+		delete Bun.env.PI_TUI_NATIVE;
+		const commands = mockTmux("1");
+		const { terminal, writes, hellos } = setup();
+		try {
+			expect(commands).toContainEqual(["show-options", "-qv", "@tern-tsp"]);
+			expect(commands).toContainEqual(GATE_OFF);
+			const out = writes.join("");
+			const hello = out.indexOf("\x1b_tsp;");
+			expect(hello).toBeGreaterThanOrEqual(0);
+			expect(out.slice(hello)).not.toMatch(/^\x1b_tsp;[^\x1b]*\x1b\\\x1b\[c/);
+			expect(terminal.tspExpected).toBe(false);
+			// tmux answers DA1 itself: a DA1 reply must not end the probe.
+			process.stdin.emit("data", DA1_REPLY);
+			expect(terminal.tspProbePending).toBe(true);
+			process.stdin.emit("data", HELLO_REPLY);
+			expect(hellos).toHaveLength(1);
+			expect(hellos[0]?.term).toBe("tern");
+			expect(commands).not.toContainEqual(GATE_RESTORE);
+			terminal.stop();
+			expect(commands.filter(c => c[1] === "-pu")).toEqual([GATE_RESTORE]);
+		} finally {
+			terminal.stop();
+		}
+	});
+
+	it("resolves the tmux probe to null after 1 s without a reply and restores APC titles", () => {
+		vi.useFakeTimers();
+		const commands = mockTmux("1");
+		const { terminal, hellos } = setup();
+		try {
+			vi.advanceTimersByTime(999);
+			expect(hellos).toEqual([]);
+			expect(terminal.tspProbePending).toBe(true);
+			vi.advanceTimersByTime(1);
+			expect(hellos).toEqual([null]);
+			expect(commands).toContainEqual(GATE_RESTORE);
+			process.stdin.emit("data", HELLO_REPLY);
+			expect(hellos).toEqual([null]);
+			terminal.stop();
+			expect(commands.filter(c => c[1] === "-pu")).toHaveLength(1);
+		} finally {
+			terminal.stop();
 		}
 	});
 });

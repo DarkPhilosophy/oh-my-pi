@@ -66,7 +66,8 @@ async function captureLaunch(
 }
 
 it.skipIf(!tmuxPath)("preserves literal semicolons in tmux operands and direct command argv", async () => {
-	const root = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-tmux-injection-"));
+	// Canonical path: the pane reports its realpath cwd (macOS tmpdir sits behind /var -> /private/var).
+	const root = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), "omp-tmux-injection-")));
 	const socket = path.join(root, "private.sock");
 	const seedSession = `tmux-injection-seed-${process.pid}`;
 	const targetSession = `tmux-injection-target-${process.pid};`;
@@ -167,7 +168,8 @@ it.skipIf(!tmuxPath)("preserves literal semicolons in tmux operands and direct c
 });
 
 it.skipIf(!tmuxPath)("opens a literal # cwd and runs shell mode without the tmux default-shell", async () => {
-	const root = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-tmux-format-"));
+	// Canonical path: the pane reports its realpath cwd (macOS tmpdir sits behind /var -> /private/var).
+	const root = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), "omp-tmux-format-")));
 	const socket = path.join(root, "private.sock");
 	const session = `tmux-format-${process.pid}`;
 	// Unescaped, tmux runs #(…) as a job and expands #S, opening the pane in $HOME instead.
@@ -196,8 +198,11 @@ it.skipIf(!tmuxPath)("opens a literal # cwd and runs shell mode without the tmux
 		);
 		assertTmuxSuccess(seed, "private server setup");
 		// Stands in for fish/nu: a single-argument command handed to default-shell never runs.
+		// `false` lives in /usr/bin on macOS and tmux rejects a default-shell that does not exist.
+		const falseShell = Bun.which("false");
+		if (!falseShell) throw new Error("`false` is not on PATH");
 		assertTmuxSuccess(
-			await runTmux(socket, root, "set-option", "-g", "default-shell", "/bin/false"),
+			await runTmux(socket, root, "set-option", "-g", "default-shell", falseShell),
 			"default-shell setup",
 		);
 		const pane = await runTmux(socket, root, "display-message", "-p", "-t", session, "#{pane_id}");

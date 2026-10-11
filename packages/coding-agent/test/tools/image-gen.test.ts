@@ -1221,12 +1221,7 @@ describe("imageGenTool", () => {
 					return new Response(null, { status: 500 });
 				}) as unknown as typeof fetch);
 				const loading = imageGenTool
-					.execute(
-						"special-image",
-						{ subject: "edit", input: [{ path: fifo }] },
-						undefined,
-						ctx,
-					)
+					.execute("special-image", { subject: "edit", input: [{ path: fifo }] }, undefined, ctx)
 					.then(
 						() => undefined,
 						error => error,

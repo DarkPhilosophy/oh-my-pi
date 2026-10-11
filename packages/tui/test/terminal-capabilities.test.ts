@@ -552,7 +552,13 @@ describe("Herdr image protocol mask", () => {
 	});
 
 	it("keeps upstream Herdr gated: no announcement, no Kitty", () => {
-		const env = { HERDR_ENV: "1", HERDR_PANE_ID: "p1", TERM: "xterm-256color", COLORTERM: "truecolor", TERM_PROGRAM: "herdr" };
+		const env = {
+			HERDR_ENV: "1",
+			HERDR_PANE_ID: "p1",
+			TERM: "xterm-256color",
+			COLORTERM: "truecolor",
+			TERM_PROGRAM: "herdr",
+		};
 		expect(resolveImageProtocol(detectTerminalId(env), env, true)).toBeNull();
 		expect(resolveImageProtocol("base", { ...env, HERDR_KITTY_GRAPHICS: "0" }, true)).toBeNull();
 	});
@@ -568,7 +574,9 @@ describe("Herdr image protocol mask", () => {
 		};
 		expect(resolveImageProtocol(detectTerminalId(env), env, true)).toBe(ImageProtocol.Kitty);
 		expect(detectKittyUnicodePlaceholdersSupport(detectTerminalId(env), env)).toBe(true);
-		expect(detectKittyUnicodePlaceholdersSupport(detectTerminalId(env), { ...env, PI_NO_KITTY_PLACEHOLDERS: "1" })).toBe(false);
+		expect(
+			detectKittyUnicodePlaceholdersSupport(detectTerminalId(env), { ...env, PI_NO_KITTY_PLACEHOLDERS: "1" }),
+		).toBe(false);
 	});
 
 	it.each([
@@ -582,7 +590,13 @@ describe("Herdr image protocol mask", () => {
 		["TERM", "screen-256color"],
 		["PASEO_TERMINAL_ID", "term-1"],
 	])("stays gated when %s shows a nested multiplexer or embedder", (key, value) => {
-		const env = { HERDR_ENV: "1", HERDR_PANE_ID: "p1", HERDR_KITTY_GRAPHICS: "1", TERM: "xterm-256color", [key]: value };
+		const env = {
+			HERDR_ENV: "1",
+			HERDR_PANE_ID: "p1",
+			HERDR_KITTY_GRAPHICS: "1",
+			TERM: "xterm-256color",
+			[key]: value,
+		};
 		expect(resolveImageProtocol("base", env, true)).toBeNull();
 		expect(detectKittyUnicodePlaceholdersSupport("base", env)).toBe(false);
 	});

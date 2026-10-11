@@ -231,6 +231,36 @@ describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 		}
 	});
 
+	it("restores read arguments when an assistant error leaves no pending component", () => {
+		const { helpers, chatContainer } = createFixture({ isStreaming: false });
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "preserved-read", name: "read", arguments: { path: "artifact://retained.txt" } },
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "test-model",
+			stopReason: "error",
+			errorMessage: "provider failure",
+			usage,
+			timestamp: 1,
+		};
+		const result: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "preserved-read",
+			toolName: "read",
+			content: [{ type: "text", text: "preserved result" }],
+			isError: false,
+			timestamp: 2,
+		};
+		helpers.renderSessionContext({ messages: [assistant, result] } as SessionContext);
+		const groups = chatContainer.children.filter(
+			(child): child is ReadToolGroupComponent => child instanceof ReadToolGroupComponent,
+		);
+		expect(groups).toHaveLength(1);
+		expect(Bun.stripANSI(groups[0]!.render(120).join("\n"))).toContain("retained.txt");
+	});
 	it("seals dangling toolCalls on idle rebuilds instead of leaving a live spinner", () => {
 		const { ctx, helpers, chatContainer } = createFixture({ isStreaming: false });
 

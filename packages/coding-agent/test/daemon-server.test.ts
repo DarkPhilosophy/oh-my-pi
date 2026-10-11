@@ -112,7 +112,7 @@ function fakeFactory(protectedJobCount = 0) {
 					slowModeEnabled: false,
 					messageCount: state.commands.length,
 					queuedMessageCount: 0,
-					queuedMessages: { steering: [], followUp: [] },
+					queuedMessages: { steering: [], followUp: [], liveSteered: 0 },
 					hasPendingAsyncWork: false,
 					isSettled: true,
 					goal: null,
@@ -748,7 +748,7 @@ describe("daemon server and registry", () => {
 			followUpMode: "one-at-a-time",
 		};
 		await registry.create("override", child, overrides);
-		expect(forwarded.at(-1)).toEqual({ cwd: child, overrides });
+		expect(forwarded.at(-1)).toEqual({ cwd: await fs.realpath(child), overrides });
 		await registry.close("override");
 		await registry.close("persisted");
 		expect(fake.runtimes.get("persisted")?.disposed).toBe(true);
@@ -1718,7 +1718,7 @@ describe("daemon server and registry", () => {
 								slowModeEnabled: false,
 								messageCount: 0,
 								queuedMessageCount: 0,
-								queuedMessages: { steering: [], followUp: [] },
+								queuedMessages: { steering: [], followUp: [], liveSteered: 0 },
 								hasPendingAsyncWork: false,
 								isSettled: true,
 								goal: null,
@@ -1856,7 +1856,7 @@ describe("daemon server and registry", () => {
 				tokensPerSecond: null,
 				messageCount: current.messageCount,
 				queuedMessageCount: current.queuedMessageCount,
-				queuedMessages: { steering: [], followUp: [] },
+				queuedMessages: { steering: [], followUp: [], liveSteered: 0 },
 				hasPendingAsyncWork: false,
 				isSettled: true,
 				todoPhases: current.todoPhases,

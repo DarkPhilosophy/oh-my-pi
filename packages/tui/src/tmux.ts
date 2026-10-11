@@ -31,6 +31,49 @@ function queryTmuxClientTerminalName(env: NodeJS.ProcessEnv): string | null {
 	}
 }
 
+const TMUX_COMMAND_TIMEOUT_MS = 500;
+
+/** Run a tmux command against the current server; its stdout, or null on failure. */
+function runTmux(args: string[], env: NodeJS.ProcessEnv): string | null {
+	const tmux = $which("tmux", { PATH: env.PATH });
+	if (!tmux) return null;
+	try {
+		const result = Bun.spawnSync([tmux, ...args], {
+			env,
+			stdout: "pipe",
+			stderr: "ignore",
+			timeout: TMUX_COMMAND_TIMEOUT_MS,
+			killSignal: "SIGKILL",
+		});
+		return result.exitCode === 0 ? result.stdout.toString() : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Whether the terminal hosting this tmux session draws TSP programs natively:
+ * it sets the session user option `@tern-tsp` while it watches the session.
+ */
+export function tmuxSessionSpeaksTsp(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	return (runTmux(["show-options", "-qv", "@tern-tsp"], env)?.trim() ?? "") !== "";
+}
+
+/**
+ * Stop (`on` false) or restore (`on` true) tmux turning this pane's APC
+ * strings into its title, which would otherwise swallow every TSP message.
+ */
+export function setTmuxPaneApcTitles(on: boolean, env: NodeJS.ProcessEnv = Bun.env): void {
+	const pane = env.TMUX_PANE;
+	if (!pane) return;
+	runTmux(
+		on
+			? ["set-option", "-pu", "-t", pane, "allow-set-title"]
+			: ["set-option", "-p", "-t", pane, "allow-set-title", "off"],
+		env,
+	);
+}
+
 /**
  * Resolve the terminal emulator name recorded for this tmux client.
  *

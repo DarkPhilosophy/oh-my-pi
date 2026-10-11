@@ -47,7 +47,7 @@ The OpenAI Chat Completions provider implements HTTP POST JSON body streaming ov
 
 ### Catalog model handling
 - **Provider entry (`openai`)**: `packages/catalog/src/compat/rules/providers/openai.kdl` declares default model `gpt-5.5`. Environment keys: `OPENAI_API_KEY`.
-- **Authored seeds**: `daybreak-blue-latest`, `daybreak-red-latest`, `gpt-5.6-cyber`, `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `text-embedding-3-small`, `text-embedding-3-large`, `text-embedding-ada-002`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows.
+- **Authored seeds**: `daybreak-blue-latest`, `daybreak-red-latest`, `gpt-5.6-cyber`, `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `text-embedding-3-small`, `text-embedding-3-large`, `text-embedding-ada-002`, `gpt-6-luna-decisions`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows. `gpt-6-luna-decisions` is a `judge` row on the `openai-decisions` API that requests wire id `gpt-6-luna`; until a regenerated bundle carries it, `openaiModelManagerOptions` appends it to successful discovery.
 - **Model Resolvers & Managers**: `createOpenAICompatibleModelManagerOptions` in `packages/catalog/src/provider-models/openai-compat.ts` constructs model managers for `openai-completions` providers. It combines static/curated model definitions, bundled reference specs (`getBundledModels`), and live models fetched from remote catalog endpoints.
 - **Catalog Discovery**: `fetchOpenAICompatibleModels` in `packages/catalog/src/discovery/openai-compatible.ts` queries provider `/models` endpoints. It safely parses envelopes (`data`, `models`, `result`, `items`), enforces request timeouts using `withOpenAICompatibleDiscoveryTimeout`, validates model record schemas (`openAICompatibleModelRecordSchema`), applies custom mappers/filters, and deduplicates models by ID.
 
@@ -73,7 +73,7 @@ The OpenAI Responses provider (`packages/ai/src/providers/openai-responses.ts`) 
 
 ### Catalog model handling
 - **Provider entry (`openai`)**: `packages/catalog/src/compat/rules/providers/openai.kdl` declares default model `gpt-5.5`. Environment keys: `OPENAI_API_KEY`.
-- **Authored seeds**: `daybreak-blue-latest`, `daybreak-red-latest`, `gpt-5.6-cyber`, `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `text-embedding-3-small`, `text-embedding-3-large`, `text-embedding-ada-002`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows.
+- **Authored seeds**: `daybreak-blue-latest`, `daybreak-red-latest`, `gpt-5.6-cyber`, `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `text-embedding-3-small`, `text-embedding-3-large`, `text-embedding-ada-002`, `gpt-6-luna-decisions`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows. `gpt-6-luna-decisions` is a `judge` row on the `openai-decisions` API that requests wire id `gpt-6-luna`; until a regenerated bundle carries it, `openaiModelManagerOptions` appends it to successful discovery.
 
 
 ## OpenAI Codex
@@ -202,7 +202,7 @@ Provider-specific overrides in `packages/catalog/src/compat/rules/providers/goog
 
 ### Stream behavior
 - **`streamGenerateContent` SSE protocol**: Streams are consumed via `readSseJson<GenerateContentResponse>` in `streamGoogleGenAI`.
-- **Thought parts & signature retention**: `isThinkingPart` identifies reasoning text when `part.thought === true`. Encrypted `part.thoughtSignature` fields are preserved across deltas using `retainThoughtSignature`. In `convertMessages`, thought signatures are retained only when message provider/model match the target (`msg.provider === model.provider && msg.model === model.id`) and pass `isValidThoughtSignature` (base64 check). For Gemini 3 tool calls lacking a valid signature, the public Gemini API emits the `skip_thought_signature_validator` bypass sentinel on every unsigned call. Cloud Code Assist / Antigravity emits it only when the first call of a turn is unsigned; signed-first parallel turns omit it from unsigned secondary calls. Vertex AI always omits the sentinel (#9638, #10602).
+- **Thought parts & signature retention**: `isThinkingPart` identifies reasoning text when `part.thought === true`. `GoogleTextBlocks` folds streamed text and thought parts into blocks and keeps each `part.thoughtSignature` on the block whose part carried it, including the empty text part Gemini sends after a text reply's last chunk to sign the reply. In `convertMessages`, thought signatures are retained only when message provider/model match the target (`msg.provider === model.provider && msg.model === model.id`) and pass `isValidThoughtSignature` (base64 check); that model's own thinking replays as a `thought: true` part, signed or not, while other models' thinking arrives already demoted to text by `transformMessages`. For Gemini 3 tool calls lacking a valid signature, the public Gemini API emits the `skip_thought_signature_validator` bypass sentinel on every unsigned call. Cloud Code Assist / Antigravity emits it only when the first call of a turn is unsigned; signed-first parallel turns omit it from unsigned secondary calls. Vertex AI always omits the sentinel (#9638, #10602).
 - **Empty response retry loop**: `streamGoogleGenAI` guards against Gemini returning `finishReason: STOP` with blank content without calling tools. `hasMeaningfulGoogleContent` validates output; if empty, `streamGoogleGenAI` retries up to `MAX_EMPTY_STREAM_RETRIES` (2 retries, 3 total attempts) with exponential backoff (`EMPTY_STREAM_BASE_DELAY_MS * 2^attempt`) after resetting stream output via `resetGoogleStreamOutputForRetry`.
 - **Thinking loop guard**: Implemented in `packages/ai/src/utils/thinking-loop.ts` (`ThinkingLoopDetector`). Gemini, DeepSeek, and Grok model-id families are monitored before tool calls for these runaway shapes:
   1. *Verbatim tail repetition* (`EXACT_TAIL_WINDOW = 4096`, >= 180 repeated chars).
@@ -233,7 +233,7 @@ The Google Vertex AI provider enables streaming generation for Gemini models hos
 * **Cached Content Passthrough**: Passes caller-supplied `cachedContent` resource names opaquely into `params.config.cachedContent` (`google-shared.ts`), bypassing creation/refresh lifecycle.
 
 ### Stream behavior
-* **Gemini Streaming Execution**: Delegated to `streamGoogleGenAI` and `consumeGoogleStream` in `packages/ai/src/providers/google-shared.ts` with `retainTextSignature: true`. Handles SSE chunk parsing, text/thinking block aggregation (`thoughtSignature`), tool-call ID synthesis (generating IDs when Vertex omits them), and finish reasons.
+* **Gemini Streaming Execution**: Delegated to `streamGoogleGenAI` and `consumeGoogleStream` in `packages/ai/src/providers/google-shared.ts`. Handles SSE chunk parsing, text/thinking block aggregation (`thoughtSignature`), tool-call ID synthesis (generating IDs when Vertex omits them), and finish reasons.
 * **Anthropic-on-Vertex RawPredict Handling**: `isGoogleVertexAuthenticatedModel` in `packages/ai/src/stream.ts` matches `model.provider === "google-vertex"` with `anthropic-messages` API and `:streamRawPredict` baseUrl. Requests route through `streamAnthropic` using `apiKey: "vertex-adc"` and `createVertexAuthenticatedFetch`.
 * **Anthropic Request Rewriting**: `createVertexAuthenticatedFetch` in `packages/ai/src/stream.ts` invokes `resolveVertexRequest` to substitute `{project}` and `{location}` placeholders in URL, normalizes `:streamRawPredict/v1/messages` path to `:streamRawPredict`, and applies `transformVertexAnthropicBody` to strip `payload.model` (encoded in URL path) and inject `payload.anthropic_version = "vertex-2023-10-16"` into the JSON body.
 * **Anthropic Effort Beta Gating**: Vertex `rawPredict` rejects `anthropic-beta` HTTP headers with a 400 error. In `packages/ai/src/providers/anthropic.ts`, `effortBeta` (`effort-2025-11-24`), `contextManagementBeta`, and `output_config.effort` fields are gated off for `model.provider === "google-vertex"`. Fallback payloads in `anthropic.ts` also scrub `output_config.effort` on Vertex requests (#5614).
@@ -510,8 +510,10 @@ Cursor's integration in `packages/ai` operates over an HTTP/2 Connect RPC transp
 - **`rootPromptMessagesJson` & Blob Store**:
   - `buildGrpcRequest` passes conversation history as SHA-256 binary blob IDs (`blobStore`) in `rootPromptMessagesJson` and `turns`.
   - System prompts are stored as individual JSON blobs (`buildCursorSystemPromptJsons`), allowing independent server-side prefix blob caching hits when only downstream prompts change.
-- **Thinking Replay Safeguards**:
-  - Assistant thinking content is replayed in turn history (`canReplayCursorThinking`) only for same-model Kimi K3 variants (`assertCursorKimiK3HistoryReplayable`). Foreign or hidden reasoning is omitted to prevent leaking non-Cursor thinking blocks into native conversation turns.
+- **Thinking Replay**:
+  - A completed turn keeps the records Cursor's server wrote for it after the run's own user message (assistant and tool records with their reasoning, signatures and redacted reasoning) as a `cursorHistory` `providerPayload` (`captureCursorHistoryPayload`), provided the turn's last checkpoint came after all of its output and tool results, and at capture the opening user message and every stored tool result still match the fingerprints taken when the turn started and before each host callback ran (so host edits, in place or after the callback, count); the digest is taken once the host has stored every result, server-owned tools included. Later requests to the same provider and model on the same wire route send those records back byte for byte (`resolveCursorRecordReplays`) while the turn's opening user message, content and paired tool results still match that digest; another model's or route's turns, and turns whose user message, content or results were since rewritten (pruning, snapcompact, edits, secret redaction, a truncated result on resume), rebuild from content.
+  - The wire route (`cursorWireRoute`) is the requested model id, model-details id, max mode and parameters of the Run request as sent, after `onPayload`: a normalized request never reuses a discovered fallback's records, and a turn whose retries went out on different routes is not captured. When the hook changes the route of a request that replays records, each history field it left as built (`rootPromptMessagesJson`, `turns`, compared by a byte fingerprint taken before the hook) is rebuilt for the sent route; a field the hook edited goes out as the hook left it.
+  - Rebuilt turns carry no reasoning, except same-model Kimi K3 turns without usable records (`canReplayCursorThinking`, `assertCursorKimiK3HistoryReplayable`). Foreign or hidden reasoning is omitted to prevent leaking non-Cursor thinking blocks into native conversation turns.
 
 ### Stream behavior
 - **Length-Prefixed Connect Framing**:
@@ -2293,6 +2295,19 @@ Provider-specific overrides in `packages/catalog/src/compat/rules/providers/zhip
 - **Provider entry (`typesafe`)**: `packages/catalog/src/compat/rules/providers/typesafe.kdl` declares default model `jev-latest`. Environment keys: `TYPESAFE_API_KEY`.
 - **Authored seeds**: `jev-latest`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows.
 - Runtime manager: `typesafeModelManagerOptions` in `packages/catalog/src/provider-models/special.ts`.
+
+## Cloudflare Workers AI (`cloudflare-workers-ai`)
+
+### Special casings
+- Uses `workers-ai-systemone`: Cloudflare's Clef decision models take the System One body at `POST https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`. `<account>` resolves per request from the stored credential's account ID, else `CLOUDFLARE_ACCOUNT_ID`. `judgment-questions-max` caps a request at 64 questions (`providers/judgment-questions.kdl`).
+
+### Auth & usage
+- Login kind `custom` (`hook="cloudflare-workers-ai"`) is declared in `packages/catalog/src/compat/rules/auth/cloudflare-workers-ai.kdl` and implemented in `packages/ai/src/registry/oauth/cloudflare-workers-ai.ts`; it stores the API token and account ID through `serializeCloudflareCredential` (`packages/catalog/src/wire/cloudflare.ts`). Environment keys: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_AUTH_TOKEN`.
+
+### Catalog model handling
+- **Provider entry (`cloudflare-workers-ai`)**: `packages/catalog/src/compat/rules/providers/cloudflare-workers-ai.kdl` declares default model `@cf/cloudflare/clef`. Environment keys: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_AUTH_TOKEN`.
+- **Authored seeds**: `@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows.
+- Runtime manager: `cloudflareWorkersAiModelManagerOptions` in `packages/catalog/src/provider-models/special.ts`.
 
 ## Web search engines (`web`)
 

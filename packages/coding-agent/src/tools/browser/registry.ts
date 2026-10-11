@@ -37,13 +37,13 @@ import { TernSocketClient } from "./tern/wire";
 
 export type PuppeteerBrowserKind =
 	| {
-		kind: "headless";
-		headless: boolean;
-		/** Process-local launch flag; shared browsers use the tab-scoped CDP override instead. */
-		ignoreHttpsErrors?: boolean;
-		/** Process-local file access launch flag, unsupported by an already-running shared browser. */
-		allowFileAccess?: boolean;
-	}
+			kind: "headless";
+			headless: boolean;
+			/** Process-local launch flag; shared browsers use the tab-scoped CDP override instead. */
+			ignoreHttpsErrors?: boolean;
+			/** Process-local file access launch flag, unsupported by an already-running shared browser. */
+			allowFileAccess?: boolean;
+	  }
 	| { kind: "spawned"; path: string; args?: string[] }
 	| { kind: "connected"; cdpUrl: string }
 	| RelayKind;
@@ -146,7 +146,7 @@ export interface AcquireBrowserOptions {
 export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOptions): Promise<BrowserHandle> {
 	if (kind.kind === "spawned") kind = { ...kind, args: resolveSpawnArgs(kind.path, kind.args, opts.cwd) };
 	const key = browserKey(kind);
-	for (; ;) {
+	for (;;) {
 		const existing = browsers.get(key);
 		if (existing) {
 			if ("client" in existing || "webSocketUrl" in existing) return existing;
@@ -322,8 +322,13 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		// already outlived the window an installed extension needs to connect.
 		let outcome = await waitForRelayExtension(cdpUrl, opts.signal);
 		// A broker-owned relay outlives omp upgrades; replace an incompatible one
-		// with this version's once. A manually started relay is left to its owner.
+		// with this version's once, and a compatible older one only while no CDP
+		// client uses it. A manually started relay is left to its owner.
 		if (outcome === "outdated-relay" && autoStart && (await restartRelayDaemon({ cdpUrl, signal: opts.signal }))) {
+			outcome = await waitForRelayExtension(cdpUrl, opts.signal);
+		} else if (outcome === "idle-older-relay" && autoStart) {
+			// Probe again even when it was kept: another omp may have replaced it since.
+			await restartRelayDaemon({ cdpUrl, signal: opts.signal, idleOnly: true });
 			outcome = await waitForRelayExtension(cdpUrl, opts.signal);
 		}
 		if (outcome === "unreachable") {
@@ -558,10 +563,10 @@ async function openSharedHeadlessHandle(
 			browserWSEndpoint: shared.wsEndpoint,
 			defaultViewport: kind.headless
 				? {
-					width: vp.width,
-					height: vp.height,
-					deviceScaleFactor: vp.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
-				}
+						width: vp.width,
+						height: vp.height,
+						deviceScaleFactor: vp.deviceScaleFactor ?? DEFAULT_VIEWPORT.deviceScaleFactor,
+					}
 				: null,
 			protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 		});

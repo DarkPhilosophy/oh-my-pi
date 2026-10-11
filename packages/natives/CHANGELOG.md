@@ -7,12 +7,36 @@
 - Added persistent clipboard-write support through the public `@oh-my-pi/pi-natives/clipboard` entry point ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added a persistent clipboard-write API through the public `@oh-my-pi/pi-natives/clipboard` entry point ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 ### Changed
+## [18.9.2] - 2026-10-11
 
-- Sped up external commands in the embedded shell on Linux (glibc 2.29+) by spawning them without copying the host's memory (~9 ms → ~0.8 ms per launch at ~450 MB RSS) ([#14847](https://github.com/can1357/oh-my-pi/issues/14847), [#14858](https://github.com/can1357/oh-my-pi/pull/14858) by [@farnoy](https://github.com/farnoy))
-- Reduced macOS computer-use screenshot latency by about 35 ms per window capture; a machine holding thousands of off-screen windows no longer takes seconds per screenshot ([#15291](https://github.com/can1357/oh-my-pi/pull/15291) by [@will-bogusz](https://github.com/will-bogusz))
+### Fixed
+
+- Fixed stalls when highlighting Markdown tool previews containing many inline spans or backslash escapes.
+
+## [18.9.1] - 2026-10-11
+
+### Fixed
+
+- Fixed executable scripts without a `#!` line failing with "Exec format error" in the embedded shell ([#15271](https://github.com/can1357/oh-my-pi/pull/15271) by [@iliaal](https://github.com/iliaal)).
+
+## [18.9.0] - 2026-10-11
+
 ### Added
 
-- Added `applyBinaryPatch(oldPath, patchPath, outPath)`, which applies an HDiffPatch single-stream delta patch (zstd or uncompressed) to a file
+- Added `applyBinaryPatch(oldPath, patchPath, outPath)` for applying HDiffPatch single-stream delta patches, including zstd-compressed patches, to files.
+- macOS desktop sessions now keep the display awake while in use and expose screen-lock and display-sleep state through capabilities, `screenState`, and screen captures.
+
+### Changed
+
+- Improved Linux embedded-shell startup performance for external commands.
+- Improved macOS computer-use performance, including faster screenshots and accessibility queries, with better handling of large numbers of off-screen windows.
+- Updated `grep()` and `search()` to truncate matching lines around the first match when they exceed `maxColumns`, mark truncated sides with `...`, and report the match's character column.
+
+### Fixed
+
+- Fixed macOS accessibility and window-management operations requiring Screen Recording permission; only screenshots and display listing now require that permission, and window listing includes windows beyond the frontmost 48. Window titles from other applications remain unavailable without Screen Recording permission.
+- Fixed macOS menu inspection and selection for menus containing items whose titles cannot be read; those items are now skipped safely.
+- Fixed syntax highlighting and language detection for several languages, including TOML, PowerShell, SCSS, Less, Vim script, GraphQL, Protobuf, Terraform/HCL, Dockerfile, CMake, INI, gitignore, Kotlin, Swift, Elixir, Sass, Python f-strings, Julia interpolations, and Elixir interpolations.
 
 ## [18.8.8] - 2026-10-10
 

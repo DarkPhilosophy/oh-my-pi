@@ -417,17 +417,17 @@ function normalizeReady(ready: ServiceReady | undefined): ServiceReady | undefin
 	return { log, host, port, timeout };
 }
 
-export interface BashToolOptions { }
+export interface BashToolOptions {}
 
 type ManagedBashJobCompletion =
 	| {
-		kind: "completed";
-		result: AgentToolResult<BashToolDetails>;
-	}
+			kind: "completed";
+			result: AgentToolResult<BashToolDetails>;
+	  }
 	| {
-		kind: "failed";
-		error: unknown;
-	};
+			kind: "failed";
+			error: unknown;
+	  };
 
 interface ManagedBashJobHandle {
 	jobId: string;
@@ -643,7 +643,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		args.pty === true ? "exclusive" : "shared";
 	readonly strict = true;
 
-	constructor(private readonly session: ToolSession) { }
+	constructor(private readonly session: ToolSession) {}
 
 	/** URL filesystem for one embedded-shell run: this session's context, cancelled by the run's own signal. */
 	#urlFilesystem(signal: AbortSignal | undefined, tier: ToolTier): InternalUrlFilesystem {
@@ -1082,18 +1082,18 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		// env value naming an internal URL is located to its host path here.
 		const resolvedEnv = env
 			? Object.fromEntries(
-				await Promise.all(
-					Object.entries(env).map(async ([key, value]) => {
-						if (!isUrlPath(value)) return [key, value];
-						const located = await InternalUrlRouter.instance().locate(
-							value,
-							sessionResolveContext(this.session, { signal }),
-							{ create: true },
-						);
-						return [key, located ?? value];
-					}),
-				),
-			)
+					await Promise.all(
+						Object.entries(env).map(async ([key, value]) => {
+							if (!isUrlPath(value)) return [key, value];
+							const located = await InternalUrlRouter.instance().locate(
+								value,
+								sessionResolveContext(this.session, { signal }),
+								{ create: true },
+							);
+							return [key, located ?? value];
+						}),
+					),
+				)
 			: undefined;
 		// Best-effort cache invalidation: drop github-cache rows for any issue/PR
 		// number touched by a mutating `gh` subcommand inside this bash call so
@@ -1306,12 +1306,12 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const backendPreflight =
 			bridgeTerminalAvailable || canUseInteractiveBashPty(pty === true, ctx)
 				? await applyDirenvPreflight(command, commandCwd, {
-					callerEnv: resolvedEnv,
-					signal,
-					timeoutMs: cfgBashDirenvLoadTimeoutMs.get(this.session.settings),
-					callerTimeoutMs: timeoutMs,
-					direnvSetting: cfgBashDirenv.get(this.session.settings),
-				})
+						callerEnv: resolvedEnv,
+						signal,
+						timeoutMs: cfgBashDirenvLoadTimeoutMs.get(this.session.settings),
+						callerTimeoutMs: timeoutMs,
+						direnvSetting: cfgBashDirenv.get(this.session.settings),
+					})
 				: undefined;
 
 		// Route through the client terminal when the client advertises the terminal capability.
@@ -1449,7 +1449,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 				let lastPolledOutput: ClientBridgeTerminalOutput = { output: "", truncated: false };
 
 				// Poll until the process exits, times out, or the caller aborts.
-				for (; ;) {
+				for (;;) {
 					if (!bridge.outcome) {
 						// The sleep settles within one tick even when an outcome wakes us first.
 						const tick = Promise.withResolvers<void>();
@@ -1599,34 +1599,34 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		const wallTimeStart = performance.now();
 		const result: BashResult | BashInteractiveResult = interactiveUi
 			? await runInteractiveBashPty(interactiveUi, {
-				// PTY bypasses executeBash, so feed it the direnv-transformed
-				// command + merged env (backendPreflight is defined whenever this
-				// branch runs, since both gate on canUseInteractiveBashPty).
-				command: backendPreflight?.command ?? command,
-				cwd: commandCwd,
-				timeoutMs,
-				signal,
-				env: backendPreflight?.env ?? resolvedEnv,
-				artifactPath,
-				artifactId,
-			})
+					// PTY bypasses executeBash, so feed it the direnv-transformed
+					// command + merged env (backendPreflight is defined whenever this
+					// branch runs, since both gate on canUseInteractiveBashPty).
+					command: backendPreflight?.command ?? command,
+					cwd: commandCwd,
+					timeoutMs,
+					signal,
+					env: backendPreflight?.env ?? resolvedEnv,
+					artifactPath,
+					artifactId,
+				})
 			: // executeBash runs its OWN direnv preflight internally — pass the RAW
-			// command + resolvedEnv here so the unset prefix / env merge is not
-			// applied twice.
-			await executeBash(command, {
-				cwd: commandCwd,
-				sessionKey: this.session.getSessionId?.() ?? undefined,
-				timeout: timeoutMs ?? 0,
-				signal,
-				env: resolvedEnv,
-				gitGuard: cfgBashGitGuard.get(this.session.settings),
-				filesystem: this.#urlFilesystem(signal, approvalTier).shellFilesystem(),
-				artifactPath,
-				artifactId,
-				// Stream the sink's own inline view rather than re-buffering chunks.
-				onPreview: onUpdate ? text => onUpdate({ content: [{ type: "text", text }], details: {} }) : undefined,
-				onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
-			});
+				// command + resolvedEnv here so the unset prefix / env merge is not
+				// applied twice.
+				await executeBash(command, {
+					cwd: commandCwd,
+					sessionKey: this.session.getSessionId?.() ?? undefined,
+					timeout: timeoutMs ?? 0,
+					signal,
+					env: resolvedEnv,
+					gitGuard: cfgBashGitGuard.get(this.session.settings),
+					filesystem: this.#urlFilesystem(signal, approvalTier).shellFilesystem(),
+					artifactPath,
+					artifactId,
+					// Stream the sink's own inline view rather than re-buffering chunks.
+					onPreview: onUpdate ? text => onUpdate({ content: [{ type: "text", text }], details: {} }) : undefined,
+					onMinimizedSave: originalText => saveBashOriginalArtifact(this.session, originalText),
+				});
 		const wallTimeMs = performance.now() - wallTimeStart;
 		if (result.cancelled) {
 			// A cancelled result is either a timeout (the command's deadline fired)

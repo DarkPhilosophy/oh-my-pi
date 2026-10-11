@@ -101,7 +101,11 @@ export type DaemonSession = {
 	readonly sessionName?: string;
 	readonly autoCompactionEnabled?: boolean;
 	readonly queuedMessageCount?: number;
-	getQueuedMessages?(): { readonly steering: readonly string[]; readonly followUp: readonly string[] };
+	getQueuedMessages?(): {
+		readonly steering: readonly string[];
+		readonly followUp: readonly string[];
+		readonly liveSteered?: number;
+	};
 	readonly hasAdmittedSubmission?: boolean;
 	readonly hasPendingAsyncWork?: () => boolean;
 	readonly systemPrompt?: string[];
@@ -263,6 +267,7 @@ function sessionState(
 		queuedMessages: {
 			steering: [...(session.getQueuedMessages?.().steering ?? [])],
 			followUp: [...(session.getQueuedMessages?.().followUp ?? [])],
+			liveSteered: session.getQueuedMessages?.().liveSteered ?? 0,
 		},
 		hasPendingAsyncWork: session.hasPendingAsyncWork?.() ?? false,
 		isSettled:

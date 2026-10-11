@@ -92,7 +92,7 @@ async function startHarness(): Promise<Harness> {
 					slowModeEnabled: false,
 					messageCount: commandCount,
 					queuedMessageCount: 0,
-					queuedMessages: { steering: [], followUp: [] },
+					queuedMessages: { steering: [], followUp: [], liveSteered: 0 },
 					hasPendingAsyncWork: false,
 					isSettled: true,
 					goal: null,

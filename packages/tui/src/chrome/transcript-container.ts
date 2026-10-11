@@ -156,6 +156,7 @@ type Offered =
 const MAX_LIVE_BLOCKS = 256;
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
+const RETIREMENT_BUDGET_MS = 8;
 const EMPTY_ROWS: readonly string[] = [];
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
 
@@ -225,6 +226,7 @@ export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
 	#trackedChildren: Component[];
 	#childrenDirty = false;
+	#committedChildrenDirty = false;
 	#childrenUntrusted = false;
 	#frontier = 0;
 	#nextBatchId = 1;
@@ -265,14 +267,30 @@ export class TranscriptContainer extends Container {
 		return new Proxy(children, {
 			set: (target, key, value) => {
 				this.#childrenDirty = true;
+				if (
+					typeof key === "string" &&
+					Number(key) < this.#frontier &&
+					value !== this.#entries[Number(key)]?.component
+				) {
+					this.#committedChildrenDirty = true;
+				}
 				return Reflect.set(target, key, value);
 			},
 			deleteProperty: (target, key) => {
 				this.#childrenDirty = true;
+				if (typeof key === "string" && Number(key) < this.#frontier) this.#committedChildrenDirty = true;
 				return Reflect.deleteProperty(target, key);
 			},
 			defineProperty: (target, key, descriptor) => {
 				this.#childrenDirty = true;
+				if (
+					"value" in descriptor &&
+					typeof key === "string" &&
+					Number(key) < this.#frontier &&
+					descriptor.value !== this.#entries[Number(key)]?.component
+				) {
+					this.#committedChildrenDirty = true;
+				}
 				return Reflect.defineProperty(target, key, descriptor);
 			},
 		});
@@ -295,6 +313,25 @@ export class TranscriptContainer extends Container {
 			stableFrozen: false,
 			allocation: Number.POSITIVE_INFINITY,
 		});
+		this.#childrenDirty = false;
+	}
+
+	/**
+	 * `#entries` mirrors `children`; move both together or the next `#syncEntries`
+	 * pays a full O(n) rebuild.
+	 */
+	insertChildAt(component: Component, index: number): void {
+		this.addChild(component);
+		const from = this.children.length - 1;
+		if (index >= from) {
+			this.#childrenDirty = false;
+			return;
+		}
+		const [moved] = this.children.splice(from, 1);
+		if (moved) this.children.splice(index, 0, moved);
+		const [entry] = this.#entries.splice(this.#entries.length - 1, 1);
+		if (entry) this.#entries.splice(index, 0, entry);
+		// Both arrays moved in lockstep, so the live-tail check applies again.
 		this.#childrenDirty = false;
 	}
 
@@ -773,8 +810,8 @@ export class TranscriptContainer extends Container {
 			// a card that fits the viewport.
 			const offset =
 				entry.mode === "mutable" &&
-					projected > 0 &&
-					!this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width, frame))
+				projected > 0 &&
+				!this.#borrowedPrefixMatches(entry, this.#renderEntry(entry, width, frame))
 					? 0
 					: projected;
 			const rendered = this.#holdPeakHeight(entry, width, this.#renderEntry(entry, width, frame), offset);
@@ -894,7 +931,7 @@ export class TranscriptContainer extends Container {
 			const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
 			rows = after.slice(before.length);
 		} else if (offered.kind === "commit") {
-			rows = this.#renderRange(this.#frontier, offered.end, width, true);
+			rows = this.#renderRange(this.#frontier, offered.end, width, true).rows;
 		} else {
 			rows = this.#renderReplay(width);
 		}
@@ -912,6 +949,40 @@ export class TranscriptContainer extends Container {
 		const room = Math.max(0, Math.trunc(capacity));
 		const live = this.#liveEntries();
 		if (live.length === 0) return undefined;
+		// Ordinary finalized backlogs need only the visible tail measured; staged
+		// publications and borrowed rows retain the exact-height reconciliation below.
+		if (
+			policy === "pressure" &&
+			live[0]!.entry.state === "settled" &&
+			!live.some(
+				({ entry }) =>
+					entry.borrowed ||
+					(entry.component as Component & FinalizableBlock).commitToHistoryOnFinalize ||
+					(entry.component as Component & FinalizableBlock).commitsSettledStageEarly ||
+					(entry.state === "active" && entry.mode === "appendOnly"),
+			)
+		) {
+			let tailRows = 0;
+			let keep = 0;
+			for (let index = live.length - 1; index >= 0; index--) {
+				const { entry } = live[index]!;
+				this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+				const height = this.#renderEntry(entry, width).length;
+				const next = height > 0 ? tailRows + height + (tailRows > 0 ? 1 : 0) : tailRows;
+				if (next > room) {
+					// Keep a block whose final rows still occupy the physical screen.
+					keep = index + (room > 0 && tailRows < room ? 0 : 1);
+					break;
+				}
+				tailRows = next;
+			}
+			const limit = this.#frontier + Math.max(keep, this.#liveCount() - (MAX_LIVE_BLOCKS - 1));
+			let end = this.#frontier;
+			while (end < limit && this.#entries[end]?.state === "settled" && !isTransient(this.#entries[end]!.component))
+				end++;
+			if (end === this.#frontier) return undefined;
+			return this.#offerCommitRange(width, end, RETIREMENT_BUDGET_MS);
+		}
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
 		const rendered: (readonly string[])[] = new Array(live.length);
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
@@ -961,7 +1032,7 @@ export class TranscriptContainer extends Container {
 			0,
 			Math.trunc(
 				(head?.component as (Component & FinalizableBlock) | undefined)?.getTranscriptBlockSettledRows?.(width) ??
-				0,
+					0,
 			),
 		);
 		if (
@@ -1069,13 +1140,18 @@ export class TranscriptContainer extends Container {
 			return undefined;
 		}
 		this.#pinnedFrontier = undefined;
+		return this.#offerCommitRange(width, end, policy === "flush" ? undefined : RETIREMENT_BUDGET_MS);
+	}
+
+	#offerCommitRange(width: number, end: number, budgetMs?: number): HistoryBatch {
+		const retirement = this.#renderRange(this.#frontier, end, width, true, budgetMs);
 		const batch: HistoryBatch = {
 			id: this.#nextBatchId++,
-			rows: this.#renderRange(this.#frontier, end, width, true),
+			rows: retirement.rows,
 			kind: "append",
-			divergent: this.#hasDivergentBorrowedStream(this.#frontier, end, width),
+			divergent: this.#hasDivergentBorrowedStream(this.#frontier, retirement.end, width),
 		};
-		this.#offered = { batch, end, kind: "commit" };
+		this.#offered = { batch, end: retirement.end, kind: "commit" };
 		return batch;
 	}
 
@@ -1441,8 +1517,16 @@ export class TranscriptContainer extends Container {
 		return false;
 	}
 
-	#renderRange(start: number, end: number, width: number, trailingBlank: boolean): readonly string[] {
+	#renderRange(
+		start: number,
+		end: number,
+		width: number,
+		trailingBlank: boolean,
+		budgetMs?: number,
+	): { rows: readonly string[]; end: number } {
 		const rows: string[] = [];
+		const startedAt = budgetMs === undefined ? 0 : performance.now();
+		let reached = start;
 		// A block already fully in scrollback (borrowed or emitted) contributes no
 		// rows, but the blank that separates it from the next block is only in
 		// scrollback when the terminal borrowed that row too. Otherwise the
@@ -1450,7 +1534,9 @@ export class TranscriptContainer extends Container {
 		// previous card — the seam bites a row out of the earlier viewport.
 		let separatorOwed = false;
 		for (let index = start; index < end; index++) {
+			if (index > start && budgetMs !== undefined && performance.now() - startedAt >= budgetMs) break;
 			const entry = this.#entries[index]!;
+			reached = index + 1;
 			this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			// Only the range head is sliced by its emitted stable prefix; every other
 			// entry renders whole, so the append-only verification pass (a second
@@ -1487,11 +1573,11 @@ export class TranscriptContainer extends Container {
 			rows.push(...block);
 		}
 		if (trailingBlank && (rows.length > 0 || separatorOwed)) rows.push("");
-		return rows;
+		return { rows, end: reached };
 	}
 
 	#renderReplay(width: number): readonly string[] {
-		const rows = Array.from(this.#renderRange(0, this.#frontier, width, true));
+		const rows = Array.from(this.#renderRange(0, this.#frontier, width, true).rows);
 		const head = this.#entries[this.#frontier];
 		if (head !== undefined && head.emitted > 0) {
 			this.#setAllocation(head, Number.MAX_SAFE_INTEGER, this.#lastFrame);
@@ -1578,12 +1664,14 @@ export class TranscriptContainer extends Container {
 		// A replaced public array may still have a mutable external alias.
 		if (this.children !== this.#trackedChildren) this.#childrenUntrusted = true;
 		if (!this.#childrenDirty && !this.#childrenUntrusted) return;
+		const start = this.#childrenUntrusted || this.#committedChildrenDirty ? 0 : this.#frontier;
 		this.#childrenDirty = false;
-		if (
-			this.#entries.length === this.children.length &&
-			this.#entries.every((entry, index) => entry.component === this.children[index])
-		)
-			return;
+		this.#committedChildrenDirty = false;
+		let matches = this.#entries.length === this.children.length;
+		for (let index = start; matches && index < this.#entries.length; index++) {
+			matches = this.#entries[index]!.component === this.children[index];
+		}
+		if (matches) return;
 		const existing = new Map(this.#entries.map(entry => [entry.component, entry]));
 		this.#entries = this.children.map(
 			component =>
@@ -1605,4 +1693,4 @@ export class TranscriptContainer extends Container {
 }
 
 /** Groups sibling rows into one conservative mutable semantic transcript block. */
-export class TranscriptBlock extends Container { }
+export class TranscriptBlock extends Container {}

@@ -209,6 +209,8 @@ function withDirectCost(metrics: AgentMetrics | undefined, cost: number | undefi
 
 /**
  * Preserve progress/history for non-cost metrics, overlaying cumulative direct-session cost.
+ * Persisted `history.metrics.cost` is a leaf-scoped snapshot, so it never overrides live
+ * progress; only the cumulative direct-cost sources do.
  */
 export function hubRowMetrics<TRecord extends AgentRecordLike>(
 	ref: TRecord,
@@ -219,8 +221,7 @@ export function hubRowMetrics<TRecord extends AgentRecordLike>(
 	const liveEntry = session ? sessionMetrics.get(session) : undefined;
 	const retainedEntry = sessionMetrics.get(ref);
 	const historyMetrics = ref.history?.metrics;
-	const cost =
-		liveEntry?.metrics?.cost ?? ref.history?.directCost ?? retainedEntry?.metrics?.cost ?? historyMetrics?.cost;
+	const cost = liveEntry?.metrics?.cost ?? ref.history?.directCost ?? retainedEntry?.metrics?.cost;
 	if (observed?.progress) return withDirectCost(progressMetrics(observed), cost);
 	if (historyMetrics) return withDirectCost(historyMetrics, cost);
 	if (!session && retainedEntry?.metrics) return withDirectCost(retainedEntry.metrics, cost);

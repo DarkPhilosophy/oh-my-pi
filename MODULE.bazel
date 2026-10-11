@@ -189,6 +189,10 @@ crate.from_cargo(
     ],
 )
 
+# Discover host tools rather than assuming system-wide installation directories.
+native_build_tools_repository = use_repo_rule("//bazel:host-tools.bzl", "native_build_tools_repository")
+native_build_tools_repository(name = "native_build_tools")
+
 # opusic-sys builds its bundled Opus via `cmake` and selects Ninja from PATH.
 # The target-specific toolchain keeps MSVC cross builds on the wrapper
 # compiler/linker; CFLAGS keeps Zig cross builds free of host UBSan links.
@@ -197,8 +201,10 @@ crate.annotation(
         "CMAKE_TOOLCHAIN_FILE_x86_64_pc_windows_msvc": "$${pwd}/external/+msvc_cc_repository+msvc_cc/toolchain.cmake",
         "CMAKE_TOOLCHAIN_FILE_aarch64_pc_windows_msvc": "$${pwd}/external/+msvc_cc_repository+msvc_cc_arm64/toolchain.cmake",
         "CFLAGS": "-fno-sanitize=undefined",
-        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/run/current-system/sw/bin",
+        "PATH": "$${pwd}/external/+native_build_tools_repository+native_build_tools:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/run/current-system/sw/bin",
     },
+    build_script_tools = ["@native_build_tools//:cmake", "@native_build_tools//:ninja"],
+    label_injections = {"@native_build_tools": "@native_build_tools"},
     crate = "opusic-sys",
 )
 
@@ -206,8 +212,10 @@ crate.annotation(
 # the C API headers tree-sitter compiles against; same host PATH as opusic-sys.
 crate.annotation(
     build_script_env = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/run/current-system/sw/bin",
+        "PATH": "$${pwd}/external/+native_build_tools_repository+native_build_tools:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/run/current-system/sw/bin",
     },
+    build_script_tools = ["@native_build_tools//:cmake"],
+    label_injections = {"@native_build_tools": "@native_build_tools"},
     crate = "wasmtime-c-api-impl",
 )
 

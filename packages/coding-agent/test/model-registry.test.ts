@@ -5,12 +5,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Effort, type FetchImpl, type Model, type OpenAICompat, type ThinkingConfig } from "@oh-my-pi/pi-ai";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
+import { resolveOpenAIRequestSetup } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { streamSimple } from "@oh-my-pi/pi-ai/stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resolveMaxContextWindow } from "@oh-my-pi/pi-catalog/compat/context-window";
 import { factoryDroidRegistry, resolveFactoryDroidPolicy } from "@oh-my-pi/pi-catalog/compat/factory-droid";
 import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import { fingerprintStaticModels } from "@oh-my-pi/pi-catalog/model-manager";
+import { resolveModelCacheProviderId } from "@oh-my-pi/pi-catalog/provider-models/cache-provider-id";
 import * as catalogModels from "@oh-my-pi/pi-catalog/models";
 import { calculateUsageCost, getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
@@ -3488,7 +3490,7 @@ describe("ModelRegistry", () => {
 			// applies the models.yml override before composition sees it, so
 			// the clamp must hold on every override pass, not just the last.
 			writeModelCache(
-				"openai-codex",
+				resolveModelCacheProviderId("openai-codex"),
 				Date.now(),
 				[{ ...astra, contextWindow: 272_000, maxContextWindow: 872_000 }],
 				true,
@@ -3505,7 +3507,7 @@ describe("ModelRegistry", () => {
 			const astra = registry.find("openai-codex", "gpt-6-astra");
 			if (!astra) throw new Error("Expected bundled Astra model");
 			writeModelCache(
-				"openai-codex",
+				resolveModelCacheProviderId("openai-codex"),
 				Date.now(),
 				[
 					{ ...astra, contextWindow: 1_050_000, maxContextWindow: 872_000 },
@@ -3540,11 +3542,25 @@ describe("ModelRegistry", () => {
 			const astra = registry.find("openai-codex", "gpt-6-astra");
 			if (!astra) throw new Error("Expected bundled Astra model");
 			const dbPath = path.join(tempDir, "models.db");
-			writeModelCache("openai-codex", Date.now(), [{ ...astra, maxContextWindow: 1_200_000 }], true, "", dbPath);
+			writeModelCache(
+				resolveModelCacheProviderId("openai-codex"),
+				Date.now(),
+				[{ ...astra, maxContextWindow: 1_200_000 }],
+				true,
+				"",
+				dbPath,
+			);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(1_200_000);
 
-			writeModelCache("openai-codex", Date.now(), [{ ...astra, maxContextWindow: 872_000 }], true, "", dbPath);
+			writeModelCache(
+				resolveModelCacheProviderId("openai-codex"),
+				Date.now(),
+				[{ ...astra, maxContextWindow: 872_000 }],
+				true,
+				"",
+				dbPath,
+			);
 			await registry.reapplyModelPolicies();
 			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(922_000);
 		});
@@ -3552,11 +3568,12 @@ describe("ModelRegistry", () => {
 		test("restores a discovered maximum from cache ahead of the default on each toggle", async () => {
 			const testSettings = Settings.isolated();
 			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
-			const legacy = registry.find("openai-codex", "gpt-5.5");
 			const extended = registry.find("openai-codex", "gpt-5.6-luna");
-			if (!legacy || !extended) throw new Error("Expected bundled Codex models");
+			if (!extended) throw new Error("Expected bundled Codex model");
+			// Discovery can restore a retired model that is no longer bundled.
+			const legacy = buildModel({ ...extended, id: "gpt-5.5", contextWindow: 272_000 });
 			writeModelCache(
-				"openai-codex",
+				resolveModelCacheProviderId("openai-codex"),
 				Date.now(),
 				[
 					{ ...legacy, maxContextWindow: 640_000 },
@@ -4204,7 +4221,7 @@ describe("ModelRegistry", () => {
 				buildModel({
 					id: "minimax/minimax-m3",
 					name,
-					api: "openai-completions",
+					api: "openai-responses",
 					provider: "litellm-proxy",
 					baseUrl: "http://litellm-proxy.example:4000/v1",
 					reasoning: true,
@@ -4314,10 +4331,21 @@ describe("ModelRegistry", () => {
 			expect(getModelsForProvider(litellmStaleNamespaceCache, "litellm-proxy")).toHaveLength(0);
 		});
 
-		test("loads litellm discovery rows cached under the rich-v5 namespace", () => {
+		test("restores LiteLLM backend session policy from rich-v5 alias rows without changing their API", () => {
 			const model = litellmCurrentNamespaceCache.find("litellm-proxy", "minimax/minimax-m3");
 			expect(model?.name).toBe("MiniMax-M3");
 			expect(model?.provider).toBe("litellm-proxy");
+			if (!model) throw new Error("Missing cached LiteLLM model");
+			expect(model.api).toBe("openai-responses");
+			expect(model.providerType).toBe("litellm");
+			if (model.api !== "openai-responses") throw new Error("Expected cached Responses API");
+			expect(
+				resolveOpenAIRequestSetup(model as Model<"openai-responses">, {
+					apiKey: "test",
+					messages: [],
+					sessionId: "cached-alias-session",
+				}).requestHeaders["x-litellm-session-id"],
+			).toBe("cached-alias-session");
 		});
 
 		test("ignores openai-models-list rows cached under the retired context-v2 namespace", () => {

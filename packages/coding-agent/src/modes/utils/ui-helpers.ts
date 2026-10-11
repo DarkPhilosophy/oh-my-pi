@@ -143,6 +143,7 @@ function queuedMessageVisualRowCount(message: string, boxWidth: number): number 
 type QueuedMessages = {
 	steering: string[];
 	followUp: string[];
+	liveSteered: number;
 };
 type AddMessageOptions = {
 	imageLinks?: readonly (string | undefined)[];
@@ -663,6 +664,7 @@ export class UiHelpers {
 						continue;
 					}
 					const afterToolSegment = timeline.afterToolCalls.get(content.id);
+					if (content.name === "read") readToolCallArgs.set(content.id, normalizeToolArgs(content.arguments));
 					if (options.preservedLiveToolCallIds?.has(content.id)) {
 						appendAssistantSegment(afterToolSegment);
 						continue;

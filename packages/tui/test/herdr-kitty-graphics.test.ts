@@ -54,11 +54,17 @@ describe("Herdr Kitty forwarding discovery", () => {
 	);
 
 	it("trusts the spawn marker without contacting the daemon", async () => {
-		expect(await check({ kitty_graphics: false }, { HERDR_KITTY_GRAPHICS: "1" })).toEqual({ result: true, requests: 0 });
+		expect(await check({ kitty_graphics: false }, { HERDR_KITTY_GRAPHICS: "1" })).toEqual({
+			result: true,
+			requests: 0,
+		});
 	});
 
 	it("never second-guesses an explicit marker value", async () => {
-		expect(await check({ kitty_graphics: true }, { HERDR_KITTY_GRAPHICS: "0" })).toEqual({ result: false, requests: 0 });
+		expect(await check({ kitty_graphics: true }, { HERDR_KITTY_GRAPHICS: "0" })).toEqual({
+			result: false,
+			requests: 0,
+		});
 	});
 
 	it.each(["TMUX", "STY", "ZELLIJ", "CMUX_WORKSPACE_ID", "WMUX", "WMUX_SURFACE_ID", "HERDR_PLUGIN_ID"])(
