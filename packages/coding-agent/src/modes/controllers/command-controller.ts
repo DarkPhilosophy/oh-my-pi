@@ -1,4 +1,3 @@
-import { Container } from "@oh-my-pi/pi-tui";
 import { formatUnavailableAccountLabel, fitAccountLabel } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
 import {
 	type AccountLabel,
@@ -114,6 +113,7 @@ import { openPath } from "../../utils/open";
 import { resumeCommand } from "../../utils/resume-command";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import {
+	bankedResetCreditExpiryMs,
 	collapseSharedUsageReports,
 	formatLimitTitle,
 	summarizeUsageResetCredits,
@@ -202,7 +202,7 @@ function hasForkApiKeyOverride(argv: string[]): boolean {
 export class CommandController {
 	/** The open native report sheet. */
 	#reportSheet: OverlayHandle | undefined;
-	#reportOpenedAtBottom = false;
+
 	#forkTerminalDependencies: ForkTerminalDependencies;
 
 	constructor(
@@ -222,10 +222,7 @@ export class CommandController {
 
 	/** Esc: take away the report shown above the editor (text mode); false when none is shown. */
 	dismissCommandReport(): boolean {
-		if (!this.#clearReport()) return false;
-		if (this.#reportOpenedAtBottom) this.ctx.pinComposerToBottom();
-		this.#reportOpenedAtBottom = false;
-		return true;
+		return this.#clearReport();
 	}
 
 	/**
@@ -267,15 +264,6 @@ export class CommandController {
 	 * Esc or Close.
 	 */
 	showCommandReport(options: { title: string; head?: TspText; body: Component }): void {
-		if (!isNativeRendering()) {
-			const panel = new Container();
-			panel.addChild(new Text(theme.bold(options.title), 0, 0));
-			panel.addChild(options.body);
-			this.ctx.presentCommandOutput(panel);
-			return;
-		}
-		const openedAtBottom =
-			this.ctx.reportContainer.children.length > 0 ? this.#reportOpenedAtBottom : this.ctx.composerInputAtBottom();
 		this.#clearReport();
 		this.#closeReportSheet();
 		const terminal = this.ctx.ui.terminal;
@@ -304,7 +292,6 @@ export class CommandController {
 			this.ctx.ui.setFocus(report);
 		} else {
 			this.ctx.reportContainer.addChild(report);
-			this.#reportOpenedAtBottom = openedAtBottom;
 		}
 		this.ctx.ui.requestRender();
 	}
@@ -2889,15 +2876,11 @@ export function renderUsageReports(
 			}
 			for (const credit of report.resetCredits?.credits ?? []) {
 				if (!credit.expiresAt) continue;
-				const expiryMs = Date.parse(credit.expiresAt);
-				if (Number.isNaN(expiryMs)) continue;
+				const expiryMs = bankedResetCreditExpiryMs(credit);
+				if (expiryMs === undefined || expiryMs <= nowMs) continue;
 				const remaining = expiryMs - nowMs;
 				const expiryDate = credit.expiresAt.slice(0, 10);
-				resetAccountLines.push(
-					remaining > 0
-						? `        expires in ${formatDuration(remaining)} (${expiryDate})`
-						: `        expired (${expiryDate})`,
-				);
+				resetAccountLines.push(`        expires in ${formatDuration(remaining)} (${expiryDate})`);
 			}
 			if (resets.redeemableCount === 0 && resets.unavailableReason) {
 				const reason = sanitizeText(maskText(resets.unavailableReason).replace(/[\r\n\t]+/g, " "));

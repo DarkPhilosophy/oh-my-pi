@@ -101,7 +101,7 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 		await initTheme();
 	});
 
-	it("freezes progress and animation when any task rows are borrowed into history", () => {
+	it("freezes progress and animation after a task snapshot is committed to history", () => {
 		vi.useFakeTimers();
 		const transcript = new TranscriptContainer();
 		const component = new ToolExecutionComponent(
@@ -120,7 +120,9 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 			component.parkAsBackground();
 			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
 			const before = component.render(100).join("\n");
-			transcript.setBorrowedViewportRows(1);
+			const batch = transcript.peekFinalizedBatch(100, 0)!;
+			expect(batch.rows.join("\n")).toContain("initial progress");
+			transcript.acknowledgeFinalizedBatch(batch.id);
 			component.updateResult(asyncSnapshot("late shape-changing progress"), true);
 			vi.advanceTimersByTime(1000);
 			expect(component.render(100).join("\n")).toBe(before);
@@ -130,7 +132,7 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 			vi.useRealTimers();
 		}
 	});
-	it("does not mutate a borrowed task on its first running snapshot", () => {
+	it("keeps a parked task mutable until its first running snapshot arrives", () => {
 		const transcript = new TranscriptContainer();
 		const component = new ToolExecutionComponent(
 			"task",
@@ -146,17 +148,16 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 			transcript.addChild(component);
 			component.parkAsBackground();
 			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
-			const before = component.render(100).join("\n");
-			transcript.setBorrowedViewportRows(1);
-			component.updateResult(asyncSnapshot("must not repaint"), true);
-			expect(component.render(100).join("\n")).toBe(before);
-			expect(transcript.canRemoveBlock(component)).toBe(false);
+			expect(transcript.peekFinalizedBatch(100, 0)).toBeUndefined();
+			component.updateResult(asyncSnapshot("first running progress"), true);
+			expect(stripVTControlCharacters(component.render(100).join("\n"))).toContain("first running progress");
+			expect(transcript.canRemoveBlock(component)).toBe(true);
 		} finally {
 			component.seal();
 		}
 	});
 
-	it("does not apply a direct final result after running task rows are borrowed", () => {
+	it("does not apply a direct final result after a running task snapshot is committed", () => {
 		const transcript = new TranscriptContainer();
 		const component = new ToolExecutionComponent(
 			"task",
@@ -174,7 +175,9 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 			component.parkAsBackground();
 			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
 			const before = component.render(100).join("\n");
-			transcript.setBorrowedViewportRows(1);
+			const batch = transcript.peekFinalizedBatch(100, 0)!;
+			expect(batch.rows.join("\n")).toContain("immutable running progress");
+			transcript.acknowledgeFinalizedBatch(batch.id);
 			component.updateResult(finalSnapshot("must be delivered separately"), false);
 			expect(component.render(100).join("\n")).toBe(before);
 			expect(transcript.canRemoveBlock(component)).toBe(false);
@@ -183,7 +186,7 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 		}
 	});
 
-	it("keeps borrowed partial arguments immutable through completion", () => {
+	it("keeps partial arguments mutable while no task snapshot has been published", () => {
 		const transcript = new TranscriptContainer();
 		const component = new ToolExecutionComponent(
 			"task",
@@ -191,7 +194,7 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 				agent: "scout",
 				id: "Anna",
 				description: "scout auth",
-				assignment: "partial",
+				task: "partial",
 			},
 			{ liveRegion: transcript },
 			undefined,
@@ -203,19 +206,19 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 		try {
 			transcript.addChild(component);
 			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
-			const before = component.render(100).join("\n");
-			transcript.setBorrowedViewportRows(1);
-			component.updateArgs({ assignment: "more" });
+			expect(transcript.peekFinalizedBatch(100, 0)).toBeUndefined();
+			component.updateArgs({ task: "more" });
 			component.setArgsComplete();
 			component.setExecutionStarted();
 			component.invalidate();
-			expect(component.render(100).join("\n")).toBe(before);
+			expect(stripVTControlCharacters(component.render(100).join("\n"))).toContain("more");
+			expect(transcript.canRemoveBlock(component)).toBe(true);
 		} finally {
 			component.seal();
 		}
 	});
 
-	it("keeps borrowed synchronous task presentation while retaining final result", () => {
+	it("publishes a synchronous task's final result rather than freezing its pending presentation", () => {
 		const transcript = new TranscriptContainer();
 		const component = new ToolExecutionComponent(
 			"task",
@@ -235,10 +238,12 @@ describe("ToolExecutionComponent detached task lifecycle", () => {
 		try {
 			transcript.addChild(component);
 			transcript.renderViewport(100, 10, { now: 0, tick: 0 });
-			const before = component.render(100).join("\n");
-			transcript.setBorrowedViewportRows(1);
+			expect(transcript.peekFinalizedBatch(100, 0)).toBeUndefined();
 			component.updateResult(finalSnapshot("canonical final"), false);
-			expect(component.render(100).join("\n")).toBe(before);
+			expect(stripVTControlCharacters(component.render(100).join("\n"))).toContain("canonical final");
+			const batch = transcript.peekFinalizedBatch(100, 0)!;
+			expect(batch.rows.join("\n")).toContain("canonical final");
+			transcript.acknowledgeFinalizedBatch(batch.id);
 			expect(component.isTranscriptBlockFinalized()).toBe(true);
 		} finally {
 			component.seal();

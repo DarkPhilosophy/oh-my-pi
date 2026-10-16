@@ -7,7 +7,7 @@ import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
 import { getImageDimensions, ImageProtocol, imageFallback, TERMINAL } from "../terminal-capabilities";
 import { type Component, Container, type TUI } from "../tui";
-import { applyBackgroundToLine, truncateToWidth } from "../utils";
+import { truncateToWidth } from "../utils";
 import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Theme } from "../theme/theme";
 import { ensureThemeSync, getThemeEpoch, theme } from "../theme/theme";
@@ -19,7 +19,6 @@ import {
 	type ToolRenderer,
 	toolRenderers,
 } from "../tools/index";
-import { formatEarlierLines, formatExpandHint } from "../render/render-utils";
 import { describeDefaultToolExecution, formatDefaultToolExecution } from "../tools/default-renderer";
 import { INTENT_FIELD, type TspCardStatus, type TspPreview, type TspText, type TspTone } from "@oh-my-pi/pi-wire";
 import { card, col, EMPTY_NODE, node, span, text, withHidden } from "../native/describe";
@@ -394,16 +393,6 @@ let toolExecutionInstanceSeq = 0;
  * Component that renders a tool call with its result (updateable)
  */
 export class ToolExecutionComponent extends Container {
-	/** A running call's command stage is final; the transcript may write it to history before the call ends. */
-	get commitsSettledStageEarly(): boolean {
-		// Only tools whose card keeps a frozen command stage above a live output stage declare one.
-		return this.#toolName === "bash" || this.#toolName === "eval";
-	}
-
-	/** Completed foreground results may retire while other calls or the assistant still stream. */
-	get commitToHistoryOnFinalize(): boolean {
-		return !this.isTranscriptBlockTransient() && !this.isDisplaceableBlock();
-	}
 	#contentBox: Box; // Used for custom tools and bash visual truncation
 	#contentText: WidthAwareText; // Generic fallback (no custom/built-in renderer)
 	// Which container the constructor mounted: bespoke/built-in renderers use
@@ -420,18 +409,10 @@ export class ToolExecutionComponent extends Container {
 	#args: unknown;
 	#expanded = false;
 	#allocation = Number.POSITIVE_INFINITY;
-	/** Stage boundary of the last unclipped render: the width it was measured at and the rows it covers. */
-	#stageMeasure: { width: number; rows: number; leadingBlanks: number; window: number } | undefined;
+
 	/** Widest lower box drawn at `width` with `expanded` as it was; only grows, restarts on a width or expand change. */
 	#liveWidthMax: { width: number; expanded: boolean; value: number } | undefined;
-	/**
-	 * Preview window the top stage was drawn with when it was first offered to history. Frozen from then on:
-	 * rows already written to scrollback cannot change, so a terminal that grows or shrinks mid-call must not
-	 * redraw the stage with a different window (the live output window keeps following the terminal).
-	 */
-	#stageWindow: number | undefined;
-	/** Expand state the top stage was drawn with at first offer; ctrl+O afterwards only affects the live stage. */
-	#stageExpanded: boolean | undefined;
+
 	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
 	#showImages: boolean;
@@ -1014,84 +995,34 @@ export class ToolExecutionComponent extends Container {
 		return !this.#isPartial;
 	}
 
-	/**
-	 * Partial-result snapshots and parked background tasks can contract before
-	 * their final presentation is known. Keep their current rows reversible;
-	 * argument-only calls must not reserve space belonging to preceding text.
-	 */
-	/**
-	 * Arguments are complete and the call has not started running: the rows are
-	 * fixed until execution, so rows scrolled above the screen may go to native
-	 * history now (a later change is reconciled by one history replay) instead
-	 * of being hidden until the whole reply finishes.
-	 */
-	isTranscriptPreviewSettled(): boolean {
-		// An animated pending preview (eval's spinner) changes rows every tick;
-		// lending those would replay history on each frame.
-		return (
-			this.#argsComplete &&
-			!this.#executionStarted &&
-			this.#result === undefined &&
-			!this.#sealed &&
-			!this.#spinnerActive &&
-			this.#renderer?.animatedPendingPreview !== true
-		);
-	}
+	readonly commitToHistoryOnFinalize = true;
+	#stageMeasure: { width: number; rows: number; window: number } | undefined;
+	#stageWindow: number | undefined;
+	#stageExpanded: boolean | undefined;
 
-	/**
-	 * Leading rows of the last render that no later chunk can change: the frame, head and command (the
-	 * stage above the `Output` separator, which is NOT included because its text follows the state).
-	 * Answers only for the width the card was last drawn at, so a resized terminal commits nothing until
-	 * it is drawn again; zero otherwise and for cards without a staged frame.
-	 */
-	getTranscriptBlockSettledRows(width?: number): number {
+	getTranscriptReadyRowCount(width: number): number {
 		const measure = this.#stageMeasure;
-		if (measure === undefined || this.#sealed || !this.#executionStarted) return 0;
-		if (width !== undefined && width !== measure.width) return 0;
-		// The first offer commits the stage's shape: from here on it is drawn with this window.
-		if (this.commitsSettledStageEarly) {
-			this.#stageWindow ??= measure.window;
-			this.#stageExpanded ??= this.#expanded;
-		}
+		if (!measure || measure.width !== width || !this.#executionStarted || this.#sealed) return 0;
+		this.#stageWindow ??= measure.window;
+		this.#stageExpanded ??= this.#expanded;
 		return measure.rows;
 	}
 
-	/**
-	 * Rows of the command stage a running call has committed, for the width it was last drawn at, taken
-	 * from the trimmed render (the leading blank rows are not part of what the transcript slices).
-	 */
-	#committedStageRows(width: number): number {
-		// A measurement taken while arguments stream is not a committed prefix.
-		// Protecting it as history forces an oversized preview into an empty compact card.
-		if (!this.#executionStarted || this.#sealed) return 0;
-		const measure = this.#stageMeasure;
-		if (measure === undefined || measure.width !== width || !this.commitsSettledStageEarly) return 0;
-		return measure.rows - measure.leadingBlanks;
+	#outputPreviewLines(): number {
+		// Preserve the live separator, truncation marker and closing border.
+		const stageRows = this.#stageWindow === undefined ? (this.#stageMeasure?.rows ?? 0) : 0;
+		return Math.max(1, Math.min(DEFAULT_TERMINAL_PREVIEW_LINES, this.#allocation - stageRows - 3));
 	}
 
-	/** Window the top stage is drawn with: live until the stage is first offered to history, then frozen. */
-	#topStageWindow(): number {
-		return this.#stageWindow ?? previewWindowRows();
-	}
-
-	/** Expand state the top stage is drawn with: live until first offered to history, then frozen. */
-	#topStageExpanded(): boolean {
-		return this.#stageExpanded ?? this.#expanded;
-	}
-
-	/** Running call whose pending preview will settle shorter: its rows are reversible, unlike a bash card that only grows. */
-	isTranscriptPreviewContracting(): boolean {
-		return (
-			!this.#sealed &&
-			this.#result === undefined &&
-			this.#executionStarted &&
-			this.#renderer?.pendingPreviewContracts === true
-		);
-	}
-
-	isTranscriptBlockTransient(): boolean {
-		if (this.#sealed || !this.#toolActivityVisible) return false;
-		return this.#parkedBackground || (this.#result !== undefined && this.#isPartial);
+	#measureStage(width: number): void {
+		this.#stageMeasure = undefined;
+		if (this.#toolName !== "bash" && this.#toolName !== "eval") return;
+		let stage = 0;
+		for (const child of this.#contentBox.children) {
+			if (hasTopStageRows(child)) stage = Math.max(stage, child.topStageRows());
+		}
+		if (stage === 0) return;
+		this.#stageMeasure = { width, rows: stage, window: this.#stageWindow ?? previewWindowRows() };
 	}
 
 	/**
@@ -1622,6 +1553,7 @@ export class ToolExecutionComponent extends Container {
 			return [];
 		}
 		let lines = super.render(width);
+		this.#measureStage(width);
 		if (this.#allocation < 3) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
@@ -1632,30 +1564,8 @@ export class ToolExecutionComponent extends Container {
 			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
 			lines = trimmed;
 		}
-		if (!this.isTranscriptBlockFinalized() && Number.isFinite(this.#allocation)) {
-			const trimmed = trimBlankEdges(lines);
-			if (trimmed.length > this.#allocation) {
-				// The head row of a framed card is its border; the title that names the
-				// tool sits one row below. Keep both so a clipped card still says what
-				// is running.
-				const framedHeadRows = Bun.stripANSI(trimmed[0]!).replace(/[\s╭╮─┌┐━┏┓│]/g, "") === "" ? 2 : 1;
-				// Rows already written to history are sliced off this render by the transcript afterwards.
-				// Keeping only the frame here would let that slice eat the elision marker instead of the
-				// committed command, so keep exactly what was committed (never fewer than the frame).
-				const headRows = Math.max(framedHeadRows, this.#committedStageRows(width));
-				if (this.#allocation < headRows + 3) return this.#renderCompact(width);
-				const hidden = trimmed.length - this.#allocation + 1;
-				const markerText = truncateToWidth(
-					`${theme.fg("dim", `│ ${formatEarlierLines({ hidden, shown: this.#allocation - headRows - 1 })}`)} ${formatExpandHint(theme, false, true)}`,
-					width,
-				);
-				const marker = applyBackgroundToLine(markerText, width, text => theme.bg("toolPendingBg", text));
-				return [...trimmed.slice(0, headRows), marker, ...trimmed.slice(-(this.#allocation - headRows - 1))];
-			}
-		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
-		this.#stageMeasure = this.#measureStage(lines, width);
 		this.#recordLiveWidth(width);
 		return lines;
 	}
@@ -1670,25 +1580,6 @@ export class ToolExecutionComponent extends Container {
 		const keep = this.#liveWidthMax;
 		const same = keep !== undefined && keep.width === width && keep.expanded === this.#expanded;
 		this.#liveWidthMax = { width, expanded: this.#expanded, value: Math.max(same ? keep.value : 0, drawn) };
-	}
-
-	/**
-	 * Rows of this render that precede the live stage, counted from the top of the UNTRIMMED render (the
-	 * container takes the leading blanks off itself). Read from the framed card just drawn; nothing is
-	 * rendered here.
-	 */
-	#measureStage(
-		lines: readonly string[],
-		width: number,
-	): { width: number; rows: number; leadingBlanks: number; window: number } | undefined {
-		let stage = 0;
-		for (const child of this.#contentBox.children) {
-			if (hasTopStageRows(child)) stage = Math.max(stage, child.topStageRows());
-		}
-		if (stage === 0) return undefined;
-		let leading = 0;
-		while (leading < lines.length && Bun.stripANSI(lines[leading]!).trim() === "") leading++;
-		return { width, rows: leading + stage, leadingBlanks: leading, window: this.#topStageWindow() };
 	}
 
 	#renderCompact(width: number): readonly string[] {
@@ -2181,7 +2072,7 @@ export class ToolExecutionComponent extends Container {
 				context.output = output;
 			}
 			context.expanded = this.#expanded;
-			context.previewLines = DEFAULT_TERMINAL_PREVIEW_LINES;
+			Object.defineProperty(context, "previewLines", { enumerable: true, get: () => this.#outputPreviewLines() });
 			context.timeout = normalizeTimeoutSeconds(isRecord(this.#args) ? this.#args.timeout : undefined, 3600);
 			// A getter, not a copy: the card renders after this context was built and must see the widest lower
 			// box drawn so far, otherwise its right border would jump back when a wide line leaves the window.
@@ -2189,17 +2080,29 @@ export class ToolExecutionComponent extends Container {
 				enumerable: true,
 				get: () => this.#liveWidthMax?.value ?? 0,
 			});
-			Object.defineProperty(context, "stageWindow", { enumerable: true, get: () => this.#topStageWindow() });
-			Object.defineProperty(context, "stageExpanded", { enumerable: true, get: () => this.#topStageExpanded() });
+			Object.defineProperty(context, "stageWindow", {
+				enumerable: true,
+				get: () => this.#stageWindow ?? previewWindowRows(),
+			});
+			Object.defineProperty(context, "stageExpanded", {
+				enumerable: true,
+				get: () => this.#stageExpanded ?? this.#expanded,
+			});
 		} else if (this.#toolName === "eval") {
 			// Present before any result too: the pending call card draws the same frozen top stage.
-			Object.defineProperty(context, "stageWindow", { enumerable: true, get: () => this.#topStageWindow() });
-			Object.defineProperty(context, "stageExpanded", { enumerable: true, get: () => this.#topStageExpanded() });
+			Object.defineProperty(context, "stageWindow", {
+				enumerable: true,
+				get: () => this.#stageWindow ?? previewWindowRows(),
+			});
+			Object.defineProperty(context, "stageExpanded", {
+				enumerable: true,
+				get: () => this.#stageExpanded ?? this.#expanded,
+			});
 			if (this.#result) {
 				const output = this.#getTextOutput().trimEnd();
 				context.output = output;
 				context.expanded = this.#expanded;
-				context.previewLines = DEFAULT_TERMINAL_PREVIEW_LINES;
+				Object.defineProperty(context, "previewLines", { enumerable: true, get: () => this.#outputPreviewLines() });
 			}
 		} else if (this.#toolName === "task") {
 			// Once a result snapshot exists the task renderer draws every agent,

@@ -1,8 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { type Component, TUI } from "@oh-my-pi/pi-tui";
+import type { Component } from "@oh-my-pi/pi-tui";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { StressRenderScheduler } from "../../tui/test/render-stress-scheduler";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+
+beforeAll(() => initTheme());
 
 // Loss oracle over the transcript live-region seam: random sequences of
 // realistic transcript ops (finalized appends, streaming blocks with settled
@@ -40,7 +44,7 @@ class StreamingBlock implements Component {
 	isTranscriptBlockFinalized(): boolean {
 		return this.finalized;
 	}
-	getTranscriptBlockSettledRows(): number {
+	getTranscriptReadyRowCount(): number {
 		return this.finalized ? this.lines.length : Math.max(0, this.lines.length - 1);
 	}
 }
@@ -103,9 +107,14 @@ async function fuzz(seed: number, mux: boolean): Promise<string[]> {
 	const term = new VirtualTerminal(40, 8, 100_000);
 	Object.defineProperty(term, "isNativeViewportAtBottom", { configurable: true, value: () => undefined });
 	const scheduler = new StressRenderScheduler();
-	const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+	const composer = new Composer({
+		terminal: term,
+		preferences: { quiet: true },
+		tuiOptions: { renderScheduler: scheduler },
+	});
+	const tui = composer.ui;
 	const chat = new TranscriptContainer();
-	tui.addChild(chat);
+	composer.setRuntimeChildren([chat]);
 
 	const finalRows: string[] = [];
 	const streams: StreamingBlock[] = [];
@@ -114,7 +123,7 @@ async function fuzz(seed: number, mux: boolean): Promise<string[]> {
 	let tick = 0;
 
 	try {
-		tui.start();
+		composer.start({ playWelcomeIntro: false });
 		await scheduler.drain(term);
 		for (let step = 0; step < 120; step++) {
 			const op = rand();
@@ -164,7 +173,7 @@ async function fuzz(seed: number, mux: boolean): Promise<string[]> {
 		for (const s of streams) finalRows.push(...s.lines);
 		for (const p of pins) finalRows.push(...p.lines);
 	} finally {
-		tui.stop();
+		composer.stop();
 		await term.flush();
 		for (const key of ENV_KEYS) {
 			const value = saved[key];

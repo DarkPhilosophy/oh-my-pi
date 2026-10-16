@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
@@ -42,7 +42,6 @@ function reply(text: string): AssistantMessage {
 /** Below-transcript chrome that inflates on demand, mimicking a confirmation dialog or a tall multi-line editor swapped in above the input. */
 class InlineWidget implements Component {
 	rows = 0;
-	retireDisplacedTranscript = false;
 
 	render(): readonly string[] {
 		return Array.from({ length: this.rows }, (_, i) => `Live widget row ${i}`);
@@ -119,7 +118,7 @@ function makeHarness(columns = COLUMNS, rows = ROWS, transcriptRows = TRANSCRIPT
 	const widget = new InlineWidget();
 	editor.addChild(widget);
 	editor.addChild(new Text("EDITOR", 0, 0));
-	composer.setRuntimeChildren([transcript, hud, editor], { transient: [editor] });
+	composer.setRuntimeChildren([transcript, hud, editor]);
 	composer.start({ playWelcomeIntro: false });
 	return { terminal, scheduler, composer, transcript, widget, hud, editor };
 }
@@ -262,11 +261,11 @@ describe("composer inline shrink (#11007)", () => {
 		expect(cardRows).toHaveLength(ROWS - 31);
 		// The prior 39-row allocation must not reserve rows the 9-row card no
 		// longer occupies in this frame.
-		expect(short.viewportExpansionRows).toBe(cardRows.length);
+		expect(short.viewport).toHaveLength(cardRows.length + widget.rows + 1);
 		composer.stop();
 	});
 
-	it("preserves response rows while reading and answering an ask at the reported 54x112 geometry", async () => {
+	it("answers an ask at the reported 54x112 geometry without losing, duplicating or stranding rows", async () => {
 		const h = makeHarness(112, 54);
 		await h.scheduler.settle(h.terminal);
 		let submitted = false;
@@ -293,21 +292,19 @@ describe("composer inline shrink (#11007)", () => {
 		h.editor.addChild(dialog);
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
+		const removedRows = dialog.render(112).length - 1;
 		const visibleRows = (): number[] =>
 			h.terminal
 				.getScrollBuffer()
 				.map(row => Bun.stripANSI(row).trimEnd())
 				.filter(row => row.startsWith(TRANSCRIPT_PREFIX))
 				.map(row => Number(row.slice(TRANSCRIPT_PREFIX.length)));
-		expect(visibleRows()).toEqual(Array.from({ length: TRANSCRIPT_ROWS }, (_, i) => i));
 		dialog.handleInput("\r");
 		await h.scheduler.settle(h.terminal);
 		expect(submitted).toBe(true);
 		expect(visibleRows()).toEqual(Array.from({ length: TRANSCRIPT_ROWS }, (_, i) => i));
-		const viewport = normalizedScrollBuffer(h.terminal).slice(-54);
-		const editorRow = viewport.findIndex(row => row.includes("EDITOR"));
-		expect(viewport[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
-		expect(hasBracketedBlankRun(normalizedScrollBuffer(h.terminal))).toBe(false);
+		expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(53 - removedRows);
+		expect(blankBand(h.terminal)).toBeLessThanOrEqual(1);
 		dialog.dispose();
 		h.composer.stop();
 	});
@@ -315,7 +312,6 @@ describe("composer inline shrink (#11007)", () => {
 	it("leaves a short transcript top-anchored when an ask panel retires nothing", async () => {
 		const h = makeHarness(COLUMNS, ROWS, 3);
 		await h.scheduler.settle(h.terminal);
-		h.widget.retireDisplacedTranscript = true;
 		h.widget.rows = 6;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
@@ -323,7 +319,6 @@ describe("composer inline shrink (#11007)", () => {
 			h.terminal.getViewport().findIndex(line => Bun.stripANSI(line).trimEnd().startsWith(needle));
 		expect(row(`${TRANSCRIPT_PREFIX}0`)).toBe(0);
 		h.widget.rows = 0;
-		h.widget.retireDisplacedTranscript = false;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
 		expect(row(`${TRANSCRIPT_PREFIX}0`)).toBe(0);
@@ -348,7 +343,7 @@ describe("composer inline shrink (#11007)", () => {
 		h.composer.stop();
 	});
 
-	it("refills the screen after an ask closes below a response taller than the screen", async () => {
+	it("shrinks in place after an ask closes below a response taller than the screen", async () => {
 		const terminal = new VirtualTerminal(COLUMNS, ROWS);
 		const scheduler = new VirtualRenderScheduler();
 		const composer = new Composer({
@@ -357,9 +352,8 @@ describe("composer inline shrink (#11007)", () => {
 			preferences: { ...COMPOSER_DEFAULTS, quiet: true },
 		});
 		const transcript = new TranscriptContainer();
-		// The response straddles the top edge: only its rows above the screen
-		// may reach scrollback, or the panel would push on-screen history out
-		// of reach and leave a band behind when it closes.
+		// Displaced response rows enter native history; closing the panel must
+		// not pull them back into the mutable viewport.
 		transcript.addChild({ render: () => Array.from({ length: 80 }, (_, i) => `${TRANSCRIPT_PREFIX}${i}`) });
 		transcript.addChild({ render: () => Array.from({ length: 11 }, (_, i) => `Tool row ${i}`) });
 		const editor = new Container();
@@ -383,12 +377,10 @@ describe("composer inline shrink (#11007)", () => {
 		editor.addChild(dialog);
 		composer.ui.requestRender();
 		await scheduler.settle(terminal);
+		const removedRows = dialog.render(COLUMNS).length - 1;
 		dialog.handleInput("\r");
 		await scheduler.settle(terminal);
-		const view = terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		const editorRow = view.findIndex(row => row.includes("EDITOR"));
-		expect(view[editorRow - 1]).toBe("Tool row 10");
-		expect(view.slice(editorRow + 1).every(row => row === "")).toBe(true);
+		expect(terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(ROWS - 1 - removedRows);
 		expect(blankBand(terminal)).toBeLessThanOrEqual(1);
 		const indices = terminal
 			.getScrollBuffer()
@@ -400,7 +392,7 @@ describe("composer inline shrink (#11007)", () => {
 		composer.stop();
 	});
 
-	it("brings rows an ask panel covered back on screen when the ask is hidden", async () => {
+	it("keeps displaced conversation in history when the editable ask is hidden", async () => {
 		// The default app bindings (Alt+H hides a pending ask).
 		const previous = getKeybindings();
 		setKeybindings(KeybindingsManager.inMemory());
@@ -428,14 +420,12 @@ describe("composer inline shrink (#11007)", () => {
 					.map(row => Bun.stripANSI(row).trimEnd())
 					.filter(row => row.startsWith(TRANSCRIPT_PREFIX))
 					.map(row => Number(row.slice(TRANSCRIPT_PREFIX.length)));
-			// Alt+H collapses the pending ask to one line: the rows it covered are
-			// still live, so they refill the screen instead of leaving a band.
+			const removedRows = dialog.render(COLUMNS).length - 1;
+			// Hiding the pending question removes its space without replaying history.
 			dialog.handleInput("\x1bh");
 			await h.scheduler.settle(h.terminal);
 			const view = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-			const hiddenRow = view.findIndex(row => row.includes("Ask hidden"));
-			expect(hiddenRow).toBeGreaterThanOrEqual(0);
-			expect(view.slice(hiddenRow + 1).every(row => row === "")).toBe(true);
+			expect(view[ROWS - 1 - removedRows]).toContain("Ask hidden");
 			expect(blankBand(h.terminal, "Ask hidden")).toBeLessThanOrEqual(1);
 			expect(reachable()).toEqual(Array.from({ length: TRANSCRIPT_ROWS }, (_, i) => i));
 			// Showing it again covers them without writing anything twice.
@@ -450,7 +440,7 @@ describe("composer inline shrink (#11007)", () => {
 		}
 	});
 
-	it("keeps the editor pinned to the bottom after transient below-transcript chrome shrinks", async () => {
+	it("removes transient chrome space instead of pinning the editor to the bottom", async () => {
 		const h = makeHarness();
 		await h.scheduler.settle(h.terminal);
 		const before = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
@@ -459,16 +449,10 @@ describe("composer inline shrink (#11007)", () => {
 		await cycleWidget(h);
 
 		const after = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		// Regression: the shrink used to re-anchor the shorter frame at the bottom
-		// and leave the 24 vacated rows blank *above* it, between committed
-		// history and the live frame. That band is what the next overflow scrolls
-		// into native scrollback for good. The frame keeps its origin instead, so
-		// the editor directly follows the last transcript row and the freed rows
-		// sit below the frame, where later growth reclaims them.
-		const editorRow = after.findIndex(row => row.includes("EDITOR"));
-		expect(after[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
-		expect(hasBracketedBlankRun(after)).toBe(false);
-		expect(after.slice(editorRow + 1).every(row => row === "")).toBe(true);
+		// The 24 temporary rows disappear; committed rows stay in native history.
+		expect(after.findIndex(row => row.includes("EDITOR"))).toBe(ROWS - 1 - 24);
+		const lastContent = after.reduce((last, row, i) => (row.length > 0 ? i : last), -1);
+		expect(lastContent).toBe(ROWS - 1 - 24);
 
 		h.composer.stop();
 	});
@@ -518,15 +502,12 @@ describe("composer inline shrink (#11007)", () => {
 		}
 	});
 
-	it("keeps the below-chrome baseline across a height resize while inline chrome is expanded", async () => {
+	it("uses actual chrome capacity across a height resize while inline chrome is expanded", async () => {
 		const shorter = ROWS - 10;
 		const h = makeHarness();
 		await h.scheduler.settle(h.terminal);
 
-		// Expand, resize the terminal height *while still expanded*, then keep
-		// rendering before shrinking. The retirement baseline must not adopt the
-		// expanded peak at the resize, or the frames before the shrink retire
-		// rows the shrink cannot reclaim and the editor is stranded again.
+		// Resize while expanded: only currently available rows count as live capacity.
 		h.widget.rows = 24;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
@@ -541,12 +522,9 @@ describe("composer inline shrink (#11007)", () => {
 		await h.scheduler.settle(h.terminal);
 
 		const after = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		// The shrink keeps the frame origin, so the editor follows the last
-		// transcript row directly and no vacated band opens above it.
-		const editorRow = after.findIndex(row => row.includes("EDITOR"));
-		expect(after[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
-		expect(hasBracketedBlankRun(after)).toBe(false);
-		expect(after.slice(editorRow + 1).every(row => row === "")).toBe(true);
+		expect(after.findIndex(row => row.includes("EDITOR"))).toBe(shorter - 1 - 24);
+		const lastContent = after.reduce((last, row, i) => (row.length > 0 ? i : last), -1);
+		expect(lastContent).toBe(shorter - 1 - 24);
 
 		h.composer.stop();
 	});
@@ -577,20 +555,17 @@ describe("composer inline shrink (#11007)", () => {
 		h.composer.stop();
 	});
 
-	it("keeps transcript rows contiguous when turn-scoped chrome goes away", async () => {
+	it("removes turn-scoped chrome without bringing committed rows back", async () => {
 		const h = makeHarness();
 		await h.scheduler.settle(h.terminal);
 		h.hud.rows = 6;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
-		// Closing the HUD must preserve the transcript and leave unused rows below the editor.
+		// The turn ends: the temporary six-row HUD disappears in place.
 		h.hud.rows = 0;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
-		const view = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		const editorRow = view.findIndex(row => row.includes("EDITOR"));
-		expect(view[editorRow - 1]).toBe(`${TRANSCRIPT_PREFIX}${TRANSCRIPT_ROWS - 1}`);
-		expect(view.slice(editorRow + 1).every(row => row === "")).toBe(true);
+		expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(ROWS - 1 - 6);
 		expect(blankBand(h.terminal)).toBeLessThanOrEqual(1);
 		const indices = h.terminal
 			.getScrollBuffer()
@@ -622,8 +597,7 @@ describe("composer inline shrink (#11007)", () => {
 		h.hud.rows = 0;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
-		// Streaming committed only rows that had left the screen, so the rows the
-		// loader covered refill from the live tail instead of a blank band.
+		// Loader removal must not insert a blank band into the answer.
 		expect(blankBand(h.terminal)).toBeLessThanOrEqual(1);
 		const words = h.terminal
 			.getScrollBuffer()
@@ -636,7 +610,7 @@ describe("composer inline shrink (#11007)", () => {
 		h.composer.stop();
 	});
 
-	it("keeps the editor adjacent to a live block after it collapses under retired history", async () => {
+	it("shrinks in place when a live block collapses under retired history", async () => {
 		const h = makeHarness();
 		const transcript = new TranscriptContainer();
 		for (let i = 0; i < TRANSCRIPT_ROWS; i++) transcript.addChild({ render: () => [`${TRANSCRIPT_PREFIX}${i}`] });
@@ -649,9 +623,7 @@ describe("composer inline shrink (#11007)", () => {
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
 		const view = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-		const editorRow = view.findIndex(row => row.includes("EDITOR"));
-		expect(view[editorRow - 1]).toBe("Tool row 3");
-		expect(view.slice(editorRow + 1).every(row => row === "")).toBe(true);
+		expect(view.findIndex(row => row.includes("EDITOR"))).toBe(ROWS - 1 - (12 - 4));
 		expect(view.filter(row => row.startsWith("Tool row "))).toHaveLength(4);
 		h.composer.stop();
 	});
@@ -659,7 +631,6 @@ describe("composer inline shrink (#11007)", () => {
 	it("keeps settled transcript rows reachable while an inline ask panel is expanded (#12398)", async () => {
 		const h = makeHarness();
 		await h.scheduler.settle(h.terminal);
-		h.widget.retireDisplacedTranscript = true;
 		h.widget.rows = 24;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
@@ -673,7 +644,6 @@ describe("composer inline shrink (#11007)", () => {
 		// settled response rows from both the live screen and native scrollback.
 		expect(indices).toEqual(Array.from({ length: TRANSCRIPT_ROWS }, (_, i) => i));
 		h.widget.rows = 0;
-		h.widget.retireDisplacedTranscript = false;
 		h.composer.ui.requestRender();
 		await h.scheduler.settle(h.terminal);
 		const after = h.terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
@@ -710,7 +680,7 @@ describe("composer inline shrink (#11007)", () => {
 		h.composer.stop();
 	});
 
-	it("parks a collapsing block's slack below the reply instead of banding its history", async () => {
+	it("leaves no filler around the reply when a block collapses", async () => {
 		const rows = 50;
 		const h = makeHarness(107, rows, 10);
 		const card = new InlineWidget();
@@ -745,15 +715,63 @@ describe("composer inline shrink (#11007)", () => {
 			run = row === "" ? run + 1 : 0;
 			longest = Math.max(longest, run);
 		}
-		// The reply rides directly under the retired history: the slack the collapse
-		// opened must not sit above the live rows, where it reads as a hole punched
-		// into the answer (and, carrying no cells, cannot be covered by any repaint).
+		// History and live answer remain contiguous; unused rows stay after the editor.
 		expect(view[0]).not.toBe("");
 		expect(longest).toBeLessThanOrEqual(1);
 		const editorRow = view.findIndex(row => row.includes("EDITOR"));
-		expect(editorRow).toBeGreaterThan(0);
-		expect(view[editorRow - 1]).not.toBe("");
+		expect(editorRow).toBeGreaterThan(bottom);
+		expect(editorRow).toBeLessThan(rows - 1);
 		expect(view.slice(editorRow + 1).every(row => row === "")).toBe(true);
 		h.composer.stop();
+	});
+
+	it("leaves a short transcript top-anchored after an inline panel closes", async () => {
+		const h = makeHarness(COLUMNS, ROWS, 3);
+		await h.scheduler.settle(h.terminal);
+		h.widget.rows = 6;
+		h.composer.ui.requestRender();
+		await h.scheduler.settle(h.terminal);
+		const row = (needle: string): number =>
+			h.terminal.getViewport().findIndex(line => Bun.stripANSI(line).trimEnd().startsWith(needle));
+		expect(row(`${TRANSCRIPT_PREFIX}0`)).toBe(0);
+		h.widget.rows = 0;
+		h.composer.ui.requestRender();
+		await h.scheduler.settle(h.terminal);
+		expect(row(`${TRANSCRIPT_PREFIX}0`)).toBe(0);
+		expect(row("EDITOR")).toBeLessThan(ROWS - 1);
+		h.composer.stop();
+	});
+
+	it("removes ten temporary rows from a full hundred-row screen without replay or lost messages", async () => {
+		const h = makeHarness(COLUMNS, 100, 0);
+		const messages = Array.from({ length: 99 }, (_, index) => `MESSAGE_${index}`);
+		h.transcript.addChild(new Text(messages.join("\n"), 0, 0));
+		const writes = spyOn(h.terminal, "write");
+		try {
+			await h.scheduler.settle(h.terminal);
+			expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(99);
+			writes.mockClear();
+			h.widget.rows = 10;
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			h.transcript.addChild(new Text("MESSAGE_99", 0, 0));
+			messages.push("MESSAGE_99");
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			const reachable = () => normalizedScrollBuffer(h.terminal).filter(row => /^MESSAGE_\d+$/.test(row));
+			expect(reachable()).toEqual(messages);
+			h.widget.rows = 0;
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			const view = h.terminal.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			expect(view.findIndex(row => row === "EDITOR")).toBe(89);
+			expect(view.slice(90)).toEqual(Array<string>(10).fill(""));
+			expect(reachable()).toEqual(messages);
+			expect(normalizedScrollBuffer(h.terminal).some(row => row.includes("Live widget"))).toBe(false);
+			expect(writes.mock.calls.map(([data]) => data).join("")).not.toContain("\x1b[3J");
+		} finally {
+			writes.mockRestore();
+			h.composer.stop();
+		}
 	});
 });

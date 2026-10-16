@@ -335,9 +335,6 @@ export interface Component {
 	 */
 	render(width: number): readonly string[];
 
-	/** Inline decision panels retain displaced settled rows in native history. */
-	readonly retireDisplacedTranscript?: boolean;
-
 	/**
 	 * Describe the component semantically for a Tern Surface Protocol
 	 * terminal (see `native/node.ts`). Called instead of `render()` when the
@@ -1211,6 +1208,7 @@ export class TUI extends Container {
 	#resizeAltActive = false;
 	#resizeSettleTimer: RenderTimer | undefined;
 	#suppressResizeUntil = 0;
+	#suppressResizeGeometry: { columns: number; rows: number } | undefined;
 	// Normal-buffer geometry at the last fullscreen-overlay exit. Consumed (single-shot)
 	// by #prepareResizeReplay to recognise the scrollbar-sized narrowing that follows.
 	#altExitBaseline: { width: number; height: number; at: number } | undefined;
@@ -1816,7 +1814,11 @@ export class TUI extends Container {
 					this.#beginResizeAnchorProbe();
 					return;
 				}
-				if (this.#renderScheduler.now() < this.#suppressResizeUntil) {
+				if (
+					this.#renderScheduler.now() < this.#suppressResizeUntil &&
+					this.terminal.columns === this.#suppressResizeGeometry?.columns &&
+					this.terminal.rows === this.#suppressResizeGeometry?.rows
+				) {
 					this.requestRender(true);
 					return;
 				}
@@ -2345,6 +2347,7 @@ export class TUI extends Container {
 	#settleResizeAltPaint(): void {
 		this.#resizeAltActive = false;
 		this.#suppressResizeUntil = this.#renderScheduler.now() + 100;
+		this.#suppressResizeGeometry = { columns: this.terminal.columns, rows: this.terminal.rows };
 		this.#altPreviousLines = [];
 		this.#altPreparedRows = [];
 		const exitSequence = this.#altScreenExit();

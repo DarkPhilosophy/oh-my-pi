@@ -75,6 +75,8 @@ describe("task progress rendering", () => {
 
 	it("shortens current and recent path arguments without rewriting search patterns", async () => {
 		const theme = (await getThemeByName("dark"))!;
+		// Keep the path below the preview cap regardless of the test runner's HOME.
+		vi.spyOn(os, "homedir").mockReturnValue("/home/test");
 		const file = `${os.homedir()}/private/file`;
 		for (const [key, recent, args, expected] of [
 			["file_path", false, file, "~/private/file"],

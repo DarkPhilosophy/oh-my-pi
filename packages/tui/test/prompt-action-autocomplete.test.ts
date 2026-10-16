@@ -1,8 +1,8 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { KeybindingsManager as AppKeybindingsManager, setKeyHintPlatform } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { ModelBrowserItem } from "@oh-my-pi/pi-tui/overlays/model-browser";
-import { setInternalUrlCompletionHost } from "@oh-my-pi/pi-tui/prompt/internal-url-autocomplete";
+import * as internalUrlCompletions from "@oh-my-pi/pi-tui/prompt/internal-url-autocomplete";
 import { createPromptActionAutocompleteProvider } from "@oh-my-pi/pi-tui/prompt/prompt-action-autocomplete";
 import { getSelectListTheme, initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { KeybindingsManager, SelectList, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui";
@@ -30,12 +30,6 @@ function modelMentionItem(provider: string, id: string, name: string): ModelBrow
 describe("prompt action autocomplete", () => {
 	beforeAll(async () => {
 		await initTheme();
-		// The coding-agent internal-url router installs the real host; here a stub
-		// proves the fall-through contract without the router.
-		setInternalUrlCompletionHost({
-			completionSchemes: () => ["omp"],
-			resolveCompletions: async scheme => (scheme === "omp" ? [{ value: "docs", label: "docs" }] : null),
-		});
 	});
 
 	beforeEach(() => {
@@ -50,6 +44,7 @@ describe("prompt action autocomplete", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 		setKeyHintPlatform(undefined);
 	});
@@ -219,6 +214,10 @@ describe("prompt action autocomplete", () => {
 	});
 
 	it("falls through to internal-url completion for allowArgs commands without argument completions", async () => {
+		vi.spyOn(internalUrlCompletions, "getInternalUrlSuggestions").mockResolvedValue({
+			prefix: "omp://",
+			items: [{ value: "omp://docs", label: "docs" }],
+		});
 		const provider = createPromptActionAutocompleteProvider({
 			commands: [{ name: "btw", description: "By the way", allowArgs: true }],
 			basePath: process.cwd(),
@@ -242,6 +241,10 @@ describe("prompt action autocomplete", () => {
 	});
 
 	it("falls through to internal-url completion when getArgumentCompletions yields no match", async () => {
+		vi.spyOn(internalUrlCompletions, "getInternalUrlSuggestions").mockResolvedValue({
+			prefix: "omp://",
+			items: [{ value: "omp://docs", label: "docs" }],
+		});
 		const provider = createPromptActionAutocompleteProvider({
 			commands: [
 				{

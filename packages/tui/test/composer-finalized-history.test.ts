@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "bun:test";
+import { Text } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -7,7 +8,6 @@ import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 
 class FinalizingCard {
 	finalized = false;
-	readonly commitToHistoryOnFinalize = true;
 
 	render(): readonly string[] {
 		return Array.from({ length: 20 }, (_, index) => `FINALIZED_TOOL_CARD_${index}`);
@@ -25,7 +25,6 @@ class FinalizingCard {
  */
 class ReshapingCard {
 	finalized = false;
-	readonly commitToHistoryOnFinalize = true;
 
 	render(): readonly string[] {
 		const header = this.finalized ? "CARD · done (13ms)" : "CARD · running";
@@ -40,7 +39,7 @@ class ReshapingCard {
 let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
-it("commits a tool card to native history on the first frame after it finalizes", async () => {
+it("publishes only the offscreen portion of a finalized card and keeps its visible tail live", async () => {
 	const terminal = new VirtualTerminal(60, 14);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const transcript = new TranscriptContainer();
@@ -59,12 +58,16 @@ it("commits a tool card to native history on the first frame after it finalizes"
 	composer.ui.requestRender();
 	await terminal.waitForRender();
 
-	// The physical screen still shows the newest terminal-history tail above
-	// the editor, but the TUI no longer owns a mutable live copy of the card.
-	expect(transcript.liveRowCount(60)).toBe(0);
+	const visible = terminal.getViewport().flatMap(row => row.match(/FINALIZED_TOOL_CARD_\d+/g) ?? []);
+	expect(visible.length).toBeGreaterThan(0);
+	expect(visible.length).toBeLessThan(20);
+	expect(transcript.liveRowCount(60)).toBe(visible.length);
+	expect(terminal.getScrollBuffer().flatMap(row => row.match(/FINALIZED_TOOL_CARD_\d+/g) ?? [])).toEqual(
+		Array.from({ length: 20 }, (_, index) => `FINALIZED_TOOL_CARD_${index}`),
+	);
 });
 
-it("publishes a finalized result while the initial header and transcript still fit on screen", async () => {
+it("keeps an ordinary settled text block live until retirement pressure", async () => {
 	const terminal = new VirtualTerminal(80, 60);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const transcript = new TranscriptContainer();
@@ -76,14 +79,19 @@ it("publishes a finalized result while the initial header and transcript still f
 	expect(transcript.liveRowCount(80)).toBe(20);
 	card.finalized = true;
 	composer.ui.requestRender();
-	await terminal.waitForRender(() => transcript.liveRowCount(80) === 0);
-	expect(transcript.liveRowCount(80)).toBe(0);
+	await terminal.waitForRender();
+	expect(transcript.liveRowCount(80)).toBe(20);
+	expect(transcript.blockStates()).toEqual(["settled"]);
+	transcript.addChild(new Text(Array.from({ length: 70 }, (_, index) => `LATER_CONTENT_${index}`).join("\n"), 0, 0));
+	composer.ui.requestRender();
+	await terminal.waitForRender(() => transcript.blockStates()[0] === "committed");
+	expect(transcript.blockStates()[0]).toBe("committed");
 	expect(terminal.getScrollBuffer().flatMap(row => row.match(/FINALIZED_TOOL_CARD_\d+/g) ?? [])).toEqual(
 		Array.from({ length: 20 }, (_, index) => `FINALIZED_TOOL_CARD_${index}`),
 	);
 });
 
-it("retires the only completed foreground call without waiting for a later stream", async () => {
+it("publishes the only completed foreground result without waiting for another stream", async () => {
 	const terminal = new VirtualTerminal(80, 60);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const transcript = new TranscriptContainer();
@@ -93,7 +101,7 @@ it("retires the only completed foreground call without waiting for a later strea
 	composer.start({ playWelcomeIntro: false });
 	card.updateResult({ content: [{ type: "text", text: "ONLY_FINISHED_RESULT" }] }, false);
 	composer.ui.requestRender();
-	await terminal.waitForRender(() => transcript.blockStates()[0] === "committed");
+	await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("ONLY_FINISHED_RESULT")));
 	expect(transcript.blockStates()).toEqual(["committed"]);
 	expect(
 		terminal
@@ -103,7 +111,7 @@ it("retires the only completed foreground call without waiting for a later strea
 	).toHaveLength(1);
 });
 
-it("publishes completed grouped previews without overflow and commits the footer when the group finishes", async () => {
+it("shows completed grouped previews while later reads run and adds their final usage footer", async () => {
 	const terminal = new VirtualTerminal(100, 100);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const transcript = new TranscriptContainer();
@@ -116,7 +124,7 @@ it("publishes completed grouped previews without overflow and commits the footer
 	await terminal.waitForRender();
 	group.updateResult({ content: [{ type: "text", text: "FIRST_COMPLETED_PREVIEW" }] }, false, "first");
 	composer.ui.requestRender();
-	await terminal.waitForRender(() => transcript.emittedStableRows()[0] === 1);
+	await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("FIRST_COMPLETED_PREVIEW")));
 	expect(transcript.emittedStableRows()).toEqual([1]);
 	expect(group.isTranscriptBlockFinalized()).toBeFalse();
 	group.updateResult({ content: [{ type: "text", text: "SECOND_COMPLETED_PREVIEW" }] }, false, "second");
@@ -136,7 +144,7 @@ it("publishes completed grouped previews without overflow and commits the footer
 	);
 	group.finalize();
 	composer.ui.requestRender();
-	await terminal.waitForRender(() => transcript.blockStates()[0] === "committed");
+	await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("SECOND_COMPLETED_PREVIEW")));
 	expect(transcript.blockStates()).toEqual(["committed"]);
 	const tape = terminal
 		.getScrollBuffer()
@@ -147,7 +155,7 @@ it("publishes completed grouped previews without overflow and commits the footer
 	expect(tape.indexOf("Read (2)")).toBeLessThan(tape.indexOf("2026-10-02 23:50:54"));
 });
 
-it("commits a finished edit while a second edit preview is still active without overflow", async () => {
+it("shows a finished edit while a second edit preview is still active without overflow", async () => {
 	const terminal = new VirtualTerminal(100, 100);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const transcript = new TranscriptContainer();
@@ -178,7 +186,7 @@ it("commits a finished edit while a second edit preview is still active without 
 		false,
 	);
 	composer.ui.requestRender();
-	await terminal.waitForRender(() => transcript.blockStates()[0] === "committed");
+	await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("FINISHED_EDIT_ERROR")));
 	expect(transcript.blockStates()).toEqual(["committed", "active"]);
 	expect(second.isTranscriptBlockFinalized()).toBeFalse();
 	expect(
@@ -190,7 +198,7 @@ it("commits a finished edit while a second edit preview is still active without 
 	second.seal();
 });
 
-it("never emits a card twice when its settled render diverges from rows the terminal already borrowed", async () => {
+it("never duplicates a card when its finalized render differs from its live preview", async () => {
 	const terminal = new VirtualTerminal(60, 14);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const transcript = new TranscriptContainer();
@@ -200,7 +208,7 @@ it("never emits a card twice when its settled render diverges from rows the term
 	composer.start();
 	composer.ui.setFocus(composer.editor);
 
-	// Run tall enough for the terminal to borrow the card's head into scrollback.
+	// Paint the tall active preview before its final presentation becomes publishable.
 	await terminal.waitForRender();
 	composer.ui.requestRender();
 	await terminal.waitForRender();

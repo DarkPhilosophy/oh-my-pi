@@ -51,7 +51,7 @@ function irregularLines(count: number): string[] {
 const strip = (rows: string[]): string[] => rows.map(row => Bun.stripANSI(row).trimEnd());
 
 describe("bug 5: a streaming write card with wrapping lines keeps the chat in place", () => {
-	it("the editor never leaves the bottom row and no blank band opens under the card while it streams", async () => {
+	it("keeps the editor adjacent to the current streamed preview without filler or lost history", async () => {
 		const terminal = new VirtualTerminal(COLUMNS, ROWS);
 		const scheduler = new VirtualRenderScheduler();
 		const composer = new Composer({
@@ -82,18 +82,21 @@ describe("bug 5: a streaming write card with wrapping lines keeps the chat in pl
 			card.setArgsComplete();
 			card.setExecutionStarted();
 
-			const editorRows: number[] = [];
 			for (let n = 1; n <= lines.length; n++) {
 				card.updateArgs({ path: "big.ts", content: lines.slice(0, n).join("\n") });
 				composer.ui.requestRender();
 				await scheduler.settle(terminal);
 				const view = strip(terminal.getViewport());
-				editorRows.push(view.findIndex(row => row.includes("EDITOR")));
+				const editorRow = view.findIndex(row => row.includes("EDITOR"));
+				expect(editorRow).toBeGreaterThanOrEqual(0);
+				expect(view.slice(editorRow + 1).every(row => row === "")).toBe(true);
+				expect(strip(terminal.getScrollBuffer()).filter(row => row.startsWith(PREFIX))).toEqual(
+					Array.from({ length: HISTORY }, (_, index) => `${PREFIX}${index}`),
+				);
 			}
 
-			// The editor is pinned to the last row for every streamed chunk; any deviation is the chat
-			// jumping up (card shrank) and leaving a black box underneath.
-			expect(editorRows.filter(row => row !== ROWS - 1)).toEqual([]);
+			// Height follows the current render; a smaller preview does not
+			// manufacture padding solely to preserve a previous bottom anchor.
 		} finally {
 			composer.stop();
 		}

@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Restored scrollable command report panels in text terminals without sending temporary report content to conversation history.
+- Kept detailed saved-reset expirations while excluding spent or expired credits from the upcoming-expiry list.
 - Fixed completed tool results being kept pending or blocked from scrollback during streamed tool-call ID updates.
 - Completed calls can publish during an ongoing stream without waiting for viewport overflow or a subsequent response.
 - Experimental context windows now reject repeated model-requested rollovers until substantial new conversation content accumulates, including after resuming a session.

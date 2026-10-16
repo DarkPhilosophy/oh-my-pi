@@ -5,7 +5,8 @@ import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { ExtensionAskDialogQuestion } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
-import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { setKeybindings, TUI } from "@oh-my-pi/pi-tui";
+import { VirtualTerminal } from "./virtual-terminal";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
@@ -54,6 +55,38 @@ describe("AskDialogComponent", () => {
 		const footer = lines.find(line => line.includes("select"));
 		expect(footer).toContain("⇥/←/→ question · ");
 		expect(footer).toContain("cancel");
+	});
+
+	it("fits the actual terminal and exposes hidden questions without preventing editing", () => {
+		const terminal = new VirtualTerminal(80, 20);
+		const onSubmit = vi.fn();
+		const component = new AskDialogComponent(
+			[
+				{
+					id: "first",
+					question: `FIRST ${"wrapped question ".repeat(80)}`,
+					options: [{ label: "Yes" }, { label: "No" }],
+				},
+				{ id: "second", question: "SECOND question", options: [{ label: "Keep" }, { label: "Change" }] },
+			],
+			{ onSubmit, onCancel: vi.fn(), onPrompt: vi.fn() },
+			{ tui: new TUI(terminal) },
+		);
+		try {
+			const lines = component.render(80).map(stripVTControlCharacters);
+			expect(lines.length).toBeLessThanOrEqual(14);
+			expect(lines.join("\n")).toContain("FIRST");
+			expect(lines.join("\n")).toContain("(+1 questions hidden)");
+			expect(lines.join("\n")).toContain("Yes");
+			component.handleInput(TAB);
+			expect(render(component)).toContain("SECOND question");
+			component.handleInput(DOWN);
+			component.handleInput(SHIFT_TAB);
+			expect(render(component)).toContain("FIRST");
+			expect(onSubmit).not.toHaveBeenCalled();
+		} finally {
+			component.dispose();
+		}
 	});
 
 	it("single-question, single-select: Enter on option submits immediately", () => {

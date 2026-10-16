@@ -19,7 +19,7 @@ import {
 import { wrapLiteralLine } from "../utils";
 import type { NativeChild, NativeSurface, NativeSurfaceProvider } from "../native/node";
 import { sameItems } from "../native/memo";
-import { popLoopPhase, postmortem, pushLoopPhase } from "@oh-my-pi/pi-utils";
+import { postmortem } from "@oh-my-pi/pi-utils";
 import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
@@ -94,8 +94,6 @@ export interface ComposerOptions {
 
 /** How {@link Composer.setRuntimeChildren} lays out the roots below the transcript. */
 export interface RuntimeChildrenOptions {
-	/** Roots whose temporary growth must not permanently consume transcript capacity. */
-	readonly transient?: readonly Component[];
 	/**
 	 * Dock order on a TSP terminal (no status strip; the composer carries its
 	 * facts): the native dock stacks HUD pills, the working row and queued messages over
@@ -231,15 +229,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				id: number;
 				rows: readonly string[];
 				kind: "append" | "replay";
-				source:
-					| "header"
-					| {
-							transcript: TranscriptContainer;
-							transcriptId?: number;
-							header: "none" | "replay";
-							/** Recomposed header rows to accept as the new retired-header bytes. */
-							headerRows?: readonly string[];
-					  };
+				source: {
+					transcript: TranscriptContainer;
+					transcriptId?: number;
+					header: "none" | "append" | "replay";
+					/** Recomposed header rows to accept as the new retired-header bytes. */
+					headerRows?: readonly string[];
+				};
 		  }
 		| undefined;
 	#historyReplayRequested = false;
@@ -256,30 +252,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#retiredHeaderRows: readonly string[] | undefined;
 	/** Click spans of the last `renderFrame` viewport, in viewport coordinates. */
 	#lastClickSpans: ViewportClickSpan[] = [];
-	#viewportClickOffset = 0;
-	/** Click-candidate id under the pointer, painted with the hover band. Id-anchored so it follows streaming rows. */
-	#lastClickFrameRows = 0;
+
 	#hoveredClickId: string | undefined;
 	// Hard-row prefix currently above the native viewport. The first resize
 	// frame may pull part of it down before the normal buffer is borrowed.
 	#retiredHeaderStart = 0;
 	#resizeRetiredHeaderStart: number | undefined;
 	#lastNormalRows = 0;
-	// Roots from `RuntimeChildrenOptions.transient`, and the smallest height
-	// they have rendered at since mount. Retirement bills transient roots at
-	// this floor, never their peak, so a transient dialog or tall editor that later
-	// shrinks never leaves committed transcript rows the live viewport cannot
-	// reclaim (#11007). Persistent roots (loader, todo/subagent HUDs) bill at
-	// their current height: they stay up for a whole turn, and billing them at
-	// an idle floor hid the settled rows they displaced until the turn ended.
-	// The floor is terminal-height independent — editor and dialog heights do
-	// not scale with rows — so it is retained across resizes rather than
-	// rediscovered from whatever chrome is expanded when the height changes.
-	#transientChrome: ReadonlySet<Component> = new Set();
-	#transientChromeFloor: number | undefined;
-	#viewportTranscript?: TranscriptContainer;
-	#viewportTranscriptStart = 0;
-	#anchorAfterInlineRetirement = false;
+
 	/** Rows the chrome below each below-transcript root took in the last frame (see {@link rowsBelow}). */
 	#rowsBelow = new Map<Component, number>();
 	#lastInterruptAt = 0;
@@ -361,19 +341,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return this.#rowsBelow.get(root);
 	}
 
-	/**
-	 * Keep the input on the bottom row while the live rows cannot fill the
-	 * screen, as after an inline decision panel closes. A tall block that just
-	 * left the chrome above the editor (a command report) may have scrolled
-	 * rows into native history that cannot be pulled back; without the pin the
-	 * editor would jump up to where the shorter frame now ends. The pin lifts
-	 * once live rows fill the screen again.
-	 */
-	pinInputToBottom(): void {
-		this.#anchorAfterInlineRetirement = true;
-	}
-
-	/** Compose the complete logical viewport and the next ordered history append. */
+	/** Compose the upstream bounded viewport; retirement is owned only by explicit history batches. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		this.ui.setCursorOverlay(undefined, 0, 0);
@@ -384,122 +352,54 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#resizeRetiredHeaderStart = undefined;
 		}
 		this.#lastNormalRows = rows;
-		const runtimeRoots = [...this.#runtimeChildren, this.#statusHost];
 		const roots = this.#runtimeMounted
-			? runtimeRoots
+			? [...this.#runtimeChildren, this.#statusHost]
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) {
-			this.#viewportTranscript = undefined;
 			this.#lastClickSpans = [];
-			// Bootstrap chrome is mutable and must not be borrowed into native history.
-			return this.#planWithSegments(
-				roots.map(root => ({ component: root, rows: root.render(width) })),
-				0,
-			);
+			return { viewport: this.#renderRoots(roots, width).slice(-rows) };
 		}
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
-		const preChunks = roots.slice(0, transcriptIndex).map(root => ({ component: root, rows: root.render(width) }));
+		const preChunks = roots
+			.slice(0, transcriptIndex)
+			.map(component => ({ component, rows: component.render(width) }));
 		const preRoots = preChunks.flatMap(chunk => chunk.rows);
 		const afterRoots = roots.slice(transcriptIndex + 1);
-		const afterChunks: { component: Component; rows: string[] }[] = [];
 		const after: string[] = [];
+		const afterChunks: { component: Component; rows: readonly string[] }[] = [];
 		const afterSpans: ViewportClickSpan[] = [];
-		let reversibleRows = 0;
-		let decisionPanelOpen = false;
 		const ends: { root: Component; end: number }[] = [];
 		for (const root of afterRoots) {
 			const start = after.length;
 			this.#renderBelowRoot(root, width, after, afterSpans);
 			afterChunks.push({ component: root, rows: after.slice(start) });
-			// Declared-transient chrome (inline dialogs, an ask panel, a tall
-			// multi-line draft) displaces transcript rows while it is open. Those rows
-			// are committed to native history right away instead of being held back as
-			// a reversible insertion, so nothing is hidden and then replayed later.
-			if (this.#transientChrome.has(root)) {
-				const owners = root instanceof Container ? root.children : [root];
-				if (
-					owners.some(
-						owner =>
-							(
-								owner as Component & { isTranscriptBlockTransient?: () => boolean }
-							).isTranscriptBlockTransient?.() === true,
-					)
-				)
-					reversibleRows += after.length - start;
-			}
 			ends.push({ root, end: after.length });
-			if (
-				(root as Component).retireDisplacedTranscript ||
-				(root instanceof Container && root.children.some(child => child.retireDisplacedTranscript))
-			) {
-				decisionPanelOpen = true;
-			}
 		}
 		this.#rowsBelow = new Map(ends.map(({ root, end }) => [root, after.length - end]));
-		// Offer history under capacity pressure only: blocks stay live (and keep
-		// reflowing to the current width) while the screen has room. A batch
-		// leaves the mutable viewport in the same frame it is appended, so its
-		// rows are never painted twice.
-		const temporaryChromeRows = Math.max(0, reversibleRows - (this.#transientChromeFloor ?? reversibleRows));
-		const belowFloor = after.length - temporaryChromeRows;
-		const chromeRows = preRoots.length + belowFloor;
-		// The smallest height transient chrome has rendered at is its resting
-		// footprint; rows above it are what it displaces.
-		this.#transientChromeFloor = Math.min(this.#transientChromeFloor ?? reversibleRows, reversibleRows);
-		// One paint, one render per block: the history offer, transient
-		// measurement and live viewport below all walk the live entries, and the
-		// transcript memoizes each entry for this frame between beginPaint and
-		// endPaint (closed in the finally at the end of this method).
+		// Temporary chrome consumes real viewport capacity. Displaced stable
+		// content crosses the history gateway instead of becoming hidden state.
 		const now = performance.now();
 		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
-		transcript.beginPaint(frame);
-		pushLoopPhase("ui:render:compose:history");
-		let history: { id: number; rows: readonly string[]; kind: "append" | "replay"; divergent?: boolean } | undefined;
-		try {
-			history = this.#offerHistory(transcript, width, rows, chromeRows);
-		} finally {
-			popLoopPhase();
-		}
-		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
+		// Retirement measures the same live blocks the viewport lays out below;
+		// one open frame renders each of them once for both.
+		transcript.beginFrame(frame);
+		const history = this.#offerHistory(transcript, width, rows, preRoots.length + after.length);
+		const source = this.#offeredHistory?.source;
+		const headerOffered = source?.header === "append";
+		const headerVisible = !this.#headerRetired && !headerOffered;
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
-		this.#viewportTranscript = transcript;
-		this.#viewportTranscriptStart = before.length;
-		const liveRows = Math.max(0, rows - before.length - belowFloor);
-		pushLoopPhase("ui:render:compose:transient");
-		let transientRows = 0;
-		try {
-			const transientBlocks = transcript.transientBlocks(width, liveRows, frame);
-			transientRows = transientBlocks.reduce((total, block) => total + block.rows, 0);
-		} finally {
-			popLoopPhase();
-		}
-		// An insertion taller than the screen cannot be held back: the
-		// transcript must keep retiring rows or the tail stops advancing.
-		const viewportExpansionRows = Math.min(transientRows + temporaryChromeRows, Math.max(0, rows - 1));
-		pushLoopPhase("ui:render:compose:live");
-		let liveViewport: { rows: readonly string[]; borrowableRows?: number };
-		try {
-			liveViewport = transcript.renderLiveViewport(width, liveRows, frame);
-		} finally {
-			popLoopPhase();
-			// Last transcript walk of this paint; anything rendered after this
-			// must see fresh content, not this frame's memo.
-			transcript.endPaint();
-		}
-		const active = liveViewport.rows;
-		const composed = [...before, ...active, ...after];
-		this.#lastClickFrameRows = composed.length;
+		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
 			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
 			if (!ids || ids.length === 0) continue;
 			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
 		}
-		// A closed dialog removes rows from the live frame. Never replace its
-		// footprint with blank content: those rows would later scroll into history.
-		const viewportLength = composed.length;
+		const drop = Math.max(0, before.length + active.length + after.length - rows);
+		const mutable = [...before, ...active, ...after].slice(drop);
+		const viewportLength = mutable.length;
 		const spans: ViewportClickSpan[] = [];
 		const shift = (span: ViewportClickSpan, base: number): void => {
 			const start = span.start + base;
@@ -512,12 +412,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				spans.push({ start: clamped, end, candidates: (local: number) => span.candidates(local + skew) });
 			}
 		};
-		for (const span of activeSpans) shift(span, before.length);
-		for (const span of afterSpans) shift(span, before.length + active.length);
+		for (const span of activeSpans) shift(span, before.length - drop);
+		for (const span of afterSpans) shift(span, before.length + active.length - drop);
 		this.#lastClickSpans = spans;
-		if (history !== undefined && this.#offeredHistory?.source === "header") {
-			const visibleHeaderRows = Math.max(0, rows - composed.length);
-			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
+		if (history !== undefined && headerOffered) {
+			const visibleHeaderRows = Math.max(0, rows - (mutable.length + drop));
+			const headerLength = source?.headerRows?.length ?? 0;
+			this.#retiredHeaderStart = Math.min(headerLength, Math.max(0, history.rows.length - visibleHeaderRows));
 		}
 		const plan = this.#planWithSegments([
 			{ component: this.#header, rows: headerRows },
@@ -525,29 +426,10 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			{ component: transcript, rows: active },
 			...afterChunks,
 		]);
-		const borrowableRows = headerVisible
-			? 0
-			: Math.min(
-					before.length + (liveViewport.borrowableRows ?? active.length),
-					Math.max(0, composed.length - rows),
-				);
-		const borrowedViewportRows = transcript.borrowedViewportRowCount();
-		if (!decisionPanelOpen && composed.length >= rows) this.#anchorAfterInlineRetirement = false;
 		return {
 			history,
-			borrowableRows,
-			retainedLiveViewport: true,
-			anchorToBottom: this.#anchorAfterInlineRetirement,
-			chromeInsertionRows: temporaryChromeRows,
-			historyTouchesChrome: active.length === 0 && after.length > 0,
-			viewportExpansionRows,
-			contractingPreviewRows: Math.min(
-				transcript.contractingPreviewRows(width, liveRows, frame),
-				Math.max(0, rows - 1),
-			),
-			viewport: this.#paintHoverBand(plan.viewport, spans),
-			segments: plan.segments,
-			borrowedViewportRows: borrowedViewportRows > 0 ? before.length + borrowedViewportRows : 0,
+			viewport: this.#paintHoverBand(mutable, spans),
+			segments: plan.segments.map(segment => ({ ...segment, start: segment.start - drop })),
 		};
 	}
 
@@ -664,7 +546,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 * are never in the viewport). Callers intersect with the live registry.
 	 */
 	viewportClickCandidates(index: number): string[] {
-		return routeViewportClick(this.#lastClickSpans, index + this.#viewportClickOffset);
+		return routeViewportClick(this.#lastClickSpans, index);
 	}
 
 	/**
@@ -693,30 +575,22 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return { viewport, segments, borrowableRows };
 	}
 
-	onViewportBorrowed(rows: number): void {
-		this.#viewportTranscript?.setBorrowedViewportRows(Math.max(0, rows - this.#viewportTranscriptStart));
-		this.#viewportClickOffset = Math.max(rows, this.#lastClickFrameRows - this.#lastNormalRows, 0);
-	}
-
 	/** Acknowledges one accepted header, replay, or transcript batch. */
 	acknowledgeHistory(id: number): void {
 		const offered = this.#offeredHistory;
 		if (offered === undefined || offered.id !== id) return;
-		if (offered.source === "header") {
+		if (offered.source.transcriptId !== undefined) {
+			offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
+		}
+		if (offered.source.header !== "none") {
 			this.#headerRetired = true;
-			this.#retiredHeaderRows = offered.rows;
-		} else {
-			if (offered.source.transcriptId !== undefined) {
-				offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
-			}
-			if (offered.source.header === "replay") {
-				this.#headerReplayPending = false;
-				if (offered.source.headerRows !== undefined) this.#retiredHeaderRows = offered.source.headerRows;
-			}
+			this.#headerReplayPending = false;
+			if (offered.source.headerRows !== undefined) this.#retiredHeaderRows = offered.source.headerRows;
 		}
 		this.#offeredHistory = undefined;
 		if (this.#historyReplayRequested) this.#startHistoryReplay();
-		// A completed prefix can expose another eligible stage in the same live turn.
+		// Publish an exposed ready stage immediately; this repaints only the
+		// viewport, never clears scrollback or requests a history replay.
 		this.ui.requestRender(true);
 	}
 
@@ -777,13 +651,13 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#allowEmptyHistoryReplay = false;
 	}
 
-	/** Header retires first; replay coalesces it with the complete transcript ledger. */
+	/** Publish header and child atomically; replay coalesces the complete committed ledger. */
 	#offerHistory(
 		transcript: TranscriptContainer,
 		width: number,
 		rows: number,
 		chromeRows: number,
-	): { id: number; rows: readonly string[]; kind: "append" | "replay"; divergent?: boolean } | undefined {
+	): { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined {
 		if (this.#offeredHistory !== undefined) {
 			this.#rerenderOfferedHistory(width);
 			return {
@@ -817,39 +691,27 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				kind: this.#offeredHistory.kind,
 			};
 		}
-		const replay = transcript.peekReplayBatch(width);
-		const batch =
-			replay ??
-			(this.#historyFlush
-				? transcript.peekFlushBatch(width)
-				: transcript.peekFinalizedBatch(width, Math.max(0, rows * 2 - chromeRows)));
-		if (!this.#headerRetired && replay === undefined) {
+		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
-			let renderedHeader = this.#header.render(width);
-			// Only the comparison below reads the height, so the walk stops at the
-			// budget instead of rendering every replayed block of a resumed session.
-			const liveRows = transcript.liveRowCount(width, Math.max(0, rows - renderedHeader.length - chromeRows));
-			// Editor-only growth is reversible chrome, not transcript progression.
-			if (
-				!this.#historyFlush &&
-				batch === undefined &&
-				(liveRows === 0 || renderedHeader.length + chromeRows + liveRows <= rows)
-			) {
-				return undefined;
-			}
-			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) {
-				// Settle before preserving a header whose top would leave the viewport.
-				welcome.stopIntro();
-				renderedHeader = this.#header.render(width);
-			}
-			// Archive the complete header before any part is clipped. It is not a
-			// borrowable transcript prefix, so clipping alone would lose its top.
+			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
+			// The header stays live viewport chrome until the screen fills; then it
+			// retires first so transcript prefixes can follow in order.
+			const renderedHeader = this.#header.render(width);
 			if (renderedHeader.length > 0) {
+				// Only the comparison below reads the height, so the walk stops at
+				// the budget instead of rendering every replayed block (#12933).
+				const liveRows = transcript.liveRowCount(width, Math.max(0, rows - renderedHeader.length - chromeRows));
+				const childBatch = this.#historyFlush
+					? transcript.peekFlushBatch(width)
+					: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
+				if (!childBatch && !this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows)
+					return undefined;
+				const headerRows = [...renderedHeader, ""];
 				this.#offeredHistory = {
 					id: this.#nextHistoryId++,
-					rows: [...renderedHeader, ""],
+					rows: [...headerRows, ...(childBatch?.rows ?? [])],
 					kind: "append",
-					source: "header",
+					source: { transcript, transcriptId: childBatch?.id, header: "append", headerRows },
 				};
 				return {
 					id: this.#offeredHistory.id,
@@ -860,6 +722,9 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#headerRetired = true;
 			this.#retiredHeaderRows = [];
 		}
+		const batch = this.#historyFlush
+			? transcript.peekFlushBatch(width)
+			: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,
@@ -871,18 +736,12 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			id: this.#offeredHistory.id,
 			rows: this.#offeredHistory.rows,
 			kind: this.#offeredHistory.kind,
-			divergent: batch.divergent,
 		};
 	}
 
 	#rerenderOfferedHistory(width: number): void {
 		const offered = this.#offeredHistory;
 		if (offered === undefined) return;
-		if (offered.source === "header") {
-			const rows = this.#header.render(width);
-			offered.rows = rows.length > 0 ? [...rows, ""] : [];
-			return;
-		}
 		const transcript = offered.source.transcript.rerenderOfferedBatch(width);
 		if (offered.source.header === "none") {
 			if (transcript !== undefined) offered.rows = transcript.rows;
@@ -1049,9 +908,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	/** Mount or replace session-aware root children while preserving the header and status hosts. */
 	setRuntimeChildren(children: readonly Component[], options: RuntimeChildrenOptions = {}): void {
 		if (this.#stopped) return;
-		this.#transientChrome = new Set(options.transient);
-		this.#transientChromeFloor = undefined;
-		this.#anchorAfterInlineRetirement = false;
 		this.#nativeDock = options.nativeDock;
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {

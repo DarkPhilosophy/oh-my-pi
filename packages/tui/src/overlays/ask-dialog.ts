@@ -557,7 +557,6 @@ export function normalizeDialogQuestions(questions: ExtensionAskDialogQuestion[]
 }
 
 export class AskDialogComponent implements Component {
-	readonly retireDisplacedTranscript = true;
 	#states: QuestionState[];
 	#activeTabIndex = 0;
 	#submitScrollOffset = 0;
@@ -733,7 +732,7 @@ export class AskDialogComponent implements Component {
 		// moves, and later answers never resize the box; content that
 		// outgrows it scrolls. Expanding a truncated question uses the space
 		// available within the existing height cap.
-		const totalRows = this.#dialogHeight(innerWidth, process.stdout.rows || 40);
+		const totalRows = this.#dialogHeight(innerWidth, this.options.tui?.terminal.rows || process.stdout.rows || 40);
 		const tabBarRows = this.#hasSubmitTab() ? 1 : 0;
 		const maxTitleRows = Math.max(1, totalRows - 5 - MIN_BODY_ROWS - tabBarRows);
 		const headerLines = this.#renderHeader(innerWidth, maxTitleRows);
@@ -747,8 +746,10 @@ export class AskDialogComponent implements Component {
 		const bodyLines = this.#isSubmitTab()
 			? this.#renderSubmitBody(innerWidth, bodyRows)
 			: this.#renderQuestionBody(innerWidth, bodyRows);
+		const hiddenQuestions = !this.#isSubmitTab() ? Math.max(0, this.#questions.length - 1) : 0;
+		const questionHint = hiddenQuestions > 0 ? ` (+${hiddenQuestions} questions hidden)` : "";
 		const footer = this.#footerHintText(bodyLines.indicator);
-		this.#panel.title = this.#titleText();
+		this.#panel.title = this.#titleText() + questionHint;
 		this.#headerRegion.setLines(headerLines);
 		this.#bodyRegion.setLines(bodyLines.lines);
 		this.#bodyRegion.setHeight(bodyRows);
@@ -1244,9 +1245,9 @@ export class AskDialogComponent implements Component {
 			return lines;
 		}
 		const wrapped = wrapQuestionTitle(question, width);
-		this.#headerExpandable = wrapped.length > MAX_HEADER_ROWS;
+		const maxRows = this.#expanded ? maxTitleRows : Math.min(MAX_HEADER_ROWS, maxTitleRows);
+		this.#headerExpandable = wrapped.length > maxRows;
 		this.#descExpandable = questionDescriptionsOverflow(question, width);
-		const maxRows = this.#expanded ? maxTitleRows : MAX_HEADER_ROWS;
 		lines.push(...renderQuestionTitle(question, width, maxRows));
 		return lines;
 	}

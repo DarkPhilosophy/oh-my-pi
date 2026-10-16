@@ -416,8 +416,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	}
 
 	readonly transcriptBlockMode = "appendOnly";
-	readonly commitsSettledStageEarly = true;
-	readonly commitToHistoryOnFinalize = true;
+	readonly commitStableRowsEarly = true;
 
 	getTranscriptStableRows(): readonly TranscriptStableRow[] {
 		for (const preview of this.#stablePreviews) this.#publishedPreviews.add(preview.key);
@@ -468,6 +467,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		// active so the late result updates the pending preview.
 		return !this.#hasPendingEntries();
 	}
+
+	readonly commitToHistoryOnFinalize = true;
 
 	#hasPendingEntries(): boolean {
 		for (const entry of this.#entries.values()) {

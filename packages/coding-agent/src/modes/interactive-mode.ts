@@ -2330,7 +2330,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.hookWidgetContainerBelow,
 			],
 			{
-				transient: [this.editorContainer, this.reportContainer],
 				// Natively the HUD pills lead the dock, queued messages sit between
 				// the working row and the composer, and the attachment chips live
 				// inside the composer.
@@ -4253,7 +4252,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (content.type === "toolCall") streamingToolCallIds.add(content.id);
 			}
 		}
-		for (const [id, component] of [...livePendingTools]) {
+		for (const [id, component] of livePendingTools) {
 			if (transcriptToolCallIds.has(id) || streamingToolCallIds.has(id)) continue;
 			// Only a call that already returned (a parked background handle) can
 			// be stale; a genuinely in-flight call has no result yet.
@@ -9064,15 +9063,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	commandReportRows(): number | undefined {
 		const below = this.composer.rowsBelow(this.reportContainer);
 		return below === undefined ? undefined : this.ui.terminal.rows - below;
-	}
-
-	composerInputAtBottom(): boolean {
-		const viewport = this.ui.getMutableViewport();
-		return viewport.length > 0 && viewport.top + viewport.length >= this.ui.terminal.rows;
-	}
-
-	pinComposerToBottom(): void {
-		this.composer.pinInputToBottom();
 	}
 
 	cycleThinkingLevel(): void {

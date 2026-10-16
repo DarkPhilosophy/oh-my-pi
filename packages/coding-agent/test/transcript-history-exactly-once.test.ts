@@ -35,7 +35,7 @@ class LiveBlock implements Component {
 	isTranscriptBlockFinalized(): boolean {
 		return false;
 	}
-	getTranscriptBlockSettledRows(): number {
+	getTranscriptReadyRowCount(): number {
 		return this.settled;
 	}
 }

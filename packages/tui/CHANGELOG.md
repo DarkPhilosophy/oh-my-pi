@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Closing inline panels now removes their space without hiding conversation rows, padding the editor to the bottom, or replaying committed history.
+- Live card contraction follows the current content height without adding filler to retain an earlier bottom anchor.
+- Bash and Eval can publish their immutable command stage while output remains live; completed tool cards and stable Read previews enter history without waiting for viewport pressure.
+
+### Fixed
+
+- Fixed losing committed rows when a real terminal resize arrives immediately after a resize-buffer exit.
+- Fixed Ask question headers exceeding the actual terminal budget and added an indicator for other hidden questions.
+- Preserved the three-pane advisor editor and transactional Project/Global saves alongside native picker controls.
+
 ## [18.11.1] - 2026-10-15
 
 ### Added

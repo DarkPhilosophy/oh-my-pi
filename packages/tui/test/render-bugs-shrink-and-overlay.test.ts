@@ -76,7 +76,7 @@ function makeHarness(historyRows = 60, rows = ROWS): Harness {
 	const editor = new Text("EDITOR", 0, 0);
 	const slot = new Container();
 	slot.addChild(editor);
-	composer.setRuntimeChildren([transcript, slot], { transient: [slot] });
+	composer.setRuntimeChildren([transcript, slot]);
 	composer.start({ playWelcomeIntro: false });
 	return { terminal, scheduler, composer, transcript, slot, editor };
 }
@@ -535,7 +535,8 @@ describe("bug 2: finalized output of a running bash call must reach history with
 				card.setExecutionStarted();
 				h.composer.ui.requestRender();
 				await h.scheduler.settle(h.terminal);
-				expect(h.transcript.emittedStableRows().at(-1)).toBeGreaterThan(0);
+				expect(h.transcript.canRemoveBlock(card)).toBe(false);
+				expect(h.transcript.isBlockInLiveRegion(card)).toBe(true);
 				expect(strip(h.terminal.getViewport()).join("\n")).toMatch(/Output.*Running/);
 				for (let step = 0; step < 3; step++) {
 					card.updateResult({ content: [{ type: "text", text: "LIVE_STAGE_OUTPUT_" + step }] }, true);
@@ -544,7 +545,15 @@ describe("bug 2: finalized output of a running bash call must reach history with
 					const history = strip(h.terminal.getScrollBuffer().slice(0, -h.terminal.rows)).join("\n");
 					const view = strip(h.terminal.getViewport()).join("\n");
 					if (expanded) expect(history).toContain("COMMAND_STAGE_000");
-					expect(h.transcript.emittedStableRows().at(-1)).toBeGreaterThan(0);
+					expect(h.transcript.canRemoveBlock(card)).toBe(false);
+					expect(h.transcript.isBlockInLiveRegion(card)).toBe(true);
+					expect(tape(h.terminal).join("\n")).toContain("COMMAND_STAGE_079");
+					const mutable = h.composer.ui.getMutableViewport();
+					expect(
+						strip(h.terminal.getViewport())
+							.slice(mutable.top, mutable.top + mutable.length)
+							.join("\n"),
+					).not.toContain("COMMAND_STAGE_");
 					expect(card.isTranscriptBlockFinalized()).toBeFalse();
 					expect(view).toContain("LIVE_STAGE_OUTPUT_" + step);
 					expect(view).toMatch(/Output.*Running/);
@@ -560,7 +569,8 @@ describe("bug 2: finalized output of a running bash call must reach history with
 				h.composer.ui.requestRender();
 				await h.scheduler.settle(h.terminal);
 				const all = tape(h.terminal).join("\n");
-				expect(all.match(/COMMAND_STAGE_000/g)).toHaveLength(1);
+				expect(all.match(/COMMAND_STAGE_079/g)).toHaveLength(1);
+				if (expanded) expect(all.match(/COMMAND_STAGE_000/g)).toHaveLength(1);
 				expect(all.match(/LIVE_STAGE_FINAL/g)).toHaveLength(1);
 				if (expanded)
 					expect(Array.from(all.matchAll(/COMMAND_STAGE_\d{3}/g), match => match[0])).toEqual(
@@ -629,29 +639,26 @@ describe("bug 2: finalized output of a running bash call must reach history with
 				expect(all.findIndex(row => row.includes("out-40"))).toBeGreaterThan(marker);
 				expect(missingTranscriptRows(all, 40)).toEqual([]);
 				expect(duplicatedTranscriptRows(all)).toEqual([]);
-				// The early commit must not cost the frame its other rows: the elision marker that says output
-				// is hidden survives in the live remainder (a frame that lost it still has the command once).
-				// The Output separator needs room: a 12-row screen has none, with or without the early commit.
-				expect(all.some(row => row.includes("earlier line"))).toBe(true);
+				// Collapsed output retains a visible elision marker even on a short terminal.
+				expect(all.some(row => /(?:earlier|more) lines/.test(row))).toBe(true);
 			} finally {
 				h.composer.stop();
 			}
 		});
 	}
 
-	it("output rows that scrolled out of the live preview are readable on the tape while the call still runs", async () => {
+	it("keeps normal collapsed output as a live tail without archiving each mutable preview", async () => {
 		const h = makeHarness(40);
 		try {
 			await h.scheduler.settle(h.terminal);
 			await streamBash(h, 80);
 
-			// (rows are asserted below)
-			// The collapsed preview keeps a 10-row tail window; everything before it is
-			// finalized output and must have been committed to scrollback, not dropped.
-			// line-1..line-70 are absent from the tape today: the user can never scroll back to them.
+			// Earlier output remains collapsed; streaming snapshots must not spray
+			// successive preview tails into native history.
 			const rows = tape(h.terminal);
 			const hasLine = (n: number) => rows.some(row => new RegExp(`\\bline-${n}\\b`).test(row));
-			for (const n of [1, 2, 35, 69, 70]) expect({ n, onTape: hasLine(n) }).toEqual({ n, onTape: true });
+			for (const n of [1, 2, 35, 69, 70]) expect({ n, onTape: hasLine(n) }).toEqual({ n, onTape: false });
+			expect(rows.some(row => /(?:earlier|more) lines/.test(row))).toBe(true);
 			expect(rows.filter(row => /\bline-80\b/.test(row)).length).toBe(1);
 		} finally {
 			h.composer.stop();
@@ -820,15 +827,11 @@ describe("bug 3: an edit card that is tall while pending and collapses to a shor
 
 				const view = strip(h.terminal.getViewport());
 				const rows = tape(h.terminal);
-				// The editor sits directly under the (now short) error card. When the content overflows the
-				// screen that is the last row: leaving it mid-screen with blank rows under it is the black
-				// box the pending card's vanished height used to leave behind. A short session (history=12)
-				// does not fill the screen, so its editor legitimately sits higher; there the invariant is
-				// only that nothing but empty screen follows the editor.
+				// The finalized card crosses the gateway; its separator may remain
+				// between the closing border and the editor, but never a blank band.
 				const editorRow = view.findIndex(row => row.includes("EDITOR"));
-				expect(view[editorRow - 1]?.startsWith("╰")).toBe(true);
+				expect(view.slice(0, editorRow).filter(Boolean).at(-1)?.startsWith("╰")).toBe(true);
 				expect(view.slice(editorRow + 1).every(row => row === "")).toBe(true);
-				if (history >= 30) expect(editorRow).toBe(ROWS - 1);
 				expect(bracketedBlankRuns(rows)).toBe(0);
 				expect(missingTranscriptRows(rows, history)).toEqual([]);
 				expect(duplicatedTranscriptRows(rows)).toEqual([]);

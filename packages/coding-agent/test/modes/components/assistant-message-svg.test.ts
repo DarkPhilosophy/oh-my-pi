@@ -86,8 +86,7 @@ describe("AssistantMessageComponent svg figures", () => {
 		component.render(100);
 		await changed;
 
-		expect(plain(component)).toContain("```svg");
-		expect(plain(component)).toContain("<rect width='x'");
+		expect(plain(component)).toContain("<svg><rect width='x' </svg>");
 		expect(component.render(100).join("\n")).not.toContain("\x1b_G");
 	});
 
@@ -105,7 +104,8 @@ describe("AssistantMessageComponent svg figures", () => {
 		setTerminalImageProtocol(null);
 		const { component } = figureComponent(`\`\`\`svg\n${FIGURE}\n\`\`\``);
 
-		expect(plain(component)).toContain("```svg");
+		expect(plain(component)).toContain(FIGURE);
+		expect(component.render(100).join("\n")).not.toContain("\x1b_G");
 		expect(component.isTranscriptBlockPending()).toBe(false);
 	});
 });

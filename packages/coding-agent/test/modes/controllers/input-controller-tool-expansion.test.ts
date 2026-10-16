@@ -7,7 +7,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { cfgDisplayHideToolActivity } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 describe("InputController tool output expansion", () => {
-	it("expands only unborrowed cards while preserving the ordered native-history prefix", () => {
+	it("expands every live card behind an active frontier and preserves their order", () => {
 		const card = (label: string) => {
 			let expanded = false;
 			return {
@@ -24,8 +24,6 @@ describe("InputController tool output expansion", () => {
 		chatContainer.addChild(card("borrowed first"));
 		chatContainer.addChild(card("borrowed second"));
 		chatContainer.addChild(card("live"));
-		const viewport = chatContainer.renderViewport(80, 20, { tick: 0, now: 0 });
-		chatContainer.setBorrowedViewportRows(viewport.indexOf("live"));
 		const ctx = {
 			toolOutputExpanded: false,
 			chatContainer,
@@ -36,7 +34,9 @@ describe("InputController tool output expansion", () => {
 		expect(chatContainer.render(80).filter(Boolean)).toEqual([
 			"frontier",
 			"borrowed first",
+			"borrowed first details",
 			"borrowed second",
+			"borrowed second details",
 			"live",
 			"live details",
 		]);

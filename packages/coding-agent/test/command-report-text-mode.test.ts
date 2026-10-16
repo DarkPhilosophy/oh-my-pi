@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -26,6 +26,7 @@ describe("text-mode command reports on a real terminal core", () => {
 	let mode: InteractiveMode;
 	let term: VirtualTerminal;
 
+	let writes: string[];
 	beforeAll(() => {
 		initTheme();
 	});
@@ -51,6 +52,7 @@ describe("text-mode command reports on a real terminal core", () => {
 
 	afterEach(async () => {
 		mode?.stop();
+		vi.restoreAllMocks();
 		await session?.dispose();
 		authStorage?.close();
 		tempDir?.removeSync();
@@ -61,6 +63,12 @@ describe("text-mode command reports on a real terminal core", () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
+		writes = [];
+		const write = term.write.bind(term);
+		vi.spyOn(term, "write").mockImplementation(data => {
+			writes.push(data);
+			write(data);
+		});
 		for (let i = 0; i < rows; i++) mode.chatContainer.addChild(new Text(`TRANSCRIPT ${i}`, 0, 0));
 		mode.ui.requestRender();
 		const last = `TRANSCRIPT ${rows - 1}`;
@@ -68,19 +76,28 @@ describe("text-mode command reports on a real terminal core", () => {
 		return last;
 	}
 
-	async function runCommand(command: string, shown: string): Promise<void> {
+	async function runCommand(command: string, shown: string): Promise<string[]> {
 		term.sendInput(command);
 		await term.waitForRender(() => screen(term).some(row => row.includes(command)));
+		const beforeOpen = screen(term);
 		term.sendInput("\r");
 		await term.waitForRender(() => screen(term).some(row => row.includes(shown)));
+		return beforeOpen;
+	}
+
+	function expectTranscript(rows: number): void {
+		const buffer = term.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+		expect(buffer.filter(row => /^TRANSCRIPT \d+$/.test(row))).toEqual(
+			Array.from({ length: rows }, (_, index) => `TRANSCRIPT ${index}`),
+		);
+		expect(writes.join("")).not.toContain("\x1b[3J");
 	}
 
 	it.each([5, 40])(
-		"opens `/changelog full` as a scrollable full-screen page and Esc returns to the untouched screen (%i transcript rows)",
+		"opens `/changelog full` as a scrollable full-screen page and Esc preserves the conversation (%i transcript rows)",
 		async rows => {
 			const last = await mountTranscript(rows);
-			const before = screen(term);
-			await runCommand("/changelog full", "Full Changelog");
+			const beforeOpen = await runCommand("/changelog full", "Full Changelog");
 			expect(screen(term).some(row => row.includes("PgUp/PgDn scroll"))).toBe(true);
 			expect(screen(term).some(row => row.includes(last))).toBe(false);
 			const page = screen(term).join("\n");
@@ -90,7 +107,10 @@ describe("text-mode command reports on a real terminal core", () => {
 
 			term.sendInput("\x1b");
 			await term.waitForRender(() => !screen(term).some(row => row.includes("Full Changelog")));
-			expect(screen(term).indexOf(last)).toBe(before.indexOf(last));
+			expectTranscript(rows);
+			// Typing can open an inline completion row; compare against the
+			// screen immediately before the fullscreen page, not before typing.
+			expect(screen(term).indexOf(last)).toBe(beforeOpen.indexOf(last));
 			// Nothing of the page reached the main screen, and no transcript row was duplicated.
 			const buffer = term.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
 			expect(buffer.filter(row => row === last)).toHaveLength(1);
@@ -100,15 +120,15 @@ describe("text-mode command reports on a real terminal core", () => {
 
 	it("shows a report that fits above the editor like /btw and Esc takes it away", async () => {
 		const last = await mountTranscript(40);
-		const lastRow = screen(term).indexOf(last);
 		await runCommand("/tools", "Available Tools");
 		expect(screen(term).some(row => row.includes("to close"))).toBe(true);
-		// Inline: the transcript stays on the main screen, only covered from below.
+		// Inline: displaced stable transcript rows go to native history.
 		expect(screen(term).some(row => row.startsWith("TRANSCRIPT"))).toBe(true);
 
 		term.sendInput("\x1b");
 		await term.waitForRender(() => !screen(term).some(row => row.includes("Available Tools")));
-		expect(screen(term).indexOf(last)).toBe(lastRow);
+		expectTranscript(40);
+		expect(screen(term).includes(last)).toBe(true);
 	});
 
 	it.each([
@@ -117,15 +137,14 @@ describe("text-mode command reports on a real terminal core", () => {
 		["/ssh help", "SSH Host Management"],
 		["/ssh list", "SSH Hosts"],
 	])("`%s` reports outside the transcript and Esc takes it away", async (command, title) => {
-		const last = await mountTranscript(40);
-		const lastRow = screen(term).indexOf(last);
+		await mountTranscript(40);
 		const blocks = mode.chatContainer.children.length;
 		await runCommand(command, title);
 		expect(mode.chatContainer.children).toHaveLength(blocks);
 
 		term.sendInput("\x1b");
 		await term.waitForRender(() => !screen(term).some(row => row.includes(title)));
-		expect(screen(term).indexOf(last)).toBe(lastRow);
+		expectTranscript(40);
 		const buffer = term.getScrollBuffer().map(row => Bun.stripANSI(row));
 		expect(buffer.some(row => row.includes(title))).toBe(false);
 	});

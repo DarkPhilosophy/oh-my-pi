@@ -4,8 +4,8 @@ import * as path from "node:path";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { TspPrefsProps, TspPrefsRow } from "@oh-my-pi/pi-wire";
-import type { TUI } from "../src/index";
-import type { DescribeContext, NativeUiEvent } from "../src/native/node";
+import type { Component, TUI } from "../src/index";
+import type { DescribeContext, NativeEventTarget, NativeUiEvent } from "../src/native/node";
 import {
 	AdvisorConfigOverlayComponent,
 	type AdvisorConfigDeps,
@@ -635,12 +635,13 @@ describe("advisor config native page", () => {
 	async function open(
 		userDoc: WatchdogConfigDoc = { advisors: [] },
 		pendingLoad?: Promise<WatchdogConfigDoc>,
+		dependencyOverrides: Partial<AdvisorConfigDeps> = {},
 	): Promise<Harness> {
 		const saves: Harness["saves"] = [];
 		const notices: string[] = [];
 		const overlay = new AdvisorConfigOverlayComponent(
 			{} as TUI,
-			nativeDeps,
+			{ ...nativeDeps, ...dependencyOverrides },
 			"project",
 			{ advisors: [{ name: "Reviewer", model: "anthropic/claude", reviewMode: "agent-end", reviewInterval: 3 }] },
 			{
@@ -670,6 +671,101 @@ describe("advisor config native page", () => {
 		}
 		throw new Error(`missing row ${id}`);
 	}
+
+	function picker(overlay: AdvisorConfigOverlayComponent) {
+		const editor = overlay.describe(cx)?.c?.[0];
+		if (
+			!editor ||
+			typeof editor !== "object" ||
+			!("render" in editor) ||
+			!("handleNativeEvent" in editor) ||
+			typeof editor.handleNativeEvent !== "function"
+		) {
+			throw new Error("expected an independently routed editor sheet");
+		}
+		const sheet = editor as Component & NativeEventTarget;
+		const node = sheet.describe?.(cx);
+		if (!node || node.k !== "picker" || !node.p) throw new Error("expected a picker sheet");
+		return { sheet, props: node.p };
+	}
+
+	it("applies native tool-picker actions only to the selected global advisor", async () => {
+		const { overlay, saves } = await open({ advisors: [{ name: "Global watcher" }] });
+		overlay.handleNativeEvent(action("page", "user:advisor:0"));
+		overlay.handleNativeEvent(action("edit", "tools"));
+		const tools = picker(overlay);
+		expect(tools.props.items?.map(item => item.id).sort()).toEqual(["bash", "glob", "grep", "read"]);
+		tools.sheet.handleNativeEvent({ type: "activate", key: "", item: "bash" });
+		const selected = picker(overlay);
+		expect(selected.props.current).toContain("bash");
+		selected.sheet.handleNativeEvent(action("apply"));
+		expect(overlay.describe(cx)?.c ?? []).toHaveLength(0);
+		overlay.handleNativeEvent(action("save"));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(saves).toEqual([
+			{
+				scope: "user",
+				doc: {
+					advisors: [{ name: "Global watcher", tools: expect.arrayContaining(["bash", "glob", "grep", "read"]) }],
+				},
+			},
+		]);
+		expect(saves[0]?.doc.advisors[0]?.tools).toHaveLength(4);
+	});
+
+	it("routes model selection and thinking activation through native editor sheets", async () => {
+		const model = buildModel({
+			id: "thinking-model",
+			name: "Thinking model",
+			api: "openai-completions",
+			provider: "test",
+			baseUrl: "https://example.com",
+			reasoning: true,
+			thinking: { efforts: [Effort.Low, Effort.High], mode: "effort" },
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: 1024,
+		});
+		const { overlay, saves } = await open({ advisors: [] }, undefined, { scopedModels: [{ model }] });
+		overlay.handleNativeEvent(action("edit", "model"));
+		const models = picker(overlay);
+		models.sheet.handleNativeEvent({ type: "select", key: "", item: "test/thinking-model" });
+		models.sheet.handleNativeEvent(action("use"));
+		const thinking = picker(overlay);
+		expect(thinking.props.items?.map(item => item.id)).toContain("high");
+		thinking.sheet.handleNativeEvent({ type: "activate", key: "", item: "high" });
+		overlay.handleNativeEvent(action("save"));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(saves[0]?.scope).toBe("project");
+		expect(saves[0]?.doc.advisors[0]?.model).toBe("test/thinking-model:high");
+		overlay.handleNativeEvent(action("edit", "model"));
+		expect(picker(overlay).props.current).toEqual(["test/thinking-model"]);
+	});
+
+	it("validates and cancels native interval actions through the existing input handlers", async () => {
+		const { overlay, saves, notices } = await open();
+		overlay.handleNativeEvent(action("edit", "reviewInterval"));
+		overlay.handleInput("\x7f");
+		overlay.handleInput("0");
+		overlay.handleNativeEvent(action("field-save"));
+		expect(notices).toContain("Review interval must be a positive integer.");
+		overlay.handleInput("\x7f");
+		overlay.handleInput("5");
+		overlay.handleNativeEvent(action("field-save"));
+		expect(row(props(overlay), "reviewInterval").control).toMatchObject({ value: 5 });
+		overlay.handleNativeEvent(action("edit", "reviewInterval"));
+		overlay.handleInput("\x7f");
+		overlay.handleInput("9");
+		overlay.handleNativeEvent(action("field-cancel"));
+		expect(row(props(overlay), "reviewInterval").control).toMatchObject({ value: 5 });
+		overlay.handleNativeEvent(action("save"));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(saves[0]?.doc.advisors[0]?.reviewInterval).toBe(5);
+	});
 
 	it("docks as a side sheet only where the terminal draws prefs with aside", async () => {
 		const { overlay } = await open();

@@ -120,7 +120,7 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		expect(rendered).not.toContain("\x1b[48;");
 	});
 
-	it("appends a terminal task result without repainting its borrowed pending card", async () => {
+	it("appends a terminal task result without repainting its committed running snapshot", async () => {
 		const { controller, ctx, chatContainer } = createFixture();
 		await controller.handleEvent({
 			type: "tool_execution_start",
@@ -128,16 +128,30 @@ describe("EventController mixed assistant text/tool rendering", () => {
 			toolName: "task",
 			args: { agent: "task", tasks: [{ id: "Child", task: "Inspect the source" }] },
 		});
-		const pending = ctx.pendingTools.get("borrowed-task")!;
-		chatContainer.renderViewport(120, 100, { tick: 0, now: 0 });
-		chatContainer.setBorrowedViewportRows(1);
-		const before = pending.render(120);
 		await controller.handleEvent({
 			type: "tool_execution_end",
 			toolCallId: "borrowed-task",
 			toolName: "task",
-			result: { content: [{ type: "text", text: "VISIBLE TERMINAL TASK RESULT" }] },
+			result: {
+				content: [{ type: "text", text: "Running task snapshot" }],
+				details: { async: { state: "running", jobId: "job-task", type: "task" } },
+			},
 			isError: false,
+		});
+		const pending = ctx.pendingTools.get("borrowed-task")!;
+		const batch = chatContainer.peekFinalizedBatch(120, 0)!;
+		expect(chatContainer.isBlockUncommitted(pending)).toBe(false);
+		chatContainer.acknowledgeFinalizedBatch(batch.id);
+		const before = pending.render(120);
+		await controller.handleEvent({
+			type: "tool_execution_update",
+			toolCallId: "borrowed-task",
+			toolName: "task",
+			args: { agent: "task", tasks: [{ id: "Child", task: "Inspect the source" }] },
+			partialResult: {
+				content: [{ type: "text", text: "VISIBLE TERMINAL TASK RESULT" }],
+				details: { async: { state: "completed", jobId: "job-task", type: "task" } },
+			},
 		});
 		expect(pending.render(120)).toEqual(before);
 		const text = Bun.stripANSI(chatContainer.renderViewport(120, 100, { tick: 0, now: 0 }).join("\n"));
@@ -582,7 +596,9 @@ describe("EventController mixed assistant text/tool rendering", () => {
 			}
 			composer.ui.requestRender();
 			await scheduler.settle(terminal);
-			const history = terminal.getScrollBuffer().slice(0, -terminal.rows).join("\n");
+			const tapeRows = terminal.getScrollBuffer();
+			const mutableTop = tapeRows.length - terminal.rows + composer.ui.getMutableViewport().top;
+			const history = tapeRows.slice(0, mutableTop).join("\n");
 			const outputs = Array.from(history.matchAll(/MIXED_DONE_[01]_\d{2}/g), match => match[0]);
 			expect(outputs).toEqual(
 				[0, 1].flatMap(index =>

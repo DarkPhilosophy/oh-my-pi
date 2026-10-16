@@ -86,11 +86,9 @@ async function streamPastViewport(open: string, close: string): Promise<{ clears
 	};
 }
 
-// While a fence is open, its raw ``` delimiter and unframed body stream into
-// native scrollback; when it closes, the finalized render frames the block.
-// Scrollback cannot be edited in place, so that one block needs exactly one
-// history rewrite. Plain streamed text never changes form and must not pay it.
-it("rewrites history once when a streamed markdown fence closes into a frame", async () => {
+// Open fences keep their unstable presentation live. Closing the fence can
+// publish the framed result without clearing or rewriting prior history.
+it("publishes a closed markdown fence as a frame without rewriting history", async () => {
 	const { clears, tape } = await streamPastViewport("```text\n", "```");
 
 	expect(tape).not.toContain("```text");
@@ -98,7 +96,7 @@ it("rewrites history once when a streamed markdown fence closes into a frame", a
 	expect(markers).toEqual(Array.from({ length: 30 }, (_, i) => `MARKER_${String(i + 1).padStart(2, "0")}`));
 	const framedRows = tape.split("\n").filter(row => /MARKER_\d{2}/.test(row) && row.includes("│"));
 	expect(framedRows).toHaveLength(30);
-	expect(clears).toBe(1);
+	expect(clears).toBe(0);
 });
 
 it("does not rewrite history for plain streamed text that overflows the screen", async () => {

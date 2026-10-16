@@ -74,7 +74,7 @@ it("keeps the welcome on screen when a multi-line draft grows the editor", async
 	});
 	const transcript = new TranscriptContainer();
 	const editor = new Text("EDITOR", 0, 0);
-	composer.setRuntimeChildren([transcript, editor], { transient: [editor] });
+	composer.setRuntimeChildren([transcript, editor]);
 	composer.start({ playWelcomeIntro: false });
 	try {
 		transcript.addChild(new Text("Session-only model: x.", 0, 0));

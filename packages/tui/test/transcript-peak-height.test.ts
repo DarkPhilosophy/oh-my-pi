@@ -24,14 +24,14 @@ beforeAll(async () => {
 	await initTheme();
 });
 
-describe("live block peak height", () => {
-	it("never lets a live card shrink, and measurement agrees with the viewport", () => {
+describe("live block height measurement", () => {
+	it("remeasures a changing card without retaining stale blank padding", () => {
 		const transcript = new TranscriptContainer();
 		const card = new MutableCard();
 		transcript.addChild(card);
 
 		const heightOf = (): { measured: number; shown: number } => {
-			const measured = transcript.transientBlocks(80, 40, frame).reduce((sum, block) => sum + block.rows, 0);
+			const measured = transcript.liveRowCount(80);
 			const shown = transcript.renderViewport(80, 40, frame).length;
 			return { measured, shown };
 		};
@@ -40,22 +40,17 @@ describe("live block peak height", () => {
 		card.rows = Array.from({ length: 12 }, (_, i) => `line ${i}`);
 		expect(heightOf()).toEqual({ measured: 12, shown: 12 });
 
-		// Regression: the tool fails and its card collapses to a 4-row error.
-		// The live region used to contract by 8 rows here - and grow back on
-		// the next tool - moving everything below it every time.
+		// A shorter result must not preserve the previous preview's empty footprint.
 		card.rows = ["header", "error: boom", "", "detail"];
-		expect(heightOf()).toEqual({ measured: 12, shown: 12 });
+		expect(heightOf()).toEqual({ measured: 4, shown: 4 });
 
-		// Growing past the peak raises it; the card still never goes down.
+		// Subsequent growth and shrinkage both use the current content height.
 		card.rows = Array.from({ length: 15 }, (_, i) => `line ${i}`);
 		expect(heightOf()).toEqual({ measured: 15, shown: 15 });
 		card.rows = ["header", "done"];
-		expect(heightOf()).toEqual({ measured: 15, shown: 15 });
+		expect(heightOf()).toEqual({ measured: 2, shown: 2 });
 
-		// Finishing releases the hold: the card's final collapse is a single
-		// contraction, and keeping the pad would leave a black band under the
-		// finished card until history commits it. Measurement still agrees
-		// with the viewport.
+		// Finalization preserves the measured body rather than adding a stale peak.
 		card.finalized = true;
 		expect(heightOf()).toEqual({ measured: 2, shown: 2 });
 	});

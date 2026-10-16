@@ -149,14 +149,10 @@ describe("composer click-span clipping", () => {
 			);
 			composer.setRuntimeChildren([transcript, chrome]);
 
-			// Ten chrome rows in a six-row viewport. The composer publishes the
-			// complete logical frame (the terminal owns physical clipping) and
-			// reports the paint through `onViewportBorrowed`, after which the
-			// four scrolled-off rows skew hit-testing: viewport row 0 must
-			// hit-test as component row 4.
+			// Four of the ten chrome rows are clipped from the bounded viewport.
+			// Hit-testing must use the surviving component rows, not their old offsets.
 			const frame = composer.renderFrame({ columns: 80, rows: 6 });
-			expect(frame.viewport).toHaveLength(10);
-			composer.onViewportBorrowed(0);
+			expect(frame.viewport).toHaveLength(6);
 			expect(composer.viewportClickCandidates(0)).toEqual(["row4"]);
 			expect(composer.viewportClickCandidates(5)).toEqual(["row9"]);
 		} finally {

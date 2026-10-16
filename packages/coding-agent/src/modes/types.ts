@@ -606,10 +606,7 @@ export interface InteractiveModeContext {
 	dismissCommandReport(): boolean;
 	/** Screen rows a report above the editor may take (all of them but the editor and the chrome under it). */
 	commandReportRows(): number | undefined;
-	/** Whether the last frame put the editor on the bottom row of the screen. */
-	composerInputAtBottom(): boolean;
-	/** Restore the input's bottom anchor after a tall report closes. */
-	pinComposerToBottom(): void;
+
 	cycleThinkingLevel(): void;
 	cycleRoleModel(direction?: "forward" | "backward"): Promise<void>;
 	toggleToolOutputExpansion(): void;

@@ -60,9 +60,6 @@ const TEXT_CHROME_ROWS = 5;
  * forwarded as scroll requests), then a Close button; Esc closes it.
  */
 export class ReportPanel extends OverlayPanel {
-	isTranscriptBlockTransient(): boolean {
-		return true;
-	}
 	readonly nativeOverlay: NonNullable<Component["nativeOverlay"]>;
 	readonly #body: Component;
 	readonly #onClose: () => void;

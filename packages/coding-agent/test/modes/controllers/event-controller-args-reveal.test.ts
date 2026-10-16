@@ -15,6 +15,7 @@ import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { STREAMING_REVEAL_FRAME_MS } from "@oh-my-pi/pi-coding-agent/modes/controllers/streaming-reveal";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { writeToolRenderer } from "@oh-my-pi/pi-tui/tools/write";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
 
@@ -319,6 +320,7 @@ describe("EventController paces streamed tool args", () => {
 
 	it("marks a call's args complete when its JSON closes, while a later call still streams", async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		const rendered = vi.spyOn(writeToolRenderer, "renderCall");
 		const first = { path: "/tmp/a.ts", content: "A" };
 		const message = makeStreamingMessage([
 			{ type: "toolCall", id: "tc-a", name: "write", arguments: first },
@@ -333,25 +335,24 @@ describe("EventController paces streamed tool args", () => {
 		const { controller, pendingTools } = createFixture(message);
 		await dispatch(controller, message);
 
-		// Before: args completed only at message_end, so the finished first card
-		// kept its streaming state and its rows could not reach history while the
-		// second call streamed.
-		const a = pendingTools.get("tc-a") as unknown as { isTranscriptPreviewSettled(): boolean };
-		const b = pendingTools.get("tc-b") as unknown as { isTranscriptPreviewSettled(): boolean };
-		expect(a.isTranscriptPreviewSettled()).toBe(true);
-		expect(b.isTranscriptPreviewSettled()).toBe(false);
+		// The renderer must flush the closed call's trailing source line while
+		// keeping the next call's partial argument presentation streaming.
+		pendingTools.get("tc-a")!.render(80);
+		expect(rendered.mock.calls.findLast(([args]) => args.path === first.path)?.[1].argsComplete).toBe(true);
+		pendingTools.get("tc-b")!.render(80);
+		expect(rendered.mock.calls.at(-1)?.[1].argsComplete).toBe(false);
 	});
 
 	it("keeps a just-opened call (empty partial JSON) streaming", async () => {
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		const rendered = vi.spyOn(writeToolRenderer, "renderCall");
 		const message = makeStreamingMessage([
 			{ type: "toolCall", id: "tc-open", name: "write", arguments: {}, [kStreamingPartialJson]: "" },
 		]);
 		const { controller, pendingTools } = createFixture(message);
 		await dispatch(controller, message);
-		// Regression: "" is falsy, so the call was marked complete before any
-		// argument arrived and its rows lent to history while still growing.
-		const card = pendingTools.get("tc-open") as unknown as { isTranscriptPreviewSettled(): boolean };
-		expect(card.isTranscriptPreviewSettled()).toBe(false);
+		// Empty partial JSON is still an open argument stream, not completion.
+		pendingTools.get("tc-open")!.render(80);
+		expect(rendered.mock.calls.at(-1)?.[1].argsComplete).toBe(false);
 	});
 });

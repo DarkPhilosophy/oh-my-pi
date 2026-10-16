@@ -1,12 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
-// The command half of a bash card is final as soon as its arguments are complete. For it to be
-// written to native history while the call runs, the head and command rows must have the same
-// bytes in every later state; the status lives on the Output separator below. The oracle is the
-// RAW ANSI row: colour is exactly what used to change.
+// The command half keeps stable framing across execution states; the status
+// lives on the Output separator below. Actual publication belongs to the
+// transcript's upstream retirement protocol, not an implicit borrowed prefix.
 
 const cards: ToolExecutionComponent[] = [];
 const ui = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
@@ -171,22 +171,26 @@ describe("bash card before execution starts has no lower stage and closes at its
 		expect(widthOf(rows[0]!)).toBeGreaterThan(20);
 	});
 
-	it("no phase offers the closing border to history: only the command rows are committed", () => {
-		// The pending bottom is a placeholder close for the command box. Writing it to scrollback would leave
-		// a `╰───╯` above the Output separator that is drawn once execution starts.
+	it("publishes immutable command rows while keeping output and its closing border live", () => {
+		const transcript = new TranscriptContainer();
 		const card = makeCard();
-		expect(card.getTranscriptBlockSettledRows(WIDTH)).toBe(0);
+		transcript.addChild(card);
+		expect(transcript.peekFinalizedBatch(WIDTH, 0)).toBeUndefined();
 		card.setExecutionStarted();
 		card.updateResult({ content: [{ type: "text", text: "o1" }] }, true);
-		card.render(WIDTH);
-		const settled = card.getTranscriptBlockSettledRows(WIDTH);
-		expect(settled).toBeGreaterThan(0);
-		const committed = card
-			.render(WIDTH)
-			.slice(0, settled)
-			.map(row => Bun.stripANSI(row));
-		expect(committed.some(row => row.startsWith("╰"))).toBe(false);
-		expect(committed.at(-1)).toContain("STAGE_MARKER");
+		const stage = transcript.peekFinalizedBatch(WIDTH, 100)!;
+		expect(stage.rows.map(row => Bun.stripANSI(row)).join("\n")).toContain("STAGE_MARKER");
+		expect(stage.rows.map(row => Bun.stripANSI(row)).some(row => /Output|o1|╰/.test(row))).toBe(false);
+		transcript.acknowledgeFinalizedBatch(stage.id);
+		const live = transcript.renderViewport(WIDTH, 100, { now: 0, tick: 0 }).map(row => Bun.stripANSI(row));
+		expect(live.join("\n")).toContain("o1");
+		expect(live.join("\n")).not.toContain("STAGE_MARKER");
+		card.updateResult({ content: [{ type: "text", text: "o1" }] }, false);
+		const batch = transcript.peekFinalizedBatch(WIDTH, 100)!;
+		const rows = batch.rows.map(row => Bun.stripANSI(row));
+		expect(rows.join("\n")).not.toContain("STAGE_MARKER");
+		expect(rows.some(row => row.startsWith("├") && row.includes("Output"))).toBe(true);
+		expect(rows.filter(row => row.startsWith("╰"))).toHaveLength(1);
 	});
 
 	it("while the arguments are still forming the box is closed at its own width too", () => {
