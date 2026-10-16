@@ -198,6 +198,8 @@ export interface EditRenderContext {
 	perFileDiffPreview?: PerFileDiffPreview[];
 	/** Raw in-flight edit text shown while a computed diff preview is unavailable */
 	editStreamingFallback?: string;
+	/** Closed arguments and final diff batch; the preview can enter immutable history. */
+	previewSettled?: boolean;
 	/** Function to render diff text with syntax highlighting */
 	renderDiff?: (diffText: string, options?: { filePath?: string }) => string;
 }
@@ -541,6 +543,7 @@ function formatStreamingDiff(
 	label = "streaming",
 	spinnerFrame?: number,
 	cache?: RenderedStringCache,
+	settled = false,
 ): string {
 	if (!diff) return "";
 	// Clamp the tail to the viewport so a tall or fast-growing diff cannot
@@ -548,21 +551,27 @@ function formatStreamingDiff(
 	// native-scrollback commit boundary mid-stream and freeze into immutable
 	// history as a stale preview snapshot; the finalize repair then recommits
 	// the final render below it — a duplicated block on the tape. Collapsed
-	// gets a short fixed tail; expanded widens it to the viewport-sized window,
-	// never unbounded. The budget is VISUAL rows (a long wrapped line counts
+	// gets a short fixed tail; expanded widens it to the viewport-sized window.
+	// A settled expanded preview can publish its full immutable diff. The budget is VISUAL rows (a long wrapped line counts
 	// for more than one) at the framed block's inner width (border only —
 	// contentPaddingLeft is 0); only the visible suffix is syntax-colored, so
 	// the cheap raw-line wrap walk keeps the per-chunk cost bounded.
 	// innerWidth/budget are in the cache salt so a resize re-slices.
 	const innerWidth = Math.max(1, width - 2);
-	const budget = expanded ? previewWindowRows() : Math.min(PREVIEW_LIMITS.EXPANDED_LINES, previewWindowRows());
+	const budget =
+		expanded && settled
+			? Infinity
+			: expanded
+				? previewWindowRows()
+				: Math.min(PREVIEW_LIMITS.EXPANDED_LINES, previewWindowRows());
 	let text = cachedRenderedString(cache, uiTheme, expanded, `${rawPath}:${innerWidth}:${budget}`, diff, () => {
 		// "Cursor" tail window: pin the last rows to the bottom so freshly streamed
 		// changes stay on screen. The whole-file diff is recomputed every chunk and
 		// its Myers alignment is not monotonic in payload length, so a hunk-aware
 		// window stutters as rows move between hunks. Expanded widens the window
-		// to the viewport; the full diff appears once the result finalizes.
-		const tail = sliceStreamingDiffTail(diff, innerWidth, budget);
+		// to the viewport until the argument preview settles.
+		const tail =
+			settled && expanded ? { content: diff, hiddenLines: 0 } : sliceStreamingDiffTail(diff, innerWidth, budget);
 		let rendered = "\n\n";
 		// Same wording as the finished card's overflow marker, so the rows above
 		// the window read as what they are: diff lines, one ctrl+o away.
@@ -579,7 +588,7 @@ function formatStreamingDiff(
 	const spinner = spinnerFrame !== undefined ? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ` : "";
 	// Expanded approval previews hide the "(preview)" label (#1992) but keep
 	// the animated glyph when one is active so the volatile tail stays live.
-	const hideLabel = expanded && label === "preview";
+	const hideLabel = expanded && label === "preview" && !settled;
 	if (spinner || !hideLabel) {
 		text += `\n${hideLabel ? spinner.trimEnd() : `${spinner}${uiTheme.fg("dim", `(${label})`)}`}`;
 	}
@@ -593,6 +602,7 @@ function formatMultiFileStreamingDiff(
 	expanded: boolean,
 	spinnerFrame?: number,
 	caches?: RenderedStringCache[],
+	settled = false,
 ): string {
 	const parts: string[] = [];
 	for (let index = 0; index < previews.length; index++) {
@@ -610,7 +620,7 @@ function formatMultiFileStreamingDiff(
 			const isLast = index === previews.length - 1;
 			const cache = previewCacheAt(caches, index);
 			parts.push(
-				`${header}${formatStreamingDiff(preview.diff, preview.path, width, uiTheme, expanded, "preview", isLast ? spinnerFrame : undefined, cache)}`,
+				`${header}${formatStreamingDiff(preview.diff, preview.path, width, uiTheme, expanded, "preview", isLast ? spinnerFrame : undefined, cache, settled)}`,
 			);
 		}
 	}
@@ -629,11 +639,29 @@ function getCallPreview(
 ): string {
 	const multi = renderContext?.perFileDiffPreview;
 	if (multi && multi.length > 1 && multi.some(p => p.diff || p.error)) {
-		return formatMultiFileStreamingDiff(multi, width, uiTheme, expanded, spinnerFrame, caches);
+		return formatMultiFileStreamingDiff(
+			multi,
+			width,
+			uiTheme,
+			expanded,
+			spinnerFrame,
+			caches,
+			renderContext?.previewSettled,
+		);
 	}
 	const cache = previewCacheAt(caches, 0);
 	if (args.previewDiff) {
-		return formatStreamingDiff(args.previewDiff, rawPath, width, uiTheme, expanded, "preview", spinnerFrame, cache);
+		return formatStreamingDiff(
+			args.previewDiff,
+			rawPath,
+			width,
+			uiTheme,
+			expanded,
+			"preview",
+			spinnerFrame,
+			cache,
+			renderContext?.previewSettled,
+		);
 	}
 	if (args.diff && args.op) {
 		return formatStreamingDiff(args.diff, rawPath, width, uiTheme, expanded, "streaming", spinnerFrame, cache);

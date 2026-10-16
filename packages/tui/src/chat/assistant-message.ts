@@ -791,8 +791,15 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
-	/** Whether a figure still waits for the raster of its final source; the transcript holds retirement meanwhile. */
+	/** Keep asynchronous image preparation out of immutable history until its display is ready. */
 	isTranscriptBlockPending(): boolean {
+		if (
+			this.#showImages &&
+			TERMINAL.imageProtocol === ImageProtocol.Kitty &&
+			this.#kittyConversionsAwaited.size > 0
+		) {
+			return true;
+		}
 		for (const block of this.#figureBlocks.values()) if (block.pending) return true;
 		return false;
 	}
@@ -1568,6 +1575,22 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/** Keep late read images out of an assistant block already published to history. */
+	createToolResultImageContinuation(): AssistantMessageComponent {
+		if (!this.#lastMessage) throw new Error("An image continuation requires an initialized assistant message");
+		const continuation = new AssistantMessageComponent(
+			{ ...this.#lastMessage, content: [], stopReason: "stop", errorMessage: undefined },
+			this.#hideThinkingBlock,
+			this.#onImageUpdate,
+			[],
+			this.#imageBudget,
+			this.#proseOnlyThinking,
+		);
+		continuation.setImagesVisible(this.#showImages);
+		continuation.setToolResultImagesVisible(this.#showToolResultImages);
+		return continuation;
+	}
+
 	/**
 	 * A grouped read's result images, and `mediaPath`: the file it read that Tern's media viewer
 	 * shows (read details), which a native host supporting `media` shows by path instead of the
@@ -1614,6 +1637,7 @@ export class AssistantMessageComponent extends Container {
 				})
 				.catch(() => {
 					this.#kittyConversionsAwaited.delete(key);
+					this.#onImageUpdate?.();
 				});
 		}
 	}

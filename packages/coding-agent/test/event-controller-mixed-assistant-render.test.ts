@@ -522,6 +522,324 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		},
 	);
 
+	it("places late grouped read images in a new block without mutating the published assistant", async () => {
+		const protocol = Object.getOwnPropertyDescriptor(TERMINAL, "imageProtocol")!;
+		Object.defineProperty(TERMINAL, "imageProtocol", { value: null });
+		const { controller, chatContainer } = createFixture();
+		try {
+			const calls: ToolCall[] = [0, 1, 2].map(index => ({
+				type: "toolCall",
+				id: `late-image-${index}`,
+				name: "read",
+				arguments: { path: `image-${index}.png` },
+			}));
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			const message = assistantMessage(calls);
+			await controller.handleEvent({
+				type: "message_update",
+				message,
+				assistantMessageEvent: { type: "toolcall_end", contentIndex: 2, toolCall: calls[2]!, partial: message },
+			});
+			await controller.handleEvent({ type: "message_end", message });
+			chatContainer.renderViewport(120, 20, { tick: 0, now: 0 });
+			const batch = chatContainer.peekFinalizedBatch(120, 0);
+			if (batch) chatContainer.acknowledgeFinalizedBatch(batch.id);
+			const owner = chatContainer.children[0] as AssistantMessageComponent;
+			expect(chatContainer.isBlockInLiveRegion(owner)).toBeFalse();
+			const published = owner.render(120);
+			for (const call of calls) {
+				await controller.handleEvent({
+					type: "tool_execution_end",
+					toolCallId: call.id,
+					toolName: "read",
+					isError: false,
+					result: {
+						content: [
+							{
+								type: "image",
+								mimeType: "image/png",
+								data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==",
+							},
+						],
+					},
+				});
+			}
+			expect(owner.render(120)).toEqual(published);
+			const continuations = chatContainer.children.filter(
+				child => child instanceof AssistantMessageComponent && child !== owner,
+			);
+			expect(continuations).toHaveLength(1);
+			expect(
+				continuations[0]!
+					.render(120)
+					.join("\n")
+					.match(/\[Image:/g),
+			).toHaveLength(3);
+		} finally {
+			Object.defineProperty(TERMINAL, "imageProtocol", protocol);
+		}
+	});
+
+	it.each(["write", "edit"] as const)(
+		"keeps four closed %s previews accessible before execution starts",
+		async toolName => {
+			const terminal = new VirtualTerminal(120, 14);
+			const scheduler = new VirtualRenderScheduler();
+			const composer = new Composer({
+				terminal,
+				preferences: { quiet: true },
+				tuiOptions: { renderScheduler: scheduler },
+			});
+			const editTool: AgentTool & { mode: "hashline" } = {
+				name: "edit",
+				label: "Edit",
+				description: "Edit fixture",
+				mode: "hashline",
+				parameters: type({ input: "string" }),
+				execute: async () => ({ content: [] }),
+			};
+			const { controller, chatContainer, ctx } = createFixture(
+				false,
+				name => (name === "edit" ? editTool : undefined),
+				true,
+				composer.ui,
+			);
+			ctx.toolOutputExpanded = true;
+			const content: AssistantMessage["content"] = [{ type: "text", text: INTRO_MARKER }];
+			const expected: string[] = [];
+			composer.setRuntimeChildren([chatContainer, new Text("EDITOR", 0, 0)]);
+			composer.start({ playWelcomeIntro: false });
+			try {
+				await scheduler.settle(terminal);
+				await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+				for (let index = 0; index < 4; index++) {
+					const rows = Array.from(
+						{ length: 40 },
+						(_, row) => `CLOSED_PREVIEW_${index}_${String(row).padStart(2, "0")}`,
+					);
+					const file = `preview-${index}.txt`;
+					const call: ToolCall = {
+						type: "toolCall",
+						id: `closed-${toolName}-${index}`,
+						name: toolName,
+						arguments:
+							toolName === "write"
+								? { path: file, content: rows.join("\n") }
+								: { input: `[${file}#ABCD]\nPUT 1.=1:\n${rows.map(row => `+${row}`).join("\n")}` },
+					};
+					content.push(call);
+					const partial = assistantMessage([...content]);
+					await controller.handleEvent({
+						type: "message_update",
+						message: partial,
+						assistantMessageEvent: {
+							type: "toolcall_end",
+							contentIndex: content.length - 1,
+							toolCall: call,
+							partial,
+						},
+					});
+					if (toolName === "edit") {
+						const update = {
+							files: [
+								{
+									path: file,
+									diff: rows.map((row, line) => `+${line + 1} ${row}`).join("\n"),
+									firstChangedLine: 1,
+								},
+							],
+						};
+						await controller.handleEvent({
+							type: "tool_stream_update",
+							toolCallId: call.id,
+							toolName,
+							update: { ...update, streaming: true },
+						});
+						await scheduler.settle(terminal);
+						// Closing JSON alone must not archive a diff that is still being prepared.
+						const pending = ctx.pendingTools.get(call.id) as ToolExecutionComponent;
+						expect(pending.isTranscriptBlockFinalized()).toBeFalse();
+						expect(terminal.getScrollBuffer().join("\n")).not.toContain(rows[0]!);
+						await controller.handleEvent({
+							type: "tool_stream_update",
+							toolCallId: call.id,
+							toolName,
+							update: { files: index % 2 === 0 ? update.files : [], streaming: false },
+						});
+					}
+					composer.ui.requestRender();
+					await scheduler.settle(terminal);
+					expected.push(...rows);
+					const tape = terminal.getScrollBuffer().join("\n");
+					expect(Array.from(tape.matchAll(/CLOSED_PREVIEW_\d_\d{2}/g), match => match[0])).toEqual(expected);
+					expect(ctx.pendingTools.has(call.id)).toBeTrue();
+				}
+				await controller.handleEvent({
+					type: "message_end",
+					message: { ...assistantMessage([...content]), stopReason: "toolUse" },
+				});
+				for (const [index, call] of content
+					.filter((block): block is ToolCall => block.type === "toolCall")
+					.entries()) {
+					const before = terminal.getScrollBuffer();
+					const immutable = before.slice(0, Math.max(0, before.length - terminal.rows));
+					await controller.handleEvent({
+						type: "tool_execution_start",
+						toolCallId: call.id,
+						toolName,
+						args: call.arguments,
+					});
+					const marker = `EXECUTION_OUTCOME_${index}`;
+					const isError = index % 2 === 0;
+					await controller.handleEvent({
+						type: "tool_execution_end",
+						toolCallId: call.id,
+						toolName,
+						isError,
+						result: {
+							content: [{ type: "text", text: marker }],
+							...(toolName === "edit" && !isError
+								? { details: { diff: `+1 ${marker}`, firstChangedLine: 1 } }
+								: {}),
+						},
+					});
+					await scheduler.settle(terminal);
+					const after = terminal.getScrollBuffer();
+					expect(after.slice(0, immutable.length)).toEqual(immutable);
+					if (isError || toolName === "edit") expect(after.join("\n")).toContain(marker);
+					expect(ctx.pendingTools.has(call.id)).toBeFalse();
+				}
+			} finally {
+				for (const card of ctx.pendingTools.values()) card.seal();
+				composer.stop();
+			}
+		},
+	);
+
+	it.each(["read", "write", "edit"] as const)(
+		"publishes each of four sequential %s results before the assistant message ends",
+		async toolName => {
+			const terminal = new VirtualTerminal(120, 14);
+			const scheduler = new VirtualRenderScheduler();
+			const composer = new Composer({
+				terminal,
+				preferences: { quiet: true },
+				tuiOptions: { renderScheduler: scheduler },
+			});
+			const { controller, chatContainer, ctx } = createFixture(false, () => undefined, true, composer.ui);
+			ctx.toolOutputExpanded = true;
+			const previousPreview = cfgReadToolResultPreview.get(ctx.settings);
+			cfgReadToolResultPreview.override(ctx.settings, true);
+			const content: AssistantMessage["content"] = [{ type: "text", text: INTRO_MARKER }];
+			const expected: string[] = [];
+			composer.setRuntimeChildren([chatContainer, new Text("EDITOR", 0, 0)]);
+			composer.start({ playWelcomeIntro: false });
+			try {
+				await scheduler.settle(terminal);
+				await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+				for (let index = 0; index < 4; index++) {
+					const rows = Array.from(
+						{ length: 40 },
+						(_, row) => `SEQUENTIAL_DONE_${index}_${String(row).padStart(2, "0")}`,
+					);
+					const call: ToolCall = {
+						type: "toolCall",
+						id: `sequential-${toolName}-${index}`,
+						name: toolName,
+						arguments: { path: `sequential-${index}.txt`, content: rows.join("\n"), input: "PATCH" },
+					};
+					content.push(call);
+					const partial = assistantMessage([...content]);
+					await controller.handleEvent({
+						type: "message_update",
+						message: partial,
+						assistantMessageEvent: {
+							type: "toolcall_end",
+							contentIndex: content.length - 1,
+							toolCall: call,
+							partial,
+						},
+					});
+					await controller.handleEvent({
+						type: "tool_execution_start",
+						toolCallId: call.id,
+						toolName,
+						args: call.arguments,
+					});
+					await scheduler.settle(terminal);
+					const pending = ctx.pendingTools.get(call.id);
+					expect(
+						pending instanceof ReadToolGroupComponent || pending instanceof ToolExecutionComponent,
+					).toBeTrue();
+					if (pending instanceof ReadToolGroupComponent || pending instanceof ToolExecutionComponent) {
+						expect(pending.isTranscriptBlockFinalized()).toBeFalse();
+					}
+					await controller.handleEvent({
+						type: "tool_execution_end",
+						toolCallId: call.id,
+						toolName,
+						result: {
+							content: [{ type: "text", text: rows.join("\n") }],
+							...(toolName === "edit"
+								? {
+										details: {
+											diff: rows.map((row, line) => `+${line + 1} ${row}`).join("\n"),
+											firstChangedLine: 1,
+										},
+									}
+								: {}),
+						},
+						isError: false,
+					});
+					content.push({ type: "text", text: `Still streaming after call ${index}` });
+					const continuing = assistantMessage([...content]);
+					await controller.handleEvent({
+						type: "message_update",
+						message: continuing,
+						assistantMessageEvent: {
+							type: "text_delta",
+							contentIndex: content.length - 1,
+							delta: `Still streaming after call ${index}`,
+							partial: continuing,
+						},
+					});
+					composer.ui.requestRender();
+					await scheduler.settle(terminal);
+					expected.push(...rows);
+					const tape = terminal.getScrollBuffer();
+					const mutableTop = tape.length - terminal.rows + composer.ui.getMutableViewport().top;
+					expect(
+						Array.from(
+							tape
+								.slice(0, mutableTop)
+								.join("\n")
+								.matchAll(/SEQUENTIAL_DONE_\d_\d{2}/g),
+							match => match[0],
+						),
+					).toEqual(expected);
+					expect(ctx.pendingTools.has(call.id)).toBeFalse();
+					expect(terminal.getViewport().join("\n")).toContain(`Still streaming after call ${index}`);
+				}
+				await controller.handleEvent({ type: "message_end", message: assistantMessage(content) });
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				expect(
+					Array.from(
+						terminal
+							.getScrollBuffer()
+							.join("\n")
+							.matchAll(/SEQUENTIAL_DONE_\d_\d{2}/g),
+						match => match[0],
+					),
+				).toEqual(expected);
+			} finally {
+				cfgReadToolResultPreview.override(ctx.settings, previousPreview);
+				for (const card of ctx.pendingTools.values()) card.seal();
+				composer.stop();
+			}
+		},
+	);
+
 	it("commits finished calls from a mixed batch before the assistant stream and later calls finish", async () => {
 		const terminal = new VirtualTerminal(120, 14);
 		const scheduler = new VirtualRenderScheduler();

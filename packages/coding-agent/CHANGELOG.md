@@ -8,7 +8,8 @@
 
 ### Fixed
 
-- Restored scrollable command report panels in text terminals without sending temporary report content to conversation history.
+- Command reports and the live jobs sheet now open as overlays without taking space from the conversation or entering its history.
+- Fixed closed Write/Edit previews disappearing during multi-call streams before execution begins.
 - Kept detailed saved-reset expirations while excluding spent or expired credits from the upcoming-expiry list.
 - Fixed completed tool results being kept pending or blocked from scrollback during streamed tool-call ID updates.
 - Completed calls can publish during an ongoing stream without waiting for viewport overflow or a subsequent response.

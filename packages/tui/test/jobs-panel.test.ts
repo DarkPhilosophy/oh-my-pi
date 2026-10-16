@@ -213,8 +213,8 @@ describe("JobsSheet", () => {
 			]);
 			const rows = sheet
 				.render(120)
-				.slice(1, 9)
-				.map(line => line.trimEnd());
+				.slice(2, 10)
+				.map(line => Bun.stripANSI(line).slice(2, -2).trimEnd());
 			expect(rows).toEqual([
 				expect.stringMatching(/^> running {2}task \S+ {2}Audit: task-audit$/),
 				expect.stringMatching(/^ {2}├─ running {2}task \S+ {2}Sub: task-sub$/),

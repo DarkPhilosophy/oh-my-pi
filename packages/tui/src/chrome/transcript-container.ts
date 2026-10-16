@@ -1566,7 +1566,9 @@ export class TranscriptContainer extends Container {
 	#settleFinalized(): void {
 		for (let index = this.#frontier; index < this.#entries.length; index++) {
 			const entry = this.#entries[index]!;
-			if (entry.state === "active" && isFinalized(entry.component)) entry.state = "settled";
+			// Late image conversion can make an unpublished settled block pending
+			// again. Preserve emitted prefixes, but do not retire its unfinished tail.
+			if (entry.state !== "committed") entry.state = isFinalized(entry.component) ? "settled" : "active";
 		}
 	}
 

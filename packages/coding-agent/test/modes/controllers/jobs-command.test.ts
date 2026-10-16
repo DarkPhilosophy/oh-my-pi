@@ -13,7 +13,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
-import { Container } from "@oh-my-pi/pi-tui";
+import { type Component, Container } from "@oh-my-pi/pi-tui";
 import { isNativeRendering, setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 import { JobsSheet } from "@oh-my-pi/pi-tui/overlays/jobs-panel";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -21,11 +21,19 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 
 const WIDTH = 60;
 
-/** `/jobs full` in text mode, as the report box above the editor shows it: its content rows, borders stripped. */
+/** `/jobs full` overlay content rows, with its frame stripped. */
 async function renderFullJobs(running: AsyncJobSnapshotItem[]): Promise<string[]> {
 	const reportContainer = new Container();
+	let overlay: Component | undefined;
 	const ctx = {
-		ui: { terminal: { columns: WIDTH, rows: 200 }, requestRender: () => {} },
+		ui: {
+			terminal: { columns: WIDTH, rows: 200 },
+			requestRender: () => {},
+			showOverlay: (component: Component) => {
+				overlay = component;
+			},
+			setFocus: () => {},
+		},
 		keybindings: { getKeys: () => ["escape"] },
 		reportContainer,
 		commandReportRows: () => 200,
@@ -34,7 +42,9 @@ async function renderFullJobs(running: AsyncJobSnapshotItem[]): Promise<string[]
 		},
 	} as unknown as InteractiveModeContext;
 	await new CommandController(ctx).handleJobsCommand({ full: true });
-	return reportContainer
+	expect(reportContainer.children).toHaveLength(0);
+	if (!overlay) throw new Error("The jobs report did not open an overlay");
+	return overlay
 		.render(WIDTH)
 		.map(line => Bun.stripANSI(line))
 		.filter(line => line.startsWith("│"))
@@ -229,7 +239,7 @@ describe("/jobs in the native terminal", () => {
 
 			setNativeRendering(false);
 			await mode.handleJobsCommand({ full: true });
-			const report = Bun.stripANSI(mode.reportContainer.render(100).join("\n"));
+			const report = Bun.stripANSI(mode.ui.overlayStack.at(-1)!.component.render(100).join("\n"));
 			expect(report).toContain("worker cargo test");
 			expect(report).not.toContain("main-only build");
 		} finally {
@@ -252,7 +262,7 @@ describe("/jobs in the native terminal", () => {
 		try {
 			setNativeRendering(false);
 			await mode.handleJobsCommand({ full: true });
-			const report = Bun.stripANSI(mode.reportContainer.render(120).join("\n"))
+			const report = Bun.stripANSI(mode.ui.overlayStack.at(-1)!.component.render(120).join("\n"))
 				.split("\n")
 				.map(line => line.replace(/^│ ?|\s*│$/g, "").trimEnd())
 				.filter(line => /\S/.test(line));

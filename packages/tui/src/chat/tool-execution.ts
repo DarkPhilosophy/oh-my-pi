@@ -467,6 +467,7 @@ export class ToolExecutionComponent extends Container {
 	#editMode?: EditMode;
 	#editDiffPreview?: PerFileDiffPreview[];
 	#previewReady?: PromiseWithResolvers<void>;
+	#previewStreamSettled = false;
 	// Payload keys whose Kitty PNG conversion is already awaited; the converted
 	// images themselves live in the process-wide cache behind
 	// `convertImageToPngShared`, so rebuilt components reuse them.
@@ -593,7 +594,8 @@ export class ToolExecutionComponent extends Container {
 	/** Start a terminal result card without repainting this immutable snapshot. */
 	createResultContinuation(): ToolExecutionComponent {
 		this.#backgroundTaskFrozen = true;
-		this.#sealed = true;
+		// An immutable argument preview is not a cancelled execution.
+		if (this.#result !== undefined) this.#sealed = true;
 		this.#blockVersion++;
 		this.#updateSpinnerAnimation();
 		const continuation = new ToolExecutionComponent(
@@ -608,6 +610,9 @@ export class ToolExecutionComponent extends Container {
 			this.#ui,
 		);
 		continuation.setExpanded(this.#expanded);
+		continuation.#editDiffPreview = this.#editDiffPreview;
+		continuation.#previewStreamSettled = this.#previewStreamSettled;
+		if (this.#previewStreamSettled) continuation.#previewReady?.resolve();
 		return continuation;
 	}
 
@@ -688,6 +693,7 @@ export class ToolExecutionComponent extends Container {
 	updateStreamPreview(update: unknown): void {
 		if (
 			this.#previewDiffSettled() ||
+			this.#previewStreamSettled ||
 			update === null ||
 			typeof update !== "object" ||
 			!("files" in update) ||
@@ -695,8 +701,10 @@ export class ToolExecutionComponent extends Container {
 		) {
 			return;
 		}
-		if ("streaming" in update && update.streaming === false) this.#previewReady?.resolve();
-		if (update.files.length === 0) return;
+		if ("streaming" in update && update.streaming === false) {
+			this.#previewStreamSettled = true;
+			this.#previewReady?.resolve();
+		}
 		const rawFiles: unknown[] = update.files;
 		const files = rawFiles.filter(
 			(
@@ -708,13 +716,15 @@ export class ToolExecutionComponent extends Container {
 				error?: string | null;
 			} => file !== null && typeof file === "object" && "path" in file && typeof file.path === "string",
 		);
-		if (files.length === 0) return;
-		this.#editDiffPreview = files.map(file => ({
-			path: file.path,
-			diff: file.diff ?? undefined,
-			firstChangedLine: file.firstChangedLine ?? undefined,
-			error: file.error ?? undefined,
-		}));
+		if (files.length === 0 && !this.#previewStreamSettled) return;
+		if (files.length > 0) {
+			this.#editDiffPreview = files.map(file => ({
+				path: file.path,
+				diff: file.diff ?? undefined,
+				firstChangedLine: file.firstChangedLine ?? undefined,
+				error: file.error ?? undefined,
+			}));
+		}
 		this.#displayInputVersion++;
 		this.#updateDisplay();
 		this.#ui.requestRender();
@@ -988,7 +998,17 @@ export class ToolExecutionComponent extends Container {
 	isTranscriptBlockFinalized(): boolean {
 		if (!this.#toolActivityVisible) return true;
 		if (this.#sealed) return true;
-		if (this.#result === undefined) return false;
+		if (this.#result === undefined) {
+			// The call preview and its execution have different lifetimes. Once
+			// the argument stream (including asynchronous diff preparation) closes,
+			// its card may retire; execution gets a continuation if it has retired.
+			return (
+				streamsBody(this.#toolName) &&
+				this.#argsComplete &&
+				!this.#executionStarted &&
+				(!isEditLikeToolName(this.#toolName) || this.#previewStreamSettled)
+			);
+		}
 		// A parked background task's call already returned; job frames that land
 		// while it is still live keep updating it, but it must not gate history.
 		if (this.#parkedBackground) return true;
@@ -2116,6 +2136,7 @@ export class ToolExecutionComponent extends Container {
 			context.nowMs = this.#taskRenderNowMs;
 		} else if (isEditLikeToolName(this.#toolName)) {
 			context.editMode = this.#editMode;
+			context.previewSettled = this.#argsComplete && this.#previewStreamSettled;
 			const previews = this.#editDiffPreview;
 			if (previews && previews.length > 0) {
 				const first = previews[0];

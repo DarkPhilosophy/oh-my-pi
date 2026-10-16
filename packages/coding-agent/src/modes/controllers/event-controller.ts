@@ -218,6 +218,7 @@ export class EventController {
 	#detachToolApprovalPreviewWaiter: (() => void) | undefined;
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
+	#readImageContinuations = new WeakMap<AssistantMessageComponent, AssistantMessageComponent>();
 	#toolTimelineComponents = new Map<string, Component>();
 	// Stable identity for a streamed tool call while its assistant message is
 	// live: maps the tool-call block's position in the streaming message to the
@@ -763,7 +764,16 @@ export class EventController {
 			.map(content => ({ type: "image", data: content.data, mimeType: content.mimeType }));
 		const mediaPath = readMediaPath(result.details);
 		if (images.length === 0 && !mediaPath) return false;
-		assistantComponent.setToolResultImages(toolCallId, images, mediaPath);
+		let imageOwner = this.#readImageContinuations.get(assistantComponent) ?? assistantComponent;
+		if (!this.ctx.chatContainer.isBlockInLiveRegion(imageOwner)) {
+			const continuation = imageOwner.createToolResultImageContinuation();
+			this.#readImageContinuations.set(assistantComponent, continuation);
+			if (!this.#insertAfterTranscriptComponent(imageOwner, continuation)) {
+				this.ctx.chatContainer.insertSettledBlock(continuation);
+			}
+			imageOwner = continuation;
+		}
+		imageOwner.setToolResultImages(toolCallId, images, mediaPath);
 		// A media-only result still settles through the read group.
 		return images.length > 0 && cfgTerminalShowImages.get(this.ctx.settings);
 	}
@@ -2026,7 +2036,8 @@ export class EventController {
 			// re-truncate them: tool_execution_start is the one event every
 			// execution path emits with the full args immediately before the result.
 			this.#toolArgsReveal.finish(event.toolCallId);
-			const component = this.ctx.pendingTools.get(event.toolCallId);
+			let component = this.ctx.pendingTools.get(event.toolCallId);
+			if (component) component = this.#terminalResultTarget(event.toolCallId, event.toolName, component);
 			if (component && typeof component.updateArgs === "function") {
 				component.updateArgs(event.args, event.toolCallId);
 				if (typeof component.setArgsComplete === "function") {
@@ -2068,8 +2079,8 @@ export class EventController {
 
 	#terminalResultTarget(toolCallId: string, toolName: string, component: ToolExecutionHandle): ToolExecutionHandle {
 		if (
-			toolName !== "task" ||
 			!(component instanceof ToolExecutionComponent) ||
+			(toolName !== "task" && !component.isTranscriptBlockFinalized()) ||
 			this.ctx.chatContainer.isBlockUncommitted(component)
 		) {
 			return component;

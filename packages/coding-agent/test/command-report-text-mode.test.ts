@@ -1,12 +1,14 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { Text } from "@oh-my-pi/pi-tui";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -118,17 +120,79 @@ describe("text-mode command reports on a real terminal core", () => {
 		},
 	);
 
-	it("shows a report that fits above the editor like /btw and Esc takes it away", async () => {
+	it("shows a fitting report as an overlay and Esc restores the conversation", async () => {
 		const last = await mountTranscript(40);
 		await runCommand("/tools", "Available Tools");
 		expect(screen(term).some(row => row.includes("to close"))).toBe(true);
-		// Inline: displaced stable transcript rows go to native history.
+		// The overlay does not move stable transcript rows into history.
 		expect(screen(term).some(row => row.startsWith("TRANSCRIPT"))).toBe(true);
 
 		term.sendInput("\x1b");
 		await term.waitForRender(() => !screen(term).some(row => row.includes("Available Tools")));
 		expectTranscript(40);
 		expect(screen(term).includes(last)).toBe(true);
+	});
+
+	it.each([
+		["/jobs", "Background jobs"],
+		["/tools", "Available Tools"],
+		["/mcp help", "MCP Server Management"],
+	])("keeps streaming and HUD geometry intact while %s is open", async (command, title) => {
+		await mountTranscript(40);
+		vi.spyOn(session, "getAsyncJobTree").mockReturnValue({ running: [], recent: [], agents: [] });
+		mode.todoContainer.addChild(new Text("TODO_HUD", 0, 0));
+		mode.statusContainer.addChild(new Text("JOB_HUD", 0, 0));
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "STREAM_RUNNING" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "fixture",
+			stopReason: "stop",
+			timestamp: 1,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		};
+		await mode.eventController.handleEvent({ type: "message_start", message });
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "STREAM_RUNNING", partial: message },
+		});
+		mode.ui.requestRender();
+		await term.waitForRender(() => screen(term).some(row => row.includes("STREAM_RUNNING")));
+		const before = screen(term);
+		const mutableTop = mode.ui.getMutableViewport().top;
+		await executeBuiltinSlashCommand(command, { ctx: mode });
+		await term.waitForRender(() => screen(term).some(row => row.includes(title)));
+		expect(mode.ui.hasOverlay()).toBeTrue();
+		expect(mode.reportContainer.children).toHaveLength(0);
+		expect(mode.ui.getMutableViewport().top).toBe(mutableTop);
+		const partial: AssistantMessage = { ...message, content: [{ type: "text", text: "STREAM_RUNNING_UPDATED" }] };
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message: partial,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "_UPDATED", partial },
+		});
+		term.sendInput("\x1b");
+		await term.waitForRender(
+			() => !mode.ui.hasOverlay() && screen(term).some(row => row.includes("STREAM_RUNNING_UPDATED")),
+		);
+		for (const marker of ["TODO_HUD", "JOB_HUD"]) {
+			expect(before.findIndex(row => row.includes(marker))).toBeGreaterThanOrEqual(0);
+			expect(screen(term).findIndex(row => row.includes(marker))).toBe(
+				before.findIndex(row => row.includes(marker)),
+			);
+		}
+		expectTranscript(40);
+		expect(term.getScrollBuffer().join("\n")).not.toContain(title);
+		await mode.eventController.handleEvent({ type: "message_end", message: partial });
 	});
 
 	it.each([

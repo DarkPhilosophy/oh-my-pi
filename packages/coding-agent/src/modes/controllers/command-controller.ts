@@ -253,35 +253,24 @@ export class CommandController {
 		this.ctx.ui.requestRender();
 	}
 
-	/**
-	 * Show a read-only report, replacing the previous one. In text mode one that
-	 * fits the rows above the editor shows there like `/btw`: the editor keeps
-	 * focus and its Esc takes the report away. A taller one opens as a
-	 * full-screen page on the terminal's alternate screen, scrolled with the
-	 * arrow/page keys and the wheel, so the main screen is never touched and
-	 * Esc returns to it as it was. Natively it is a focused sheet like
-	 * `/usage`, its body scrolled by the terminal once it is long, closed by
-	 * Esc or Close.
-	 */
+	/** Show command output in a modal layer, never in the conversation layout. */
 	showCommandReport(options: { title: string; head?: TspText; body: Component }): void {
 		this.#clearReport();
 		this.#closeReportSheet();
 		const terminal = this.ctx.ui.terminal;
-		const inline = this.ctx.commandReportRows() ?? terminal.rows;
 		let fullScreen = false;
 		const report = new ReportPanel({
 			...options,
 			closeKey: appKey(this.ctx.keybindings, "app.interrupt"),
 			onClose: () => this.#closeReportSheet(),
-			maxRows: () => (fullScreen ? terminal.rows : this.ctx.commandReportRows()),
+			maxRows: () => (fullScreen ? terminal.rows : Math.max(1, Math.floor(terminal.rows * 0.9))),
 		});
-		if (isNativeRendering()) {
-			report.holdFocus();
-			this.#reportSheet = this.ctx.ui.showOverlay(report, { anchor: "center", width: "90%", maxHeight: "90%" });
-			this.ctx.ui.setFocus(report);
-		} else if (report.heightAt(terminal.columns) > inline) {
+		report.holdFocus();
+		if (
+			!isNativeRendering() &&
+			report.heightAt(Math.floor(terminal.columns * 0.9)) > Math.floor(terminal.rows * 0.9)
+		) {
 			fullScreen = true;
-			report.holdFocus();
 			this.#reportSheet = this.ctx.ui.showOverlay(report, {
 				anchor: "bottom-center",
 				width: "100%",
@@ -289,10 +278,10 @@ export class CommandController {
 				margin: 0,
 				fullscreen: true,
 			});
-			this.ctx.ui.setFocus(report);
 		} else {
-			this.ctx.reportContainer.addChild(report);
+			this.#reportSheet = this.ctx.ui.showOverlay(report, { anchor: "center", width: "90%", maxHeight: "90%" });
 		}
+		this.ctx.ui.setFocus(report);
 		this.ctx.ui.requestRender();
 	}
 
@@ -835,9 +824,9 @@ export class CommandController {
 	}
 
 	/**
-	 * `/jobs`: natively the live jobs sheet the jobs pill opens (inspect and
-	 * cancel included); `/jobs full`, and text mode, a report of the running
-	 * and recent jobs (see {@link showCommandReport}). Both list the viewed
+	 * `/jobs`: the live jobs sheet the jobs pill opens (inspect and cancel
+	 * included); `/jobs full`: a report of the running and recent jobs
+	 * (see {@link showCommandReport}). Both list the viewed
 	 * session's jobs and its subagents' as a tree (see {@link buildJobTree}).
 	 */
 	async handleJobsCommand(options?: { full?: boolean }): Promise<void> {
@@ -847,7 +836,7 @@ export class CommandController {
 			this.ctx.showWarning("Async background jobs are unavailable in this session.");
 			return;
 		}
-		if (isNativeRendering() && !full) {
+		if (!full) {
 			this.ctx.showJobsSheet();
 			return;
 		}

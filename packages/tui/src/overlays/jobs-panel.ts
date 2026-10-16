@@ -8,6 +8,8 @@
 import type { TspSpan, TspTone } from "@oh-my-pi/pi-wire";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import type { Component } from "../tui";
+import * as overlayBox from "../chrome/overlay-box";
+import { editorKey, editorKeys } from "../chrome/keybinding-hints";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../keybinding-matchers";
 import { matchesKey } from "../keys";
 import { truncateToWidth } from "../utils";
@@ -173,12 +175,13 @@ export class JobsSheet implements Component {
 	}
 
 	/** Rows for a terminal without the native surface: the job tree, then the selected job's facts and output tail. */
-	render(width: number): readonly string[] {
-		const { rows, jobs, selected } = this.#current();
+	render(outerWidth: number): readonly string[] {
+		const width = Math.max(1, outerWidth - 4);
+		const { rows, jobs, selected, cancellable } = this.#current();
 		const now = Date.now();
 		const running = jobs.filter(job => job.status === "running").length;
-		const lines = [truncateToWidth(` Background jobs · ${running} running`, width)];
-		if (jobs.length === 0) lines.push(" No background jobs");
+		const lines: string[] = [];
+		if (jobs.length === 0) lines.push(theme.fg("muted", "No background jobs"));
 		for (const entry of rows) {
 			const guide = jobTreeGuide(entry, theme);
 			if (entry.kind === "agent") {
@@ -209,7 +212,15 @@ export class JobsSheet implements Component {
 				if (line) lines.push(truncateToWidth(`   ${line}`, width));
 			}
 		}
-		return lines;
+		const controls = `${editorKeys("tui.select.up", "tui.select.down")} select${cancellable ? " · x cancel" : ""} · ${editorKey("tui.select.cancel")} close`;
+		return [
+			overlayBox.topBorder(outerWidth, `Background jobs · ${running} running`),
+			overlayBox.row("", outerWidth),
+			...lines.map(line => overlayBox.row(line, outerWidth)),
+			overlayBox.row("", outerWidth),
+			overlayBox.row(theme.fg("muted", controls), outerWidth),
+			overlayBox.bottomBorder(outerWidth),
+		];
 	}
 
 	invalidate(): void {

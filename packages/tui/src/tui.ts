@@ -4389,10 +4389,6 @@ export class TUI extends Container {
 			this.#rightPanelRowsAbove = [];
 		}
 		const overlayVisible = !flushing && this.#getTopmostVisibleOverlay() !== undefined;
-		if (overlayVisible) {
-			while (viewport.length < height) viewport.push("");
-			viewport = this.#compositeOverlaysIntoWindow(viewport, width, height);
-		}
 		viewport = this.#compositeRightPanelIntoViewport(viewport, width, overlayVisible);
 		// History first: it reuses the previous viewport's rows by content, and
 		// the viewport pass replaces that memo with its own rows.
@@ -4723,7 +4719,7 @@ export class TUI extends Container {
 		const mutableTop = newTop + replayViewportRows;
 		const mutablePreparedLines = replayViewportRows > 0 ? prepared.lines.slice(replayViewportRows) : prepared.lines;
 		const mutablePreparedRows = replayViewportRows > 0 ? prepared.rows.slice(replayViewportRows) : prepared.rows;
-		const target =
+		let target =
 			marker !== undefined && rows > 0
 				? this.#targetHardwareCursorState({ row: newTop + Math.min(marker.row, rows - 1), col: marker.col }, height)
 				: null;
@@ -4785,6 +4781,36 @@ export class TUI extends Container {
 			}
 			this.#cursorOverlayBacking = { top: overlayTop, rows: covered, painted };
 		}
+		let paintedLines = prepared.lines;
+		if (overlayVisible) {
+			// Modal geometry belongs to the physical screen, not to the mutable
+			// transcript window. Reuse the backed-overlay restoration path so
+			// opening, repainting or closing a modal cannot retire chat rows.
+			const backing = Array.from({ length: height }, (_, row) => this.#providerScreen[row] ?? "");
+			const composited = this.#compositeOverlaysIntoWindow(backing, width, height);
+			const modalMarkers: { row: number; col: number }[] = [];
+			const modal = this.#prepareLinesArray(composited, width, undefined, height, modalMarkers);
+			paintedLines = modal.lines;
+			let first = height;
+			let last = -1;
+			for (let row = 0; row < height; row++) {
+				if (modal.lines[row] === backing[row]) continue;
+				first = Math.min(first, row);
+				last = row;
+				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(modal.rows[row]!, width, row)}`;
+			}
+			if (last >= first) {
+				this.#cursorOverlayBacking = {
+					top: first,
+					rows: backing.slice(first, last + 1),
+					painted: modal.lines.slice(first, last + 1),
+				};
+			}
+			const top = this.#getTopmostVisibleOverlay();
+			if (top && isOverlayFocusTarget(top.component, this.#focusedComponent)) {
+				target = this.#targetHardwareCursorState(modalMarkers[0] ?? null, height);
+			}
+		}
 		if (target) {
 			buffer += `\x1b[${target.row + 1};${target.col + 1}H${target.visible ? "\x1b[?25h" : "\x1b[?25l"}`;
 			this.#parkedViewportOffset = Math.max(0, target.row - mutableTop);
@@ -4807,8 +4833,8 @@ export class TUI extends Container {
 		this.terminal.write(buffer);
 
 		this.#debugPaint = {
-			lines: prepared.lines,
-			windowTop: this.#debugNextWindowTop,
+			lines: paintedLines,
+			windowTop: overlayVisible ? 0 : this.#debugNextWindowTop,
 			altScreen: false,
 			...(target === null
 				? {}
@@ -4859,7 +4885,7 @@ export class TUI extends Container {
 		// only `preparedHistory.lines` crossed above it into native scrollback.
 		this.#notifyPaint({
 			history: preparedHistory.lines,
-			viewport: prepared.lines,
+			viewport: paintedLines,
 			reset: destructiveReset || history?.kind === "replay",
 			alt: false,
 			columns: width,

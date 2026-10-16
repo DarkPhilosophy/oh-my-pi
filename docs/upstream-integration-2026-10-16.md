@@ -13,7 +13,7 @@ Stare: integrare funcțională verificată local. Alegerile de mai jos păstreaz
 - La închiderea unei interfețe temporare, spațiul ei dispare. Un ecran de 100 de rânduri poate rămâne cu 90 de rânduri ocupate după eliminarea unui panou de 10 rânduri. Nu se adaugă umplutură pentru a fixa editorul jos și nu se readuce istoricul publicat în regiunea editabilă.
 - Aceasta este o diferență intenționată față de politica upstream `chromeFloor`/bottom-padding, inclusiv ancorarea obligatorie introdusă în 18.11.1 prin #15499. Se păstrează continuitatea dintre istoric și răspuns, dar nu umplutura de sub card: și contracția unui card activ urmărește înălțimea actuală, fără a menține artificial editorul pe ultimul rând. Testele de bottom-anchor sunt adaptate la accesibilitate, publicare unică și contracție fără replay.
 - Ask își calculează dimensiunea din terminalul real, limitează titlul la bugetul disponibil și indică celelalte întrebări ascunse; navigarea și modificarea răspunsurilor rămân disponibile.
-- Rapoartele comenzilor folosesc `ReportPanel`: cele care încap sunt panouri deasupra editorului; cele lungi sunt overlay-uri cu scroll. Ieșirea anticipată care le trimitea în transcript este eliminată.
+- Rapoartele comenzilor folosesc `ReportPanel` exclusiv ca overlay, fără să consume spațiu în conversație; cele lungi păstrează pagina fullscreen cu scroll. Aceasta corectează alegerea inițială greșită de a monta rapoartele scurte deasupra editorului.
 - Nu se publică pe GitHub și nu se construiesc manual binarele native. Launcherul rămâne responsabil pentru build la pornire.
 
 ## Extensii compatibile păstrate
@@ -28,7 +28,7 @@ Stare: integrare funcțională verificată local. Alegerile de mai jos păstreaz
 
 ## Scenarii acoperite
 
-- Comenzile de raport deschid panoul/overlay-ul și Esc revine la transcript fără pierderi sau duplicate.
+- Comenzile de raport deschid overlay-ul și Esc revine la transcript fără pierderi sau duplicate.
 - Introducerea și ștergerea `/advisor configure`, inclusiv în timpul activității, nu taie cardurile Bash/Eval și nu suprapune rândul de usage peste corpul lor.
 - Un preview edit/write înalt urmat de o eroare scurtă își recalculează dimensiunea; mesajul și bordura finală rămân vizibile.
 - Cele trei panouri advisor, izolarea Global/Project, salvările concurente și toate acțiunile pickerelor native funcționează împreună.
@@ -37,7 +37,7 @@ Stare: integrare funcțională verificată local. Alegerile de mai jos păstreaz
 - Bash/Eval publică numai partea stabilă a comenzii în timpul execuției; completarea publică restul cardului, fără a repeta comanda sau a publica borduri provizorii.
 - Testele upstream originale sunt verificate separat de testele noastre; paritatea cu rezultatul vechiului `ours` nu este suficientă.
 
-## Verificare efectuată
+## Verificare inițială a merge-ului, înaintea corecției overlay-urilor
 
 - Suita terminalului și a controllerelor interactive, inclusiv reconstrucția transcriptului, fuzz-ul de resize și intrarea reală a comenzilor: **5.128 teste trecute, 7 omise de condițiile de platformă, 0 eșecuri**.
 - Cele **7 teste de rapoarte prin comenzi reale** trec separat: pagini fullscreen cu scroll, rapoarte inline, revenire cu Esc, toate rândurile conversației prezente o singură dată și fără `ESC[3J`.
