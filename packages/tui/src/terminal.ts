@@ -33,6 +33,7 @@ import type { TerminalMultiplexerBackgroundColorCache } from "./multiplexers/typ
 import {
 	canDiscoverHerdrNativeTransport,
 	canQueryHerdrNativeTransport,
+	classifyTerminalMultiplexerModule,
 	isDirectHerdrPane,
 	queryHerdrNativeTransport,
 	terminalMultiplexerSessions,
@@ -598,6 +599,11 @@ export interface Terminal {
 	// so custom Terminals built against older pi-tui versions keep working.
 	readonly keyboardEnhancementExitSequence?: string | null;
 
+	// Re-asserts the main-screen enhanced keyboard mode after alternate-screen
+	// exit, or null when none is needed. Optional so custom Terminals built
+	// against older pi-tui versions keep working.
+	readonly keyboardEnhancementRestoreSequence?: string | null;
+
 	// Cursor positioning (relative to current position)
 	moveBy(lines: number): void; // Move cursor up (negative) or down (positive) by N lines
 
@@ -778,9 +784,11 @@ export interface ProcessTerminalOptions {
 	conpty?: boolean;
 	/**
 	 * Whether stdin is a native Windows console handle (win32, not WSL), whose
-	 * console host answers `CSI ? 9001 h` with win32-input-mode key records.
-	 * Defaults to `process.platform === "win32"`; only consulted when `conpty`
-	 * is also true.
+	 * console host is certain to answer `CSI ? 9001 h` with win32-input-mode key
+	 * records. When false (WSL), the keyboard fallback requests modifyOtherKeys
+	 * alongside win32-input-mode, since a WSL pty may not be relayed by a console
+	 * host. Defaults to `process.platform === "win32"`; only consulted when
+	 * `conpty` is also true.
 	 */
 	nativeWindowsConsole?: boolean;
 }
@@ -797,7 +805,8 @@ export class ProcessTerminal implements Terminal {
 	#isLoopStalled?: () => boolean;
 	#stdoutResizeListener?: () => void;
 	#kittyProtocolActive = false;
-	#kittyEnableSeq: string | null = null;
+	// Kitty flags omp pushed on its own stack frame; meaningful only while kitty is active.
+	#kittyFlags = 0;
 	#modifyOtherKeysActive = false;
 	#modifyOtherKeysTimeout?: Timer;
 	// Windows console fallback when kitty is unavailable: key records arrive as
@@ -904,6 +913,12 @@ export class ProcessTerminal implements Terminal {
 	/** Resolved DECRQM support per private mode (mode → supported). */
 	#privateModeSupport = new Map<number, boolean>();
 	#privateModeCallbacks: PrivateModeReportHandler[] = [];
+	/**
+	 * Whether output and input reassert DEC 2004: set once DECRPM confirms it,
+	 * or at input attach inside a multiplexer that gates paste markers on the
+	 * pane's own mode without answering DECRQM (tmux <= 3.5a, #15596).
+	 */
+	#rearmBracketedPaste = false;
 	/** Whether DEC 2048 in-band resize notifications are currently enabled. */
 	#inBandResizeActive = false;
 	/** Reassembly buffer for a DEC 2048 in-band resize report split across stdin reads. */
@@ -928,12 +943,20 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	get kittyEnableSequence(): string | null {
-		return this.#kittyProtocolActive ? this.#kittyEnableSeq : null;
+		return this.#kittyProtocolActive ? `\x1b[>${this.#kittyFlags}u` : null;
 	}
 
 	get keyboardEnhancementEnterSequence(): string | null {
-		if (this.#kittyProtocolActive) return this.#kittyEnableSeq;
+		if (this.#kittyProtocolActive) return `\x1b[>${this.#kittyFlags}u`;
 		return this.#modifyOtherKeysActive ? "\x1b[>4;2m" : null;
+	}
+
+	get keyboardEnhancementRestoreSequence(): string | null {
+		// `CSI = flags ; 1 u` replaces the main-screen stack top, which is omp's own
+		// frame, so it is a no-op wherever per-screen stacks work. Windows Terminal
+		// 1.25–1.27 restore the pre-push flags on `?1049l` (microsoft/terminal#20763),
+		// dropping to legacy keys: Shift+Enter arrives as `\r`, Ctrl+Enter as `\n`.
+		return this.#kittyProtocolActive ? `\x1b[=${this.#kittyFlags};1u` : null;
 	}
 
 	get keyboardEnhancementExitSequence(): string | null {
@@ -1147,6 +1170,9 @@ export class ProcessTerminal implements Terminal {
 
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		this.#safeWrite("\x1b[?2004h");
+		this.#rearmBracketedPaste =
+			terminalMultiplexerSessions($env).some(multiplexer => multiplexer.gatesBracketedPaste) ||
+			classifyTerminalMultiplexerModule($env)?.gatesBracketedPaste === true;
 
 		// Force normal cursor-key (DECCKM) and numeric-keypad mode (terminfo
 		// `rmkx` = "\x1b[?1l\x1b>"). omp decodes both CSI ("\x1b[A") and SS3
@@ -1555,19 +1581,17 @@ export class ProcessTerminal implements Terminal {
 					// ConPTY (native Windows and WSL) drops Shift+letter keypresses
 					// entirely when flag 4 (report alternate keys) is set. Use flag 1
 					// (disambiguate only), preserving flag 2 if already active.
-					this.#kittyEnableSeq = (reportedFlags & 2) !== 0 ? "\x1b[>3u" : "\x1b[>1u";
-					this.#safeWrite(this.#kittyEnableSeq);
+					this.#kittyFlags = (reportedFlags & 2) !== 0 ? 3 : 1;
 				} else if ((reportedFlags & 2) !== 0) {
 					// Preserve event-type reporting already enabled by a parent app.
 					// Push level-2 to keep its shortcuts reporting consistently.
-					this.#kittyEnableSeq = "\x1b[>7u";
-					this.#safeWrite(this.#kittyEnableSeq);
+					this.#kittyFlags = 7;
 				} else {
 					// Disambiguate escape codes and report base-layout keys for physical
 					// shortcut matching, without event reporting that caused regression #3259.
-					this.#kittyEnableSeq = "\x1b[>5u";
-					this.#safeWrite(this.#kittyEnableSeq);
+					this.#kittyFlags = 5;
 				}
+				this.#safeWrite(`\x1b[>${this.#kittyFlags}u`);
 				return;
 			}
 
@@ -1692,8 +1716,11 @@ export class ProcessTerminal implements Terminal {
 
 		// Handler that pipes stdin data through the buffer
 		this.#stdinDataHandler = (data: string) => {
-			// Recover modes reset by the host before the user's next paste.
-			if (data && this.#active && this.#privateModeSupport.get(2004)) this.#safeWrite("\x1b[?2004h");
+			// Recover modes reset by the host before the user's next paste. Not
+			// mid-paste: the host is plainly in 2004 then, and per-key reads would
+			// turn one paste into thousands of writes (#15757).
+			if (data && this.#active && this.#rearmBracketedPaste && !this.#stdinBuffer!.pasting)
+				this.#safeWrite("\x1b[?2004h");
 			if (this.#win32PasteNormalizer) this.#win32PasteNormalizer.process(data);
 			else this.#stdinBuffer!.process(data);
 		};
@@ -1996,10 +2023,11 @@ export class ProcessTerminal implements Terminal {
 	#enableModifyOtherKeysFallback(): void {
 		if (this.#kittyProtocolActive || this.#modifyOtherKeysActive || this.#win32InputDecoder) return;
 		const ssh = isSshSession();
-		if (this.#conpty && this.#nativeWindowsConsole && !ssh) {
+		if (this.#conpty && !ssh) {
 			// The Windows console host ignores modifyOtherKeys and folds Shift+Enter
-			// into a bare CR. win32-input-mode is answered by the console host
-			// serving this process, so it works under every local ConPTY terminal.
+			// into a bare CR (Ctrl+Enter into LF). win32-input-mode is answered by the
+			// console host serving this process, so it works under every local ConPTY
+			// terminal, and under WSL through the `wsl.exe` relay's console host too.
 			// Under sshd the console host is fed the remote terminal's VT stream,
 			// and the mode splits arrow keys into Escape plus literal text (#14034).
 			this.#safeWrite("\x1b[?9001h");
@@ -2010,7 +2038,10 @@ export class ProcessTerminal implements Terminal {
 				data => this.#stdinBuffer?.process(data),
 				() => this.#releaseWin32PendingSequence(),
 			);
-			return;
+			// A WSL pty is not always relayed by a console host (tmux, VS Code
+			// Remote-WSL, WSLg terminals). Those ignore 9001 and keep sending plain
+			// VT, which the decoder passes through, so also ask for modifyOtherKeys.
+			if (this.#nativeWindowsConsole) return;
 		}
 		// A remote terminal with no identifying env may not understand the request.
 		if (ssh && (TERMINAL.id === "base" || TERMINAL.id === "trueColor")) return;
@@ -2104,6 +2135,7 @@ export class ProcessTerminal implements Terminal {
 		// only true here after an explicit DECRPM reply (the DA1-sentinel
 		// fallback resolves unsupported).
 		if (mode === 2004 && supported) {
+			this.#rearmBracketedPaste = true;
 			this.#stdinBuffer?.setRawPasteStallProbe(this.#isLoopStalled);
 		}
 	}
@@ -2332,6 +2364,7 @@ export class ProcessTerminal implements Terminal {
 		this.#da1SentinelOwners.length = 0;
 		this.#privateModeCallbacks = [];
 		this.#privateModeSupport.clear();
+		this.#rearmBracketedPaste = false;
 		this.#xtermScrollToBottomRestoreModes.clear();
 		this.#reportedColumns = undefined;
 		this.#reportedRows = undefined;
@@ -2443,7 +2476,7 @@ export class ProcessTerminal implements Terminal {
 	write(data: string): void {
 		// Hosts can reset bracketed paste (e.g. iTerm2's Terminal State toggle).
 		// Reassert it with existing output, never on a timer while idle.
-		if (data && this.#active && this.#privateModeSupport.get(2004)) data = `\x1b[?2004h${data}`;
+		if (data && this.#active && this.#rearmBracketedPaste) data = `\x1b[?2004h${data}`;
 		this.#safeWrite(data);
 		if (this.#writeLogPath) {
 			try {

@@ -13,6 +13,7 @@ provider "openrouter" {
 		stt "openai-transcriptions"
 	}
 	web-search "openrouter"
+	image-count-budget 90
 
 	// TypeSafe's Jev answers only through the Decisions API (`/api/alpha/decisions`,
 	// System One wire shape); the default `/models` roster omits `text->decisions`

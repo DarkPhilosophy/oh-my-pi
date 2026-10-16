@@ -202,6 +202,125 @@ const finalAnswer: AssistantMessage = {
 
 const frame = { tick: 0, now: 0 };
 
+/** Greedy word wrap, so the same content takes a different row count at each width. */
+function wrapWords(words: readonly string[], width: number): string[] {
+	const rows: string[] = [];
+	let row = "";
+	for (const word of words) {
+		if (row.length > 0 && row.length + 1 + word.length > width) {
+			rows.push(row);
+			row = word;
+		} else {
+			row = row.length > 0 ? `${row} ${word}` : word;
+		}
+	}
+	if (row.length > 0) rows.push(row);
+	return rows;
+}
+
+describe("TranscriptContainer row split", () => {
+	const words = Array.from({ length: 120 }, (_, i) => `w${i}${"x".repeat(i % 5)}`);
+	const prose: Component = { render: width => wrapWords(words, width) };
+
+	it("commits only the rows of a straddling block that left the screen", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(prose);
+		transcript.addChild(new Block(["tail"], true));
+		const rows = wrapWords(words, 40);
+		// Room 10: the tail and its separator leave 8 rows of the prose live.
+		const batch = transcript.peekFinalizedBatch(40, 10)!;
+		expect(batch.rows).toEqual(rows.slice(0, rows.length - 8));
+		transcript.acknowledgeFinalizedBatch(batch.id);
+		expect(transcript.renderViewport(40, 10, frame)).toEqual([...rows.slice(rows.length - 8), "", "tail"]);
+		expect(transcript.blockStates()).toEqual(["settled", "settled"]);
+	});
+
+	it("resumes a split block at the same content after a width change, repeating at most one row", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(prose);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(40, 10)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		const committed = head.rows.join(" ").split(" ");
+		// A preserve-mode resize keeps the 40-column rows in scrollback; the rest
+		// retires at 25 columns.
+		const rest = transcript.peekFlushBatch(25)!.rows.filter(row => row !== "");
+		const resumed = rest.join(" ").split(" ");
+		expect(resumed.at(-1)).toBe("tail");
+		const restart = words.indexOf(resumed[0]!);
+		// No word is lost, and only the seam row's committed words repeat.
+		expect(restart).toBeLessThanOrEqual(committed.length);
+		expect(resumed.slice(0, -1)).toEqual(words.slice(restart));
+		expect(committed.length - restart).toBeLessThan(wrapWords(words, 25)[0]!.split(" ").length);
+		expect(committed).toEqual(words.slice(0, committed.length));
+	});
+
+	it("loses no text of a split block whose wrapped rows carry a per-row prefix", () => {
+		// Every wrapped row starts with a quote bar, so a narrower width spends
+		// more cells on decoration per character of content.
+		const content = "abcdefghij".repeat(5);
+		const quoted: Component = {
+			render: width => {
+				const step = width - 1;
+				return Array.from(
+					{ length: Math.ceil(content.length / step) },
+					(_, i) => `#${content.slice(i * step, (i + 1) * step)}`,
+				);
+			},
+		};
+		const transcript = new TranscriptContainer();
+		transcript.addChild(quoted);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(6, 3)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		const committed = head.rows.map(row => row.slice(1)).join("");
+		expect(content.startsWith(committed)).toBe(true);
+		const rest = transcript.peekFlushBatch(9)!.rows.filter(row => row.startsWith("#"));
+		const resumed = rest.map(row => row.slice(1)).join("");
+		// The rest resumes at or before the committed end and runs to the end.
+		expect(content.endsWith(resumed)).toBe(true);
+		expect(content.length - resumed.length).toBeLessThanOrEqual(committed.length);
+	});
+
+	it("keeps rows a split block reveals at the same width, such as an expanded tool pane", () => {
+		// A settled output pane shows its tail behind a summary until expanded.
+		const lines = Array.from({ length: 30 }, (_, i) => `out${i}`);
+		let expanded = false;
+		const pane: Component = {
+			render: () => (expanded ? lines : ["… 20 earlier lines", ...lines.slice(20)]),
+		};
+		const transcript = new TranscriptContainer();
+		transcript.addChild(pane);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(80, 6)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		expect(head.rows).toEqual(["… 20 earlier lines", "out20", "out21", "out22", "out23", "out24", "out25"]);
+		// Ctrl+O: the pane re-renders with head rows that history never received.
+		expanded = true;
+		const rest = transcript.peekFlushBatch(80)!.rows;
+		expect(rest.filter(row => row.startsWith("out"))).toEqual(lines);
+	});
+	it("stops a relocated split before punctuation-only rows a split block reveals", () => {
+		// Expanding the pane reveals a rule row above the committed head rows;
+		// the hash rejects the stale bytes, and the empty-content row must not
+		// count as matched content on the relocation walk.
+		let expanded = false;
+		const pane: Component = {
+			render: () => (expanded ? ["---", "AAA", "BBB"] : ["AAA", "BBB"]),
+		};
+		const transcript = new TranscriptContainer();
+		transcript.addChild(pane);
+		transcript.addChild(new Block(["tail"], true));
+		const head = transcript.peekFinalizedBatch(80, 3)!;
+		transcript.acknowledgeFinalizedBatch(head.id);
+		expect(head.rows).toEqual(["AAA"]);
+		expanded = true;
+		const rest = transcript.peekFlushBatch(80)!.rows;
+		expect(rest).toContain("---");
+		expect(rest.filter(row => row === "AAA" || row === "BBB")).toEqual(["AAA", "BBB"]);
+	});
+});
+
 describe("TranscriptContainer", () => {
 	it("renders externally added children after removing another child", () => {
 		const transcript = new TranscriptContainer();
@@ -365,7 +484,11 @@ describe("TranscriptContainer", () => {
 		const block = new ReflowingAppendBlock();
 		transcript.addChild(block);
 
-		const emitted = transcript.peekFinalizedBatch(4, 2)!;
+		// Room 2: "efgh" is still on screen, so its stable prefix stays live —
+		// committing it would strand that row above the live tail.
+		expect(transcript.peekFinalizedBatch(4, 2)).toBeUndefined();
+		// Room 1: the whole two-row stable prefix has left the screen.
+		const emitted = transcript.peekFinalizedBatch(4, 1)!;
 		expect(emitted.rows).toEqual(["abcd", "efgh"]);
 		transcript.acknowledgeFinalizedBatch(emitted.id);
 		expect(transcript.renderViewport(8, 1, frame)).toEqual(["partial"]);
@@ -999,8 +1122,10 @@ describe("TranscriptContainer", () => {
 		const transcript = new TranscriptContainer();
 		const rows = Array.from({ length: 40 }, (_, index) => `answer-${index}`);
 		transcript.addChild(new Block(rows, true));
-		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
-		expect(transcript.renderViewport(80, 30, frame).slice(-30)).toEqual(rows.slice(-30));
+		const batch = transcript.peekFinalizedBatch(80, 30);
+		expect(batch?.rows).toEqual(rows.slice(0, 10));
+		transcript.acknowledgeFinalizedBatch(batch!.id);
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(rows.slice(10));
 		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
 	});
 
@@ -1056,7 +1181,7 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 2, frame)).toEqual(["A1", "A2", "A3", "A4"]);
 	});
 
-	it("keeps a tall finalized block live when its visible tail still fits", () => {
+	it("reoffers a finalized block's offscreen prefix until acknowledged", () => {
 		const transcript = new TranscriptContainer();
 		const block = new Block(
 			Array.from({ length: 40 }, (_value, index) => `row-${index}`),
@@ -1064,8 +1189,14 @@ describe("TranscriptContainer", () => {
 		);
 		transcript.addChild(block);
 
+		const batch = transcript.peekFinalizedBatch(80, 30)!;
+		expect(batch.rows).toEqual(Array.from({ length: 10 }, (_, index) => `row-${index}`));
+		expect(transcript.renderViewport(80, 30, frame)).toEqual(
+			Array.from({ length: 30 }, (_, index) => `row-${index + 10}`),
+		);
+		expect(transcript.peekFinalizedBatch(80, 30)).toEqual(batch);
+		transcript.acknowledgeFinalizedBatch(batch.id);
 		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
-		expect(transcript.renderViewport(80, 30, frame)).toHaveLength(40);
 	});
 
 	it("emits only the settled prefix that actually overflows", () => {

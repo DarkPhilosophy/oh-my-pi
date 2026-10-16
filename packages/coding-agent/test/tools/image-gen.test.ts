@@ -1,7 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { Api, FetchImpl, Model } from "@oh-my-pi/pi-ai";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { modelKind } from "@oh-my-pi/pi-catalog/types";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { CustomToolContext } from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools";
 import type { ReadonlySessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -15,6 +20,7 @@ import { hasFsCode, removeWithRetries, TempDir, USER_AGENT } from "@oh-my-pi/pi-
 
 const originalOpenRouterKey = Bun.env.OPENROUTER_API_KEY;
 const generatedImagePaths: string[] = [];
+const WEBP_DATA = Buffer.from("hosted-image").toString("base64");
 
 afterAll(async () => {
 	await Promise.all(generatedImagePaths.map(imagePath => removeWithRetries(imagePath)));
@@ -57,6 +63,45 @@ function createAntigravityXAIContext(model: Model | undefined, fetchMock: typeof
 				provider === "google-antigravity" ? antigravityCredentials : "test-xai-token",
 		} as unknown as ModelRegistry,
 		model,
+		isIdle: () => true,
+		hasQueuedMessages: () => false,
+		abort: () => {},
+	};
+}
+
+function catalogModel(provider: string, id: string, api: Api, kind: "chat" | "image" = "image"): Model<Api> {
+	return buildModel({
+		id,
+		name: `${provider}/${id}`,
+		api,
+		provider,
+		baseUrl: `https://${provider}.example/v1`,
+		kind,
+		reasoning: false,
+		input: kind === "image" ? ["text", "image"] : ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 8_192,
+	});
+}
+
+function createContext(options: { models: Model<Api>[]; settings: Settings; fetch: FetchImpl }): CustomToolContext {
+	const authStorage = createInMemoryAuthStorage();
+	for (const model of options.models) {
+		authStorage.keys.setRuntime(model.provider, `key-${model.provider}`);
+	}
+	const registry = new ModelRegistry(authStorage);
+	registry.getAvailable = (kind = "chat") =>
+		kind === "all" ? [...options.models] : options.models.filter(model => modelKind(model) === kind);
+	registry.getAll = () => [...options.models];
+	registry.find = (provider, modelId) =>
+		options.models.find(model => model.provider === provider && model.id === modelId);
+	return {
+		fetch: options.fetch,
+		sessionManager: SessionManager.inMemory(process.cwd()),
+		modelRegistry: registry,
+		model: undefined,
+		settings: options.settings,
 		isIdle: () => true,
 		hasQueuedMessages: () => false,
 		abort: () => {},
@@ -1204,6 +1249,40 @@ describe("imageGenTool", () => {
 			if (originalGoogleKey === undefined) delete Bun.env.GOOGLE_API_KEY;
 			else Bun.env.GOOGLE_API_KEY = originalGoogleKey;
 		}
+	});
+
+	it("spells the requested shape into the Codex prompt because the backend ignores the size field", async () => {
+		const image = catalogModel("openai-codex", "gpt-image-2", "openai-codex-responses");
+		const carrier = catalogModel("openai-codex", "gpt-5.5", "openai-codex-responses", "chat");
+		const requests: Record<string, unknown>[] = [];
+		const fetchMock: FetchImpl = async (_input, init) => {
+			requests.push(JSON.parse(String(init?.body)));
+			const event = {
+				type: "response.completed",
+				response: { output: [{ type: "image_generation_call", result: WEBP_DATA }] },
+			};
+			return new Response(`data: ${JSON.stringify(event)}\n\n`, {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		};
+		const settings = Settings.isolated({ modelRoles: { image: "openai-codex/gpt-image-2" } });
+		const ctx = createContext({ models: [image, carrier], settings, fetch: fetchMock });
+
+		for (const params of [{ aspect_ratio: "3:2" as const }, { image_size: "1024x1536" as const }]) {
+			const result = await imageGenTool.execute("codex-shape", { subject: "apple", ...params }, undefined, ctx);
+			generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+		}
+
+		const sent = requests.map(body => {
+			const input = body.input as Array<{ content: Array<{ text?: string }> }>;
+			const tools = body.tools as Array<{ size?: string }>;
+			return { text: input[0]?.content[0]?.text, size: tools[0]?.size };
+		});
+		expect(sent).toEqual([
+			{ text: "apple.\n\nOutput format: landscape image, 3:2 aspect ratio.", size: "1536x1024" },
+			{ text: "apple.\n\nOutput format: portrait image, 1024x1536 pixels.", size: "1024x1536" },
+		]);
 	});
 
 	it.skipIf(process.platform === "win32")(

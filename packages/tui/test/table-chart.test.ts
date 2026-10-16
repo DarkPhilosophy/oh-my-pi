@@ -19,6 +19,7 @@ import {
 	type TableChartPlanner,
 } from "@oh-my-pi/pi-tui/chat/table-chart";
 import { lexDocument } from "@oh-my-pi/pi-tui/components/markdown";
+import { trimBlankEdges } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Tokens } from "@oh-my-pi/pi-utils/marked";
@@ -698,6 +699,50 @@ describe("table charts in assistant Markdown", () => {
 			subagent.setTableChartsVisible(false);
 			expect(subagent.render(100).some(row => TERMINAL.isImageLine(row))).toBe(false);
 			expect(subagent.isTranscriptBlockPending()).toBe(false);
+		} finally {
+			setTerminalImageProtocol(protocol);
+		}
+	});
+
+	it("publishes only settled rows while an answer with a table streams", async () => {
+		const protocol = TERMINAL.imageProtocol;
+		await initTheme(false);
+		setTerminalImageProtocol(ImageProtocol.Kitty);
+		try {
+			setTableCharts("always");
+			// TIMINGS gets a chart once the answer moves past it; PROSE never does.
+			for (const body of [TIMINGS, PROSE]) {
+				const text = `The numbers from the last run, before any table arrives.\n\n${body}\n\nThat is all.`;
+				const component = new AssistantMessageComponent();
+				for (let end = 1; end <= text.length; end++) {
+					component.updateContent(
+						{
+							role: "assistant",
+							content: [{ type: "text", text: text.slice(0, end) }],
+							api: "anthropic-messages",
+							provider: "anthropic",
+							model: "claude-sonnet-4-5",
+							stopReason: "stop",
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							timestamp: 1,
+						},
+						{ transient: true },
+					);
+					// Published rows may already be in native scrollback: every later
+					// render must still open with them, byte for byte.
+					const rows = trimBlankEdges(component.render(100));
+					const stable = component.renderTranscriptStableRows(component.getTranscriptStableRows().length, 100);
+					expect(rows.slice(0, stable.length)).toEqual([...stable]);
+				}
+				expect(component.getTranscriptStableRows().length).toBeGreaterThan(0);
+			}
 		} finally {
 			setTerminalImageProtocol(protocol);
 		}

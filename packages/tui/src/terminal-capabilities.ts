@@ -19,7 +19,7 @@ import {
 	terminalMultiplexerForTerm,
 	terminalMultiplexerSessions,
 } from "./terminal-multiplexer";
-import { resolveTmuxClientTerminalName, wrapTmuxPassthroughIfNeeded } from "./tmux";
+import { resolveTmuxClientTerminalNames, wrapTmuxPassthroughIfNeeded } from "./tmux";
 import type { HangulCompatibilityJamoWidth } from "./utils";
 
 export * from "./terminal-multiplexer";
@@ -497,9 +497,10 @@ function getFallbackImageProtocol(
 	if (!isTTY) return null;
 	if (terminalId === "vscode" || terminalId === "alacritty") return null;
 	const term = env.TERM?.toLowerCase() ?? "";
-	if (term.includes("screen") || term.includes("tmux") || term.includes("ghostty")) {
-		return ImageProtocol.Kitty;
-	}
+	// tmux TERM names the pane, not the attached client's graphics support.
+	// Leave unknown clients unselected so the runtime SIXEL probe can run.
+	if (env.TMUX || term.includes("tmux")) return null;
+	if (term.includes("screen") || term.includes("ghostty")) return ImageProtocol.Kitty;
 	return null;
 }
 /**
@@ -704,9 +705,11 @@ export function detectTerminalId(env: NodeJS.ProcessEnv = Bun.env): TerminalId {
 	if (programId) return programId;
 
 	// tmux >= 3.2 replaces the pane's identity with `TERM_PROGRAM=tmux`.
-	// Its server still holds the attached client's terminal-type reply.
-	const clientProgramId = fromProgram(resolveTmuxClientTerminalName(env) ?? undefined);
-	if (clientProgramId) return clientProgramId;
+	// Its server still holds the attached client's terminal-type reply and TERM.
+	for (const clientProgram of resolveTmuxClientTerminalNames(env)) {
+		const clientProgramId = fromProgram(clientProgram);
+		if (clientProgramId) return clientProgramId;
+	}
 
 	if (TERM?.toLowerCase().includes("ghostty")) return "ghostty";
 	if (TERM && caseEq(TERM, "monstar")) return "monstar";
@@ -1038,6 +1041,21 @@ export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacemen
 		columns,
 		rows,
 	};
+}
+
+/** `ESC 7` + `CUU(n)` lead-in of an {@link Image} direct-placement line. */
+const DIRECT_PLACEMENT_LIFT = /^\x1b7\x1b\[(\d+)A/;
+
+/**
+ * Rows above its own line that an {@link Image} direct-placement line paints
+ * over: the `CUU(rows-1)` of its lead-in, or 0 for any other line. The renderer
+ * erases those rows before a SIXEL/iTerm2 block is written again, because
+ * those protocols have no delete command and the block's reserved rows are
+ * byte-identical between frames, so the diff never rewrites them.
+ */
+export function directPlacementLift(line: string): number {
+	const m = DIRECT_PLACEMENT_LIFT.exec(line);
+	return m ? Number(m[1]) : 0;
 }
 
 /**

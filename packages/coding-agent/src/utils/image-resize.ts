@@ -1,5 +1,7 @@
+import { inflateSync } from "node:zlib";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import { encodeRawPng } from "./png-encode";
 
 export interface ImageResizeOptions {
 	maxWidth?: number;
@@ -91,6 +93,97 @@ function readPngHeaderDimensions(buffer: Uint8Array): ImageHeaderDimensions | un
 	const height = readUint32BE(buffer, 20);
 	if (width === 0 || height === 0) return undefined;
 	return { width, height, mimeType: "image/png" };
+}
+
+/**
+ * Whether `input`'s container can hold translucent pixels: anything but a JPEG or a PNG
+ * without an alpha channel or `tRNS` transparency.
+ */
+function mayHaveAlpha(input: Uint8Array): boolean {
+	if (input[0] === 0xff && input[1] === 0xd8) return false;
+	if (!readPngHeaderDimensions(input)) return true;
+	const colorType = input[25];
+	if (colorType === 4 || colorType === 6) return true;
+	for (let offset = 33; offset + 8 <= input.length; offset += 12 + readUint32BE(input, offset)) {
+		const type = String.fromCharCode(...input.subarray(offset + 4, offset + 8));
+		if (type === "tRNS") return true;
+		if (type === "IDAT") return false;
+	}
+	return false;
+}
+
+/** 8-bit RGBA pixels read back from `Bun.Image`. */
+interface RgbaPixels {
+	width: number;
+	height: number;
+	pixels: Uint8Array;
+}
+
+/**
+ * `image`'s pixels when it decodes to RGBA. `Bun.Image` has no raw output, so this reads
+ * its uncompressed PNG, whose rows it leaves unfiltered; `undefined` for RGB output (no
+ * alpha) or any other layout.
+ */
+async function readRgba(image: Bun.Image): Promise<RgbaPixels | undefined> {
+	const png = await image.png({ compressionLevel: 0 }).bytes();
+	let width = 0;
+	let height = 0;
+	let rgba8 = false;
+	const idat: Uint8Array[] = [];
+	for (let offset = 8; offset + 12 <= png.length; offset += 12 + readUint32BE(png, offset)) {
+		const type = String.fromCharCode(...png.subarray(offset + 4, offset + 8));
+		const data = png.subarray(offset + 8, offset + 8 + readUint32BE(png, offset));
+		if (type === "IHDR") {
+			width = readUint32BE(data, 0);
+			height = readUint32BE(data, 4);
+			// 8-bit depth, RGBA, not interlaced.
+			rgba8 = data[8] === 8 && data[9] === 6 && data[12] === 0;
+		} else if (type === "IDAT") {
+			idat.push(data);
+		} else if (type === "IEND") {
+			break;
+		}
+	}
+	if (!rgba8) return undefined;
+	const raw = inflateSync(Buffer.concat(idat));
+	const stride = width * 4;
+	if (raw.length !== (stride + 1) * height) return undefined;
+	const pixels = new Uint8Array(stride * height);
+	for (let y = 0; y < height; y++) {
+		const row = y * (stride + 1);
+		if (raw[row] !== 0) return undefined;
+		pixels.set(raw.subarray(row + 1, row + 1 + stride), y * stride);
+	}
+	return { width, height, pixels };
+}
+
+/**
+ * `input` with its color premultiplied by alpha, as an uncompressed PNG for `Bun.Image` to
+ * resample, when some pixel is translucent; `undefined` when every pixel is opaque.
+ */
+async function premultipliedPng(input: Uint8Array): Promise<Uint8Array | undefined> {
+	const source = await readRgba(new Bun.Image(input));
+	if (!source) return undefined;
+	const { pixels } = source;
+	let translucent = false;
+	for (let i = 0; i < pixels.length; i += 4) {
+		const alpha = pixels[i + 3];
+		if (alpha === 255) continue;
+		translucent = true;
+		for (let c = i; c < i + 3; c++) pixels[c] = Math.round((pixels[c] * alpha) / 255);
+	}
+	return translucent ? encodeRawPng(pixels, source.width, source.height, 4, 0) : undefined;
+}
+
+/** Undoes premultiplication on resampled RGBA; a channel the kernel's overshoot left above alpha clamps to full. */
+function unpremultiply(pixels: Uint8Array): void {
+	for (let i = 0; i < pixels.length; i += 4) {
+		const alpha = pixels[i + 3];
+		if (alpha === 255) continue;
+		for (let c = i; c < i + 3; c++) {
+			pixels[c] = alpha === 0 ? 0 : Math.min(255, Math.round((pixels[c] * 255) / alpha));
+		}
+	}
 }
 
 function isJpegStartOfFrame(marker: number): boolean {
@@ -201,6 +294,11 @@ function encodedResult(
  * The source is decoded and resized once per target size; the format/quality ladder
  * re-encodes from a lossless intermediate at that size.
  *
+ * A source with translucent pixels keeps its alpha: it resizes premultiplied (`Bun.Image`
+ * resamples straight alpha, bleeding the color under transparent pixels into the edges)
+ * and never becomes JPEG (which would show that color, usually black). Without WebP it
+ * stays PNG and only the dimension ladder shrinks it.
+ *
  * Accepts an `ImageContent` (base64), raw bytes, or {@link ImageBytesInput}; passing
  * bytes avoids a base64 round-trip when the caller already holds them.
  *
@@ -297,12 +395,31 @@ export async function resizeImage(
 			}
 		}
 
+		const premultiplied = mayHaveAlpha(inputBuffer) ? await premultipliedPng(inputBuffer) : undefined;
+		const translucent = premultiplied !== undefined;
+		// No lossy format keeps a translucent image's alpha once WebP is excluded.
+		const lossy = !(translucent && opts.excludeWebP);
+
+		// The source at `width`×`height` as PNG with straight alpha; `compressionLevel` 0
+		// for ladder intermediates.
+		async function resizedPng(width: number, height: number, compressionLevel?: number): Promise<Uint8Array> {
+			if (!premultiplied) {
+				const image = new Bun.Image(inputBuffer).resize(width, height);
+				return (compressionLevel === undefined ? image.png() : image.png({ compressionLevel })).bytes();
+			}
+			const resized = await readRgba(new Bun.Image(premultiplied).resize(width, height));
+			if (!resized) throw new Error("resizeImage: a translucent resize lost its alpha channel");
+			unpremultiply(resized.pixels);
+			return encodeRawPng(resized.pixels, width, height, 4, compressionLevel);
+		}
+
 		// Lossy encoder for quality/dimension fallback ladders. PNG is excluded since
 		// it's lossless and doesn't respond to quality parameters. WebP is included
-		// unless OMP_NO_WEBP is set (llama.cpp STB incompatibility). Ladder steps pass a
-		// lossless PNG already at the target size, so each step only decodes that small
-		// intermediate instead of re-decoding and re-resizing the source; when
-		// `width`/`height` are given the source is resized first.
+		// unless OMP_NO_WEBP is set (llama.cpp STB incompatibility); JPEG unless the
+		// image is translucent. Ladder steps pass a lossless PNG already at the target
+		// size, so each step only decodes that small intermediate instead of re-decoding
+		// and re-resizing the source; when `width`/`height` are given the source is
+		// resized first. Call only when `lossy`.
 		async function encodeLossy(
 			source: Uint8Array,
 			quality: number,
@@ -314,10 +431,14 @@ export async function resizeImage(
 				return width === undefined || height === undefined ? image : image.resize(width, height);
 			};
 			const candidates = await Promise.all([
-				pipeline()
-					.jpeg({ quality })
-					.bytes()
-					.then(b => ({ buffer: b, mimeType: "image/jpeg" })),
+				...(translucent
+					? []
+					: [
+							pipeline()
+								.jpeg({ quality })
+								.bytes()
+								.then(b => ({ buffer: b, mimeType: "image/jpeg" })),
+						]),
 				...(opts.excludeWebP
 					? []
 					: [
@@ -341,37 +462,55 @@ export async function resizeImage(
 		// smallest. PNG wins for line art / few-color UI; JPEG wins for photographic
 		// content; WebP usually beats JPEG by 25–35% but is disabled when OMP_NO_WEBP is
 		// set because many local inference backends (llama.cpp STB) don't decode it.
-		// The lossless PNG doubles as the intermediate for the quality ladder below.
-		const [targetPng, firstLossy] = await Promise.all([
-			new Bun.Image(inputBuffer).resize(targetWidth, targetHeight).png().bytes(),
-			encodeLossy(inputBuffer, opts.jpegQuality, targetWidth, targetHeight),
-		]);
-		let best = pickSmallest({ buffer: targetPng, mimeType: "image/png" }, firstLossy);
+		// The lossless PNG doubles as the intermediate for the quality ladder below. A
+		// translucent image's lossy encode starts from its premultiplied resize, so waits for it.
+		let targetPng: Uint8Array;
+		let firstLossy: EncodedCandidate | undefined;
+		if (translucent) {
+			targetPng = await resizedPng(targetWidth, targetHeight);
+			firstLossy = lossy ? await encodeLossy(targetPng, opts.jpegQuality) : undefined;
+		} else {
+			[targetPng, firstLossy] = await Promise.all([
+				resizedPng(targetWidth, targetHeight),
+				encodeLossy(inputBuffer, opts.jpegQuality, targetWidth, targetHeight),
+			]);
+		}
+		let best: EncodedCandidate = { buffer: targetPng, mimeType: "image/png" };
+		if (firstLossy) best = pickSmallest(best, firstLossy);
 		if (best.buffer.length <= opts.maxBytes) {
 			return encodedResult(best, originalWidth, originalHeight, finalWidth, finalHeight);
 		}
 
 		// Still too large — lossy JPEG (+ WebP) ladder with decreasing quality
-		for (const quality of qualitySteps) {
+		for (const quality of lossy ? qualitySteps : []) {
 			best = await encodeLossy(targetPng, quality);
 			if (best.buffer.length <= opts.maxBytes) {
 				return encodedResult(best, originalWidth, originalHeight, finalWidth, finalHeight);
 			}
 		}
 
-		// Still too large — reduce dimensions progressively with the lossy ladder
+		// Still too large — reduce dimensions progressively with the lossy ladder (PNG
+		// alone when nothing lossy applies)
 		for (const scale of scaleSteps) {
-			finalWidth = Math.round(targetWidth * scale);
-			finalHeight = Math.round(targetHeight * scale);
-
-			if (finalWidth < 100 || finalHeight < 100) {
+			// The first PNG candidate was this size.
+			if (!lossy && scale === 1) continue;
+			const width = Math.round(targetWidth * scale);
+			const height = Math.round(targetHeight * scale);
+			// Rejected before encoding: the reported size stays the last encoded one.
+			if (width < 100 || height < 100) {
 				break;
 			}
+			finalWidth = width;
+			finalHeight = height;
 
-			const resized =
-				scale === 1
-					? targetPng
-					: await new Bun.Image(inputBuffer).resize(finalWidth, finalHeight).png({ compressionLevel: 0 }).bytes();
+			if (!lossy) {
+				best = { buffer: await resizedPng(finalWidth, finalHeight), mimeType: "image/png" };
+				if (best.buffer.length <= opts.maxBytes) {
+					return encodedResult(best, originalWidth, originalHeight, finalWidth, finalHeight);
+				}
+				continue;
+			}
+			const resized = scale === 1 ? targetPng : await resizedPng(finalWidth, finalHeight, 0);
 			for (const quality of qualitySteps) {
 				best = await encodeLossy(resized, quality);
 				if (best.buffer.length <= opts.maxBytes) {

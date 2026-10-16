@@ -23,6 +23,23 @@ export interface DecodedJudgment {
 	usage: Usage;
 }
 
+/**
+ * Image input one judgment dialect accepts. Every cap is optional; {@link NativeJudge}
+ * rejects a request exceeding one locally instead of spending an upstream call on it.
+ */
+export interface JudgmentImageInput {
+	/** Accepted lowercase MIME types; unset accepts any image type. */
+	mimeTypes?: readonly string[];
+	/** Images per request. */
+	maxCount?: number;
+	/** Decoded bytes per image. */
+	maxBytes?: number;
+	/** Decoded bytes across all images. */
+	maxTotalBytes?: number;
+	/** Pixels per image, when the image header reports dimensions. */
+	maxPixels?: number;
+}
+
 /** How one judgment API addresses, encodes, and decodes a request. */
 export interface JudgmentWire {
 	/**
@@ -32,6 +49,8 @@ export interface JudgmentWire {
 	target(baseUrl: string, model: string, key: string): JudgmentTarget;
 	/** Request body for `model`. */
 	encode(request: JudgmentRequest, model: string): unknown;
+	/** Image input this dialect accepts; absent means text-only. */
+	images?: JudgmentImageInput;
 	/** The response's answers and usage; `undefined` when the payload is not this API's response shape. */
 	decode(payload: unknown): DecodedJudgment | undefined;
 }

@@ -376,6 +376,7 @@ interface ContextUsageMemo {
 	length: number;
 	lastFingerprint: string | undefined;
 	modelContextWindow: number;
+	toolSchemasInContext: boolean;
 	contextUsageRevision: number;
 	toolSchemaMetadataRevision: number;
 	settingsRevision: number;
@@ -2446,6 +2447,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	getCachedContextBreakdown(): { usedTokens: number; contextWindow: number } {
 		const messages = this.session.messages ?? EMPTY_MESSAGES;
 		const modelContextWindow = this.session.model?.contextWindow ?? 0;
+		const toolSchemasInContext = this.session.model?.toolSchemasInContext !== false;
 		const length = messages.length;
 		const lastFingerprint = length > 0 ? messageFingerprint(messages[length - 1]!) : undefined;
 		// Bumps when the in-flight pending snapshot is set/cleared. Without it a
@@ -2467,6 +2469,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			cache.length === length &&
 			cache.lastFingerprint === lastFingerprint &&
 			cache.modelContextWindow === modelContextWindow &&
+			cache.toolSchemasInContext === toolSchemasInContext &&
 			cache.contextUsageRevision === contextUsageRevision &&
 			cache.systemPromptRef === systemPrompt &&
 			cache.toolsRef === tools &&
@@ -2487,6 +2490,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			length,
 			lastFingerprint,
 			modelContextWindow,
+			toolSchemasInContext,
 			contextUsageRevision,
 			toolSchemaMetadataRevision,
 			settingsRevision,

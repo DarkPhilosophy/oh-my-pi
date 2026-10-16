@@ -9,7 +9,6 @@ import { setCodexAttestationProvider } from "@oh-my-pi/pi-ai/providers/openai-co
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
 import { getEnvApiKey } from "@oh-my-pi/pi-ai/env-api-key";
 import { OAuthRefreshUnavailableError } from "@oh-my-pi/pi-ai/error";
-import { isOfficialCodexApiUrl } from "@oh-my-pi/pi-ai/stream";
 import type {
 	Api,
 	Context,
@@ -49,6 +48,7 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { apiServesKind, modelKind, type ModelKind } from "@oh-my-pi/pi-catalog/types";
+import { isOfficialCodexApiUrl } from "@oh-my-pi/pi-catalog/wire/codex";
 import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
@@ -2048,12 +2048,16 @@ export class ModelRegistry {
 			// context-v3 invalidates rows cached before server-advertised input
 			// modalities were parsed from `/v1/models`; warm v2 rows pinned
 			// vision-capable ids at `input: ["text"]` until a forced refresh.
+			// context-v4 invalidates rows cached before
+			// `top_provider.max_completion_tokens` was read; warm v3 rows kept
+			// the bundled reference's larger output limit and the provider
+			// rejected every request.
 			// `injectV1: false` additionally splits off its own namespace: rows
 			// cached from the `/v1`-injected URL can hold a different (smaller)
 			// model set and must never satisfy a bare provider's cache read.
 			return providerConfig.discovery.injectV1 === false
-				? `${providerConfig.provider}:openai-models-list-bare-context-v3`
-				: `${providerConfig.provider}:openai-models-list-context-v3`;
+				? `${providerConfig.provider}:openai-models-list-bare-context-v4`
+				: `${providerConfig.provider}:openai-models-list-context-v4`;
 		}
 		if (providerConfig.discovery.type === "litellm") {
 			// rich-v5 invalidates rows written before discovery filtered known

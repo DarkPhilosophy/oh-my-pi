@@ -30,8 +30,12 @@ describe("RPC fork", () => {
 	});
 
 	afterEach(async () => {
-		await client?.stop();
-		await removeWithRetries(directory);
+		// Bind this test's resources before awaiting: a stop that outlives the
+		// hook timeout resumes after the next beforeEach has reassigned both.
+		const ownClient = client;
+		const ownDirectory = directory;
+		await ownClient?.stop();
+		await removeWithRetries(ownDirectory);
 	});
 
 	/** Starts the agent and runs two finished turns; returns the [user, assistant, user, assistant] message entry ids. */

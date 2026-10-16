@@ -10,6 +10,7 @@ import { MnemopiEmbedClient } from "../src/mnemopi/embed-client";
 interface FakeWorker {
 	sent: Array<{ type: string; id: string; model?: string; cacheDir?: string }>;
 	terminated: boolean;
+	referenced: boolean;
 	handle: unknown;
 	reply(message: unknown): void;
 }
@@ -19,12 +20,20 @@ function makeFakeWorker(): FakeWorker {
 	const worker: FakeWorker = {
 		sent: [] as FakeWorker["sent"],
 		terminated: false,
+		referenced: false,
 		handle: null as unknown,
 		reply: () => {},
 	};
 	const handlers = new Set<(message: unknown) => void>();
 	worker.handle = {
+		ref() {
+			worker.referenced = true;
+		},
+		unref() {
+			worker.referenced = false;
+		},
 		send(message: FakeWorker["sent"][number]) {
+			if (!worker.referenced) throw new Error("Pending embedding work must keep its transport referenced");
 			worker.sent.push(message);
 			queueMicrotask(() =>
 				worker.reply(
@@ -85,6 +94,7 @@ describe("MnemopiEmbedClient worker lifetime", () => {
 		expect(model).not.toBeNull();
 		expect(spawned).toHaveLength(1);
 		expect(await drain(model!.embed(["a"]))).toEqual([[1, 2, 3]]);
+		expect(spawned[0]!.referenced).toBe(false);
 		expect(spawned[0]!.terminated).toBe(false);
 
 		// Idle past the TTL: the worker (and its loaded model) is released.

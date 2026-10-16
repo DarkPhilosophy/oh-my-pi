@@ -13,7 +13,6 @@ import {
 	type FetchImpl,
 	getEnvApiKey,
 	getOpenRouterHeaders,
-	isOfficialCodexApiUrl,
 	type Model,
 	withAuth,
 } from "@oh-my-pi/pi-ai";
@@ -23,6 +22,7 @@ import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
 	getCodexAccountId,
+	isOfficialCodexApiUrl,
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 	URL_PATHS,
@@ -40,6 +40,7 @@ import {
 	USER_AGENT,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
+import { getEffectiveTokenCost } from "@oh-my-pi/pi-catalog/models";
 import { type RoleChainCandidate, resolveModelRoleValue, resolveRoleChain } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
@@ -1321,9 +1322,14 @@ function resolveHostedImageCarrier(
 ): Model | undefined {
 	if (activeModel?.provider === selectedModel.provider && activeModel.hostedImage) return activeModel;
 	let carrier: Model | undefined;
+	let carrierInput = Infinity;
 	for (const model of modelRegistry.getAvailable()) {
 		if (model.provider !== selectedModel.provider || !model.hostedImage) continue;
-		if (!carrier || model.cost.input < carrier.cost.input) carrier = model;
+		const input = getEffectiveTokenCost(model.cost).input;
+		if (!carrier || input < carrierInput) {
+			carrier = model;
+			carrierInput = input;
+		}
 	}
 	return carrier;
 }

@@ -171,7 +171,7 @@ pub fn summarize_code(options: SummaryOptions) -> Result<SummaryResult> {
 		return Ok(unparsed_result(source, total_lines));
 	};
 
-	let Some(tree) = parse_cached(&source, language)? else {
+	let Some(tree) = parse_cached(&source, language, options.path.as_deref())? else {
 		return Ok(unparsed_result(source, total_lines));
 	};
 	let root = tree.root_node();

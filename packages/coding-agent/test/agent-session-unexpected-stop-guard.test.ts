@@ -205,6 +205,25 @@ describe("AgentSession unexpected stop guard", () => {
 		expect(assistantText(session.agent.state.messages)).toContain("finished after retries");
 	});
 
+	it("retries a stop whose only content is signed thinking with empty text", async () => {
+		const { session, mock } = await createHarness([
+			thinkingOnlyStop(""),
+			{ content: ["finished after reasoning-only stop"], stopReason: "stop" },
+		]);
+
+		await session.prompt("do the thing");
+		await session.waitForIdle();
+
+		expect(mock.calls).toHaveLength(2);
+		expect(assistantText(session.agent.state.messages)).toContain("finished after reasoning-only stop");
+		expect(reminderMessages(session.agent.state.messages)).toHaveLength(1);
+		// The signed reasoning stays in context so the continuation replays it.
+		const assistants = session.agent.state.messages.filter(message => message.role === "assistant");
+		expect(assistants[0]?.content).toEqual([
+			{ type: "thinking", thinking: "", thinkingSignature: "reasoning_content" },
+		]);
+	});
+
 	it("does not retry in mechanical mode when text message was delivered", async () => {
 		const spy = vi.spyOn(unexpectedStopClassifier, "classifyUnexpectedStop").mockResolvedValue(true);
 		const { session, mock } = await createHarness([

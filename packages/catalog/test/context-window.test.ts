@@ -43,8 +43,8 @@ test("falls back to the curated window when the live maximum is missing or inval
 	expect(resolveMaxContextWindow({ ...astra, maxContextWindow: Number.NaN })).toBe(922_000);
 });
 
-test("corrects GPT-6.1 Sol's stale 872K Codex maximum to the documented 922K input cap", () => {
-	// Not bundled yet: build the row the way Codex discovery reports it.
+test("applies Codex corrections to GPT-6.1 Sol's stale default and maximum windows", () => {
+	// Exercise stale discovery data independently of the bundled catalog refresh.
 	for (const id of ["gpt-6.1-sol", "gpt-6.1-sol-wm"]) {
 		const sol = buildModel({
 			id,
@@ -59,7 +59,7 @@ test("corrects GPT-6.1 Sol's stale 872K Codex maximum to the documented 922K inp
 			maxContextWindow: 872_000,
 			maxTokens: 128_000,
 		});
-		expect(sol.contextWindow).toBe(272_000);
+		expect(sol.contextWindow).toBe(500_000);
 		expect(resolveMaxContextWindow(sol)).toBe(922_000);
 	}
 });

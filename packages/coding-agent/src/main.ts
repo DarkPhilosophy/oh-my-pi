@@ -32,6 +32,8 @@ import {
 	reportUnrecognizedFlags,
 	validateGoalLaunch,
 	validateGoalStartup,
+	validateRestoreLaunch,
+	validateRestorePrompt,
 	validateToolNames,
 } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
@@ -114,7 +116,9 @@ import {
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
 import { sessionActionMessage } from "./session/session-action-message";
 import { isSessionFileArg, resolveResumableSession, type SessionInfo } from "./session/session-listing";
+import { loadRuntimeIdentity } from "./session/runtime-identity";
 import { ForkSourceNotFoundError, SessionManager, SessionMoveRefusedError } from "./session/session-manager";
+import { forkIfMovedAway } from "./session/session-transfer";
 import { shouldShowStartupSplash } from "./startup-splash";
 import {
 	discoverSystemPromptOverride,
@@ -123,10 +127,11 @@ import {
 	resolvePromptInput,
 } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
+import { type RestoreOutcome, restoreSession } from "./task/restore";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
 import { registerLocalInferenceApi } from "./tiny/local-inference-api";
-import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import { automaticThinkingLevel, concreteThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { LspStartupServerInfo } from "./tools";
 import { sanitizeDisplayWarnings } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
@@ -530,6 +535,7 @@ async function runInteractiveMode(
 	startDeferredStartupWork?: () => void,
 	startupLease?: ComposerLease,
 	startupGoal?: string,
+	startupRestore?: () => Promise<RestoreOutcome>,
 ): Promise<void> {
 	const InteractiveModeConstructor = await loadInteractiveModeConstructor();
 	let mode: InteractiveMode;
@@ -664,6 +670,25 @@ async function runInteractiveMode(
 	if (startupGoal !== undefined) {
 		try {
 			await mode.startGoalAtStartup(startupGoal);
+		} catch (error: unknown) {
+			mode.showError(error instanceof Error ? error.message : "Unknown error occurred");
+		}
+	}
+
+	if (startupRestore) {
+		try {
+			using _keepalive = new EventLoopKeepalive();
+			const { turn, subagents } = await startupRestore();
+			const agents = subagents.length === 1 ? "1 subagent" : `${subagents.length} subagents`;
+			mode.showStatus(
+				turn && subagents.length > 0
+					? `Restored: going on with the interrupted turn and ${agents}.`
+					: turn
+						? "Restored: going on with the interrupted turn."
+						: subagents.length > 0
+							? `Restored: ${agents} going on with their interrupted turns.`
+							: "Restored: nothing was left unfinished.",
+			);
 		} catch (error: unknown) {
 			mode.showError(error instanceof Error ? error.message : "Unknown error occurred");
 		}
@@ -929,12 +954,13 @@ export function toSessionScopedModels(
 	const defaultThinkingLevel = concreteThinkingLevel(
 		parseConfiguredThinkingLevel(cfgDefaultThinkingLevel.get(activeSettings)),
 	);
-	return scopedModels.map(scopedModel => ({
-		model: scopedModel.model,
-		thinkingLevel: scopedModel.explicitThinkingLevel
-			? (scopedModel.thinkingLevel ?? defaultThinkingLevel)
-			: defaultThinkingLevel,
-	}));
+	return scopedModels.map(scopedModel => {
+		const fallback = automaticThinkingLevel(scopedModel.model, defaultThinkingLevel);
+		return {
+			model: scopedModel.model,
+			thinkingLevel: scopedModel.explicitThinkingLevel ? (scopedModel.thinkingLevel ?? fallback) : fallback,
+		};
+	});
 }
 
 /** Whether two scope lists reference the same set of models (order-independent). */
@@ -1129,14 +1155,17 @@ export async function createSessionManager(
 	if (typeof parsed.resume === "string") {
 		const sessionArg = parsed.resume;
 		if (isSessionFileArg(sessionArg)) {
+			let manager: SessionManager;
 			try {
-				return await SessionManager.open(sessionArg, parsed.sessionDir, undefined, { throwIfMissing: true });
+				manager = await SessionManager.open(sessionArg, parsed.sessionDir, undefined, { throwIfMissing: true });
 			} catch (err) {
 				if (isEnoent(err) || isEnotdir(err)) {
 					throw new SessionResolutionError(`Session "${sessionArg}" not found.`, SESSION_NOT_FOUND_HINT);
 				}
 				throw err;
 			}
+			// A copy whose conversation moved to another machine continues as a fork.
+			return await forkIfMovedAway(manager, parsed.sessionDir);
 		}
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
 		if (!match) {
@@ -1151,7 +1180,7 @@ export async function createSessionManager(
 				askToMoveSession,
 			);
 			if (moveResult.status === "moved") {
-				return moveResult.manager;
+				return await forkIfMovedAway(moveResult.manager, parsed.sessionDir);
 			}
 			if (moveResult.status === "declined") {
 				return undefined;
@@ -1166,16 +1195,16 @@ export async function createSessionManager(
 				askToMoveSession,
 			);
 			if (moveResult.status === "moved") {
-				return moveResult.manager;
+				return await forkIfMovedAway(moveResult.manager, parsed.sessionDir);
 			}
 			if (moveResult.status === "declined") {
 				return undefined;
 			}
 		}
-		return await SessionManager.open(match.session.path, parsed.sessionDir);
+		return await forkIfMovedAway(await SessionManager.open(match.session.path, parsed.sessionDir), parsed.sessionDir);
 	}
 	if (parsed.continue) {
-		return await SessionManager.continueRecent(cwd, parsed.sessionDir);
+		return await forkIfMovedAway(await SessionManager.continueRecent(cwd, parsed.sessionDir), parsed.sessionDir);
 	}
 	// --resume without value is handled separately (needs picker UI)
 	// If --session-dir provided without --continue/--resume, create new session there
@@ -1188,7 +1217,10 @@ export async function createSessionManager(
 	// overriding them with CLI defaults.
 	// An explicit startup goal starts fresh even when implicit auto-resume is configured.
 	if (parsed.goal === undefined && cfgAutoResume.get(activeSettings)) {
-		const manager = await SessionManager.continueRecent(cwd, parsed.sessionDir);
+		const manager = await forkIfMovedAway(
+			await SessionManager.continueRecent(cwd, parsed.sessionDir),
+			parsed.sessionDir,
+		);
 		if (manager.getEntries().length > 0) {
 			parsed.continue = true;
 		}
@@ -1723,6 +1755,7 @@ export async function runRootCommand(
 		// startup-parse flags, so rejecting later would leave forked or imported
 		// transcripts (or an opened picker) behind a usage error.
 		validateGoalLaunch(parsedArgs, isInteractive);
+		validateRestoreLaunch(parsedArgs, isInteractive);
 		// Without piped text the prompt must come from argv, which only the
 		// post-extension reparse can settle: an extension string flag's value
 		// (`--spawn-peer reviewer`) looks like a prompt here, and a boolean flag
@@ -1799,6 +1832,9 @@ export async function runRootCommand(
 		const credentialScopedCacheHydration = logger.time("hydrateCredentialScopedModelCaches", () =>
 			modelRegistry.hydrateCredentialScopedModelCaches(),
 		);
+		// A source checkout's uncommitted diff is read off-thread; it overlaps model setup and is
+		// awaited before any session entry is written.
+		const runtimeIdentityLoad = logger.time("loadRuntimeIdentity", loadRuntimeIdentity);
 		if (parsedArgs.noPty || parsedArgs.mode === "rpc-ui") {
 			Bun.env.PI_NO_PTY = "1";
 		}
@@ -1888,6 +1924,7 @@ export async function runRootCommand(
 		// Reading the token immediately after `--continue` distinguishes the session
 		// id from UUID-shaped values owned by later extension flags.
 		normalizeContinueSessionArgs(parsedArgs, rawArgs);
+		await runtimeIdentityLoad;
 
 		// Resolve native resume/fork flags or import one foreign transcript into a
 		// fresh persisted OMP session before constructing the AgentSession.
@@ -2047,9 +2084,12 @@ export async function runRootCommand(
 				process.exit(0);
 			}
 			try {
-				sessionManager = (await SessionManager.isFromRemovedWorktree(selected, cwd, parsedArgs.sessionDir))
-					? await openRelocatedSession(selected, cwd, parsedArgs.sessionDir)
-					: await SessionManager.open(selected.path);
+				sessionManager = await forkIfMovedAway(
+					(await SessionManager.isFromRemovedWorktree(selected, cwd, parsedArgs.sessionDir))
+						? await openRelocatedSession(selected, cwd, parsedArgs.sessionDir)
+						: await SessionManager.open(selected.path),
+					parsedArgs.sessionDir,
+				);
 			} catch (error: unknown) {
 				if (error instanceof SessionResolutionError) exitForSessionResolutionError(error);
 				throw error;
@@ -2256,6 +2296,7 @@ export async function runRootCommand(
 				process.exit(2);
 			}
 			rejectNoUiWithoutRpc(parsedArgs);
+			validateRestorePrompt(initialArgs);
 			if (initialArgs.goal !== undefined) {
 				validateGoalStartup(
 					initialArgs,
@@ -2530,6 +2571,7 @@ export async function runRootCommand(
 						startDeferredStartupWork,
 						startupLease,
 						initialArgs.goal,
+						parsedArgs.restore ? () => restoreSession(session, { eventBus, subagentEventBus }) : undefined,
 					);
 				} finally {
 					startupLease?.dispose();

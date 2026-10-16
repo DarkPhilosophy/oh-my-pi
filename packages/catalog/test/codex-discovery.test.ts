@@ -341,6 +341,30 @@ describe("Codex model discovery", () => {
 		}
 	});
 
+	it("defaults Codex GPT-6.1 Sol to the 500K window while Astra stays at 272K (#15421)", async () => {
+		const fetchFn: typeof fetch = Object.assign(
+			async () =>
+				Response.json({
+					// Discovery may still report the pre-2026-10-11 272K default.
+					models: ["gpt-6.1-sol", "gpt-6.1-sol-wm", "gpt-6-astra"].map(slug => ({
+						slug,
+						context_window: 272_000,
+						max_context_window: 872_000,
+					})),
+				}),
+			{ preconnect() {} },
+		);
+		const result = await fetchCodexModels({ accessToken: "test-token", fetchFn });
+		const windows = Object.fromEntries(
+			(result?.models ?? []).map(model => [model.id, buildModel(model).contextWindow]),
+		);
+		expect(windows).toMatchObject({
+			"gpt-6.1-sol": 500_000,
+			"gpt-6.1-sol-wm": 500_000,
+			"gpt-6-astra": 272_000,
+		});
+	});
+
 	it("floors stale reported windows for GPT-5.6 luna/sol/terra and honors reports above the floor", async () => {
 		const fetchFn: typeof fetch = Object.assign(
 			async () =>

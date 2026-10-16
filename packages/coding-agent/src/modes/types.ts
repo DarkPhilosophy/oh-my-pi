@@ -10,8 +10,6 @@ import type {
 	Loader,
 	PanelLayoutResult,
 	RightPanelBlockInput,
-	Spacer,
-	Text,
 	TUI,
 } from "@oh-my-pi/pi-tui";
 import type { TspText } from "@oh-my-pi/pi-wire";
@@ -31,7 +29,7 @@ import type {
 	ExtensionWidgetContent,
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
-import type { CompactOptions } from "../extensibility/extensions/types";
+import type { CompactOptions, PlanReviewChoice, PlanReviewRequestedEvent } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
@@ -175,6 +173,8 @@ export interface InteractiveModeContext {
 	readonly viewSession: AgentSession;
 	/** Id of the focused agent, undefined when the main session is attached. */
 	readonly focusedAgentId: string | undefined;
+	/** Set while a tool-approval dialog owns the composer: its drafts steer the main session awaiting that approval, even from a focused agent's view. */
+	approvalOwnsComposer?: boolean;
 	/** Focus the main view on an agent's live session (delegates to SessionFocusController.focusAgent). */
 	focusAgentSession(id: string): Promise<void>;
 	/** Focus the focused agent's parent session, falling back to main (delegates to focusParent). */
@@ -324,6 +324,7 @@ export interface InteractiveModeContext {
 	setEditorComponent(
 		factory: ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined,
 	): void;
+	getEditorComponent(): ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor) | undefined;
 
 	// UI helpers
 	/**
@@ -477,6 +478,8 @@ export interface InteractiveModeContext {
 	handleAdvisorDumpCommand(isRaw?: boolean): void;
 	handleDebugTranscriptCommand(): Promise<void>;
 	handleClearCommand(): Promise<void>;
+	/** User-initiated `/new`: {@link handleClearCommand} plus the `plan.defaultOnStartup` default. */
+	handleNewCommand(): Promise<void>;
 	handleFreshCommand(): Promise<void>;
 	handleResetContextCommand(): Promise<void>;
 	handleDeleteCommand(): Promise<void>;
@@ -605,7 +608,7 @@ export interface InteractiveModeContext {
 	commandReportRows(): number | undefined;
 	/** Whether the last frame put the editor on the bottom row of the screen. */
 	composerInputAtBottom(): boolean;
-	/** Keep the editor on the bottom row while the live rows cannot fill the screen (after a tall report closed). */
+	/** Restore the input's bottom anchor after a tall report closes. */
 	pinComposerToBottom(): void;
 	cycleThinkingLevel(): void;
 	cycleRoleModel(direction?: "forward" | "backward"): Promise<void>;
@@ -632,7 +635,9 @@ export interface InteractiveModeContext {
 	disableGoalMode(message?: string): void;
 	pauseLoop(): void;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;
-	openPlanReview(): Promise<void>;
+	resolvePlanReview(reviewId: string, choice: PlanReviewChoice, input?: { feedback?: string; role?: string }): boolean;
+	getPendingPlanReview(): PlanReviewRequestedEvent | undefined;
+	openPlanReview(options?: { fromExtension?: boolean }): Promise<boolean>;
 
 	// Hook UI methods
 	initHooksAndCustomTools(): Promise<void>;

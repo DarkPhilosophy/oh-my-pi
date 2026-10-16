@@ -8,7 +8,7 @@ import { AuthStorage } from "@oh-my-pi/pi-ai/auth-storage";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
-import type { FetchImpl } from "@oh-my-pi/pi-catalog/types";
+import type { FetchImpl, ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
 const REQUEST = {
 	state: "Help! My payouts have been failing for 3 days.",
@@ -21,6 +21,14 @@ const UPSTREAM_ANSWER = {
 	usage: { input_tokens: 300, output_tokens: 20 },
 };
 
+const PNG_DATA = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+const OPENAI_ANSWER = {
+	model: "gpt-6-luna",
+	answers: [{ type: "predicate", name: "urgent", probability: 0.92 }],
+	usage: { input_tokens: 300, output_tokens: 20 },
+};
+
 interface Harness {
 	url: string;
 	upstream: { url: string; init: RequestInit | undefined }[];
@@ -28,13 +36,32 @@ interface Harness {
 	close: () => Promise<void>;
 }
 
+function openaiDecisionModel(id: string, input: ("text" | "image")[]) {
+	return buildModel({
+		id,
+		name: id,
+		api: "openai-decisions",
+		provider: "openai",
+		baseUrl: "https://api.openai.com/v1",
+		requestModelId: "gpt-6-luna",
+		reasoning: false,
+		input,
+		cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 32_000,
+		maxTokens: 0,
+	} as ModelSpec<"openai-decisions">);
+}
+
 async function boot(respond: (init: RequestInit | undefined) => Response): Promise<Harness> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "gw-systemone-"));
 	const storage = await AuthStorage.create(path.join(dir, "auth.db"));
 	storage.keys.setRuntime("typesafe", "ts-secret");
+	storage.keys.setRuntime("openai", "openai-secret");
 	const jev = getBundledModel("typesafe", "jev-latest");
 	if (!jev) throw new Error("expected bundled typesafe/jev-latest");
 	const chat = createMockModel({ provider: "openrouter", id: "chat-only" });
+	const openaiVision = openaiDecisionModel("openai-vision", ["text", "image"]);
+	const openaiTextOnly = openaiDecisionModel("openai-text-only", ["text"]);
 	// Self-hosted OpenJEV: the catalog caps its `questions` map at 16.
 	const openjev = buildModel({
 		id: "openjev-4b",
@@ -64,7 +91,11 @@ async function boot(respond: (init: RequestInit | undefined) => Response): Promi
 					? chat
 					: id === "openjev-4b"
 						? openjev
-						: undefined,
+						: id === "openai-vision"
+							? openaiVision
+							: id === "openai-text-only"
+								? openaiTextOnly
+								: undefined,
 		version: "test",
 		fetch: fetchStub,
 	});
@@ -138,6 +169,94 @@ describe("auth-gateway POST /v1/systemone", () => {
 		expect(harness.upstream).toHaveLength(1);
 	});
 
+	it("translates embedded images with case-insensitive MIME types and questions to OpenAI Decisions input", async () => {
+		harness = await boot(() => Response.json(OPENAI_ANSWER));
+		const request = {
+			model: "openai-vision",
+			state: "Check this image for urgency.",
+			questions: { urgent: { type: "noul", instructions: "Does the image convey urgency?" } },
+			images: [{ type: "image", data: PNG_DATA, mimeType: "IMAGE/PNG" }],
+		};
+		const response = await post(harness.url, "/v1/systemone", request);
+
+		expect(response.status).toBe(200);
+		expect(harness.upstream).toHaveLength(1);
+		expect(harness.upstream[0].url).toBe("https://api.openai.com/v1/decisions");
+		expect(new Headers(harness.upstream[0].init?.headers).get("authorization")).toBe("Bearer openai-secret");
+		expect(JSON.parse(String(harness.upstream[0].init?.body))).toEqual({
+			model: "gpt-6-luna",
+			input: [
+				{
+					role: "user",
+					content: [
+						{ type: "input_text", text: request.state },
+						{ type: "input_image", image_url: `data:image/png;base64,${PNG_DATA}` },
+					],
+				},
+			],
+			questions: [{ type: "predicate", name: "urgent", instructions: "Does the image convey urgency?" }],
+		});
+	});
+
+	it("accepts valid padded and unpadded image data and a supported detail value", async () => {
+		harness = await boot(() => Response.json(OPENAI_ANSWER));
+		for (const fixture of [
+			{ data: "AQI=", detail: "high" },
+			{ data: "AQI", detail: undefined },
+		]) {
+			const image = { type: "image", data: fixture.data, mimeType: "image/png", detail: fixture.detail };
+			const response = await post(harness.url, "/v1/systemone", {
+				model: "openai-vision",
+				...REQUEST,
+				images: [image],
+			});
+			expect(response.status).toBe(200);
+			const forwarded = JSON.parse(String(harness.upstream.at(-1)?.init?.body));
+			expect(forwarded.input[0].content.at(-1)).toEqual({
+				type: "input_image",
+				image_url: `data:image/png;base64,${fixture.data}`,
+				...(fixture.detail === undefined ? {} : { detail: fixture.detail }),
+			});
+		}
+		expect(harness.upstream).toHaveLength(2);
+	});
+
+	it("rejects image input for a model without image capability before credential lookup", async () => {
+		harness = await boot(() => Response.json(OPENAI_ANSWER));
+		const credentialLookup = vi.spyOn(harness.storage.keys, "getWithCredential");
+		const response = await post(harness.url, "/v1/systemone", {
+			model: "openai-text-only",
+			state: "Check this image.",
+			questions: { urgent: { type: "noul", instructions: "Does the image convey urgency?" } },
+			images: [{ type: "image", data: PNG_DATA, mimeType: "image/png" }],
+		});
+
+		expect(response.status).toBe(422);
+		expect(await response.json()).toMatchObject({
+			error: { type: "invalid_request_error", message: expect.stringContaining("does not support image inputs") },
+		});
+		expect(credentialLookup).not.toHaveBeenCalled();
+		expect(harness.upstream).toHaveLength(0);
+	});
+
+	it("keeps image-like JSON state separate from top-level image content", async () => {
+		harness = await boot(() => Response.json(UPSTREAM_ANSWER));
+		const state = { type: "image", data: PNG_DATA, mimeType: "image/png" };
+		const response = await post(harness.url, "/v1/systemone", {
+			model: "jev-latest",
+			state,
+			questions: REQUEST.questions,
+		});
+
+		expect(response.status).toBe(200);
+		expect(harness.upstream).toHaveLength(1);
+		expect(JSON.parse(String(harness.upstream[0].init?.body))).toEqual({
+			model: "jev-latest",
+			state,
+			questions: REQUEST.questions,
+		});
+	});
+
 	it("rejects malformed bodies with 422 before touching upstream", async () => {
 		harness = await boot(() => Response.json(UPSTREAM_ANSWER));
 		const missingModel = await post(harness.url, "/v1/systemone", REQUEST);
@@ -148,6 +267,30 @@ describe("auth-gateway POST /v1/systemone", () => {
 			questions: { q: { type: "essay", instructions: "write" } },
 		});
 		expect(badQuestion.status).toBe(422);
+		const badImages = [
+			[{ type: "text", data: PNG_DATA, mimeType: "image/png" }],
+			[{ type: "image", data: "https://example.test/image.png", mimeType: "image/png" }],
+			[{ type: "image", data: "A==", mimeType: "image/png" }],
+			[{ type: "image", data: "AAAA==", mimeType: "image/png" }],
+			[{ type: "image", data: "AQ=I", mimeType: "image/png" }],
+			[{ type: "image", data: PNG_DATA, mimeType: "text/plain" }],
+		];
+		for (const images of badImages) {
+			const invalidImage = await post(harness.url, "/v1/systemone", {
+				model: "jev-latest",
+				...REQUEST,
+				images,
+			});
+			expect(invalidImage.status).toBe(422);
+		}
+		for (const detail of ["medium", null, 42, {}]) {
+			const invalidDetail = await post(harness.url, "/v1/systemone", {
+				model: "jev-latest",
+				...REQUEST,
+				images: [{ type: "image", data: PNG_DATA, mimeType: "image/png", detail }],
+			});
+			expect(invalidDetail.status).toBe(422);
+		}
 		expect(harness.upstream).toHaveLength(0);
 	});
 

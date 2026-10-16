@@ -744,6 +744,7 @@ class CompactionResult:
     short_summary: str | None = None
     details: JsonValue | None = None
     preserve_data: JsonObject | None = None
+    provider_replay_through_entry_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -2087,6 +2088,7 @@ def parse_compaction_result(value: object, path: str = "CompactionResult") -> Co
         short_summary=optional(payload, "shortSummary", decode_str, path),
         details=optional(payload, "details", decode_json, path),
         preserve_data=optional(payload, "preserveData", decode_json_object, path),
+        provider_replay_through_entry_id=optional(payload, "providerReplayThroughEntryId", decode_str, path),
     )
 
 

@@ -56,6 +56,7 @@ import {
 	ModelBrowser,
 	type ModelBrowserItem,
 	modelSearchText,
+	providerMark,
 	thinkingDotToken,
 	type RoleAssignments,
 	resolveRoleAssignments,
@@ -313,14 +314,6 @@ const MODEL_KIND_LABELS: Record<"all" | ModelKind, string> = {
 	rerank: "Rerank",
 	video: "Video",
 };
-
-/** A provider mark's initials: `amazon-bedrock` → `AB`, `anthropic` → `An`. */
-function providerInitials(providerId: string): string {
-	const words = providerId.split(/[-_\s.]+/).filter(word => word.length > 0);
-	if (words.length >= 2) return `${words[0]!.charAt(0)}${words[1]!.charAt(0)}`.toUpperCase();
-	const word = words[0] ?? providerId;
-	return `${word.charAt(0).toUpperCase()}${word.charAt(1)}`;
-}
 
 const PROVIDER_REFRESH_DEBOUNCE_MS = 120;
 const RECENT_LIMIT = 15;
@@ -1335,6 +1328,7 @@ export class ModelHubComponent implements Component {
 	 */
 	#thinkingOptionsFor(model: Model): ConfiguredThinkingLevel[] {
 		if (!model.reasoning) return [];
+		if (model.thinking?.unverified) return [ThinkingLevel.Inherit, ThinkingLevel.Off, ...getSupportedEfforts(model)];
 		return [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(model)];
 	}
 
@@ -3457,7 +3451,7 @@ export class ModelHubComponent implements Component {
 					break;
 				case "provider": {
 					const providerId = entry.providerId ?? entry.label;
-					const mark = { text: providerInitials(providerId), seed: providerId };
+					const mark = providerMark(providerId);
 					if (entry.locked) {
 						const envVars = providerEntry(providerId)?.envVars ?? [];
 						scopes.push({

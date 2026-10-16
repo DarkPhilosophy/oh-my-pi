@@ -1,8 +1,9 @@
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { calculateUsageCost } from "@oh-my-pi/pi-catalog/models";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
 	type ApiKeyResolveContext,
+	chatTextBackend,
 	createNativeJudge,
 	JudgmentApiError,
 	JudgmentParseError,
@@ -15,10 +16,16 @@ import {
 	type TextBackend,
 	TextJudge,
 } from "@oh-my-pi/pi-ai";
-import { ConfigurationError } from "@oh-my-pi/pi-ai/error";
+import type { ImageContent } from "@oh-my-pi/pi-ai/types";
+import { ConfigurationError, ValidationError } from "@oh-my-pi/pi-ai/error";
 import { withEnv } from "./helpers";
 
 const LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+const IMAGE_REFS: readonly ImageContent[] = [
+	{ type: "image", data: "AQID", mimeType: "image/png" },
+	{ type: "image", data: "BAUG", mimeType: "image/jpeg" },
+];
 
 function backend(reply: string | ((prompt: { system: string; user: string }) => string)): TextBackend {
 	return {
@@ -184,6 +191,54 @@ describe("TextJudge", () => {
 			}),
 		).rejects.toThrow(/no yes\/no in reply/);
 	});
+
+	it("passes image references separately to image-capable text backends", async () => {
+		let receivedImages: readonly ImageContent[] | undefined;
+		let receivedUser = "";
+		const request = {
+			state: { description: "Review the attached evidence." },
+			questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+			images: IMAGE_REFS,
+		} as const;
+		const judge = new TextJudge({
+			...backend("yes"),
+			supportsImages: true,
+			async complete(prompt) {
+				receivedImages = prompt.images;
+				receivedUser = prompt.user;
+				return { text: "yes" };
+			},
+		});
+
+		const { answers } = await judge.judge(request);
+
+		expect(answers.urgent.noul).toBe(1);
+		expect(receivedImages).toBe(IMAGE_REFS);
+		expect(receivedUser).toContain("Review the attached evidence.");
+		expect(receivedUser).not.toContain("AQID");
+	});
+
+	it("rejects images for a text backend that does not support them", async () => {
+		let calls = 0;
+		const judge = new TextJudge({
+			...backend("yes"),
+			async complete() {
+				calls++;
+				return { text: "yes" };
+			},
+		});
+		const error = await judge
+			.judge({
+				state: "Review this image.",
+				questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+				images: IMAGE_REFS,
+			})
+			.catch((caught: unknown) => caught);
+
+		expect(error).toBeInstanceOf(ValidationError);
+		expect(String(error)).toMatch(/does not support image inputs$/);
+		expect(calls).toBe(0);
+	});
 });
 
 describe("NativeJudge", () => {
@@ -229,6 +284,24 @@ describe("NativeJudge", () => {
 		expect(result.model).toBe("jev-latest");
 		expect(result.usage.input).toBe(5);
 		expect(result.usage.totalTokens).toBe(6);
+	});
+
+	it("rejects image inputs for an unsupported native API before fetching", async () => {
+		let calls = 0;
+		const judge = new NativeJudge({
+			apiKey: "test-key",
+			fetch: async () => {
+				calls++;
+				return answered();
+			},
+		});
+		const error = await judge.judge({ ...request, images: IMAGE_REFS }).catch((caught: unknown) => caught);
+
+		expect(error).toBeInstanceOf(ValidationError);
+		expect(error instanceof Error ? error.message : String(error)).toBe(
+			`Native judgment backend ${judge.label} does not support image inputs`,
+		);
+		expect(calls).toBe(0);
 	});
 
 	it("keeps estimated judge cost finite when a successful response omits token counts", async () => {
@@ -575,6 +648,175 @@ describe("NativeJudge OpenAI Decisions dialect", () => {
 		expect(result.usage).toMatchObject({ input: 42, output: 0, totalTokens: 42 });
 	});
 
+	it("encodes separate ordered images as data URLs after JSON state text", async () => {
+		const visionLuna = { ...luna, input: ["text" as const, "image" as const] };
+		const state = {
+			description: "Inspect this JSON-shaped state.",
+			serializedImage: { type: "image", data: "U1RBVEU=", mimeType: "image/png" },
+		};
+		const wireImages: readonly ImageContent[] = [
+			...IMAGE_REFS,
+			{ type: "image", data: "BwgJ", mimeType: "image/png", detail: "original" },
+			{ type: "image", data: "AQI=", mimeType: "image/png", detail: "auto" },
+			{ type: "image", data: "AQI", mimeType: "image/png" },
+		];
+		const inputs: unknown[] = [];
+		const judge = createNativeJudge(visionLuna, {
+			apiKey: "sk-test",
+			fetch: async (_url, init) => {
+				inputs.push(JSON.parse(String(init?.body)).input);
+				return Response.json({
+					model: "gpt-6-luna",
+					answers: [{ type: "predicate", name: "urgent", probability: 0.5 }],
+					usage: { input_tokens: 2, output_tokens: 0 },
+				});
+			},
+		});
+
+		await judge.judge({
+			state,
+			questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+			images: wireImages,
+		});
+
+		expect(inputs).toHaveLength(1);
+		expect(inputs).toEqual([
+			[
+				{
+					role: "user",
+					content: [
+						{ type: "input_text", text: JSON.stringify(state) },
+						{ type: "input_image", image_url: "data:image/png;base64,AQID" },
+						{ type: "input_image", image_url: "data:image/jpeg;base64,BAUG" },
+						{ type: "input_image", image_url: "data:image/png;base64,BwgJ", detail: "original" },
+						{ type: "input_image", image_url: "data:image/png;base64,AQI=", detail: "auto" },
+						{ type: "input_image", image_url: "data:image/png;base64,AQI" },
+					],
+				},
+			],
+		]);
+	});
+
+	it("rejects malformed base64, MIME, and image detail before fetching", async () => {
+		const visionLuna = { ...luna, input: ["text" as const, "image" as const] };
+		let calls = 0;
+		const judge = createNativeJudge(visionLuna, {
+			apiKey: "sk-test",
+			fetch: async () => {
+				calls++;
+				return Response.json({});
+			},
+		});
+
+		for (const image of [
+			{ type: "image", data: "A==", mimeType: "image/png" },
+			{ type: "image", data: "AAAA==", mimeType: "image/png" },
+			{ type: "image", data: "AQ=I", mimeType: "image/png" },
+			{ type: "image", data: "AQ===", mimeType: "image/png" },
+			{ type: "image", data: "", mimeType: "image/png" },
+			{ type: "image", data: "AB==", mimeType: "image/png" },
+			{ type: "image", data: "AAB=", mimeType: "image/png" },
+			{ type: "image", data: "AAAAA", mimeType: "image/png" },
+			{ type: "image", data: "AQID", mimeType: "text/plain" },
+		] as const) {
+			const error = await judge
+				.judge({
+					state: "Inspect this image.",
+					questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+					images: [image],
+				})
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(ValidationError);
+		}
+
+		for (const detail of ["medium", null, 0, false, {}]) {
+			const error = await judge
+				.judge({
+					state: "Inspect this image.",
+					questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+					images: [{ type: "image", data: "AQ==", mimeType: "image/png", detail } as unknown as ImageContent],
+				})
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(ValidationError);
+		}
+
+		expect(calls).toBe(0);
+	});
+
+	it("rejects images when a catalog judgment model declares text-only input before fetching", async () => {
+		let calls = 0;
+		const judge = createNativeJudge(luna, {
+			apiKey: "sk-test",
+			fetch: async () => {
+				calls++;
+				return Response.json({});
+			},
+		});
+		const error = await judge
+			.judge({
+				state: "Inspect this image.",
+				questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+				images: IMAGE_REFS,
+			})
+			.catch((caught: unknown) => caught);
+
+		expect(error).toBeInstanceOf(ValidationError);
+		expect(error instanceof Error ? error.message : String(error)).toBe(
+			`Native judgment backend ${judge.label} does not support image inputs`,
+		);
+		expect(calls).toBe(0);
+	});
+
+	it("retains requested image detail on every native question chunk", async () => {
+		const chunks: Array<{ questionIds: string[]; images: unknown[] }> = [];
+		const detailedImages: readonly ImageContent[] = [
+			{ ...IMAGE_REFS[0], detail: "low" },
+			{ ...IMAGE_REFS[1], detail: "high" },
+		];
+		const judge = new NativeJudge({
+			api: "openai-decisions",
+			provider: "openai",
+			model: "gpt-6-luna",
+			baseUrl: "https://api.openai.com/v1",
+			apiKey: "sk-test",
+			maxQuestions: 1,
+			fetch: async (_url, init) => {
+				const body: {
+					questions: Array<{ name: string }>;
+					input: Array<{ content: Array<{ type: string }> }>;
+				} = JSON.parse(String(init?.body));
+				const questionIds = body.questions.map(question => question.name);
+				const images = body.input[0].content.filter(part => part.type === "input_image");
+				chunks.push({ questionIds, images });
+				return Response.json({
+					model: "gpt-6-luna",
+					answers: questionIds.map(name => ({ type: "predicate", name, probability: 0.5 })),
+					usage: { input_tokens: 1, output_tokens: 0 },
+				});
+			},
+		});
+
+		await judge.judge({
+			state: "Classify the request.",
+			questions: {
+				first: { type: "noul", instructions: "First?" },
+				second: { type: "noul", instructions: "Second?" },
+				third: { type: "noul", instructions: "Third?" },
+			},
+			images: detailedImages,
+		});
+
+		const expectedImages = [
+			{ type: "input_image", image_url: "data:image/png;base64,AQID", detail: "low" },
+			{ type: "input_image", image_url: "data:image/jpeg;base64,BAUG", detail: "high" },
+		];
+		expect(chunks).toEqual([
+			{ questionIds: ["first"], images: expectedImages },
+			{ questionIds: ["second"], images: expectedImages },
+			{ questionIds: ["third"], images: expectedImages },
+		]);
+	});
+
 	it("rejects a judgment whose question the model refused", async () => {
 		const judge = createNativeJudge(luna, {
 			apiKey: "sk-test",
@@ -638,6 +880,85 @@ describe("NativeJudge Workers AI dialect", () => {
 		expect(result.usage).toMatchObject({ input: 12, totalTokens: 12 });
 	});
 
+	it("keeps structured JSON state and sends image data URLs in the top-level images array", async () => {
+		const visionClef = { ...clef, input: ["text" as const, "image" as const] };
+		const state = {
+			description: "Inspect this JSON-shaped state.",
+			serializedImage: { type: "image", data: "U1RBVEU=", mimeType: "image/png" },
+		};
+		const bodies: unknown[] = [];
+		const judge = createNativeJudge(visionClef, {
+			apiKey: JSON.stringify({ token: "cf-token", accountId: "acct123" }),
+			fetch: async (_url, init) => {
+				bodies.push(JSON.parse(String(init?.body)));
+				return Response.json({
+					result: {
+						model: "clef",
+						answers: { urgent: { type: "noul", noul: 0.9 } },
+						usage: { input_tokens: 2, output_tokens: 0 },
+					},
+					success: true,
+					errors: [],
+					messages: [],
+				});
+			},
+		});
+
+		await judge.judge({
+			state,
+			questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+			images: IMAGE_REFS,
+		});
+
+		expect(bodies).toEqual([
+			{
+				state,
+				model: "clef",
+				questions: { urgent: { type: "noul", instructions: "Is it urgent?" } },
+				images: ["data:image/png;base64,AQID", "data:image/jpeg;base64,BAUG"],
+			},
+		]);
+	});
+
+	it("rejects images beyond Clef's documented caps before fetching", async () => {
+		const visionClef = { ...clef, input: ["text" as const, "image" as const] };
+		let calls = 0;
+		const judge = createNativeJudge(visionClef, {
+			apiKey: JSON.stringify({ token: "cf-token", accountId: "acct123" }),
+			fetch: async () => {
+				calls++;
+				return new Response("unreachable", { status: 500 });
+			},
+		});
+		const png = (bytes: number): ImageContent => ({
+			type: "image",
+			data: Buffer.alloc(bytes).toString("base64"),
+			mimeType: "image/png",
+		});
+		// A PNG header declaring 5000x4000 = 20 MP, over the 16 MP cap.
+		const header = Buffer.alloc(33);
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0);
+		header.writeUInt32BE(13, 8);
+		header.write("IHDR", 12);
+		header.writeUInt32BE(5000, 16);
+		header.writeUInt32BE(4000, 20);
+		header[24] = 8;
+		header[25] = 6;
+		const cases: Array<[readonly ImageContent[], RegExp]> = [
+			[Array.from({ length: 5 }, () => IMAGE_REFS[0]), /at most 4 images, got 5/],
+			[[{ type: "image", data: "R0lGODlh", mimeType: "image/gif" }], /does not accept image\/gif/],
+			[[png(4 * 1024 * 1024 + 1)], /up to 4194304 bytes; images\[0\] is 4194305 bytes/],
+			[[png(3 * 1024 * 1024), png(3 * 1024 * 1024), png(3 * 1024 * 1024)], /at most 8388608 image bytes/],
+			[[{ type: "image", data: header.toString("base64"), mimeType: "image/png" }], /5000x4000/],
+		];
+		for (const [images, message] of cases) {
+			const error = await judge.judge({ ...request, images }).catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(ValidationError);
+			expect(String(error)).toMatch(message);
+		}
+		expect(calls).toBe(0);
+	});
+
 	it("fails without a request when no account id is known", async () => {
 		let calls = 0;
 		const judge = createNativeJudge(clef, {
@@ -651,5 +972,79 @@ describe("NativeJudge Workers AI dialect", () => {
 			await expect(judge.judge(request)).rejects.toBeInstanceOf(ConfigurationError);
 		});
 		expect(calls).toBe(0);
+	});
+});
+
+describe("chat judgment backend images", () => {
+	it("sends image blocks for supported models and rejects guarded text-only models before send", async () => {
+		const chatModel = buildModel({
+			id: "gpt-4o-mini",
+			name: "GPT-4o mini",
+			api: "openai-completions",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128_000,
+			maxTokens: null,
+		});
+		const guardedModel = {
+			...chatModel,
+			id: "guarded-text-only",
+			compat: { ...chatModel.compat, stripImageInput: true },
+		};
+		const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+		const completionStream = new Response(
+			[
+				`data: ${JSON.stringify({
+					id: "chatcmpl-judgment",
+					object: "chat.completion.chunk",
+					created: 0,
+					model: chatModel.id,
+					choices: [{ index: 0, delta: { content: "yes" }, finish_reason: null }],
+				})}`,
+				`data: ${JSON.stringify({
+					id: "chatcmpl-judgment",
+					object: "chat.completion.chunk",
+					created: 0,
+					model: chatModel.id,
+					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+				})}`,
+				"data: [DONE]",
+			].join("\n\n") + "\n\n",
+			{ status: 200, headers: { "content-type": "text/event-stream" } },
+		);
+		let sends = 0;
+		const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async (
+			_input: string | URL | Request,
+			init?: RequestInit,
+		) => {
+			sends++;
+			requests.push(JSON.parse(String(init?.body)));
+			return completionStream;
+		}) as typeof fetch);
+
+		try {
+			const backend = chatTextBackend(chatModel, { apiKey: "test-key" });
+			await backend.complete({ system: "Judge.", user: "Inspect these.", images: IMAGE_REFS }, {});
+
+			const userMessage = requests[0].messages.find(message => message.role === "user");
+			expect(userMessage?.content).toEqual([
+				{ type: "text", text: "Inspect these." },
+				{ type: "image_url", image_url: { url: "data:image/png;base64,AQID" } },
+				{ type: "image_url", image_url: { url: "data:image/jpeg;base64,BAUG" } },
+			]);
+
+			const guarded = chatTextBackend(guardedModel, { apiKey: "test-key" });
+			const error = await guarded
+				.complete({ system: "Judge.", user: "Inspect these.", images: IMAGE_REFS }, {})
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(ValidationError);
+			expect(String(error)).toMatch(/does not support image inputs$/);
+			expect(sends).toBe(1);
+		} finally {
+			fetchSpy.mockRestore();
+		}
 	});
 });

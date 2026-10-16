@@ -580,6 +580,7 @@ export interface CompactionResult {
 	shortSummary?: string;
 	details?: unknown;
 	preserveData?: Record<string, unknown>;
+	providerReplayThroughEntryId?: string;
 }
 
 export interface ModelCycleResult {

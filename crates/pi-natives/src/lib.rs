@@ -44,6 +44,8 @@ pub mod highlight;
 pub mod hpatch;
 pub mod html;
 pub mod iofs;
+/// Local IPC over Unix domain sockets / Windows named pipes.
+pub mod ipc;
 pub mod js;
 pub mod keys;
 pub mod live;

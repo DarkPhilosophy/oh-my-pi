@@ -92,17 +92,9 @@ export interface ComposerOptions {
 	readonly now?: () => number;
 }
 
-/** How {@link Composer.setRuntimeChildren} bills below-transcript roots against transcript retirement. */
+/** How {@link Composer.setRuntimeChildren} lays out the roots below the transcript. */
 export interface RuntimeChildrenOptions {
-	/**
-	 * Below-transcript roots whose growth is momentary (inline dialogs, a tall
-	 * multi-line editor). They are billed at their smallest height so expansion
-	 * clips the live tail instead of retiring rows a later shrink could not
-	 * reclaim (#11007). Every other root is billed at its current height, so
-	 * settled rows it displaces retire to native scrollback. Decision panels
-	 * declaring `retireDisplacedTranscript` opt out of this floor even when
-	 * mounted as a child of a transient editor container.
-	 */
+	/** Roots whose temporary growth must not permanently consume transcript capacity. */
 	readonly transient?: readonly Component[];
 	/**
 	 * Dock order on a TSP terminal (no status strip; the composer carries its

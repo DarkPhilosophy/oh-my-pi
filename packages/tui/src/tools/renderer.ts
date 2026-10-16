@@ -34,6 +34,8 @@ export interface RenderResultOptions {
 	elapsedMs?: number;
 	/** The call was abandoned without a final result (turn aborted, sealed). Native describe hooks only. */
 	cancelled?: boolean;
+	/** The native host shows files by path (`cx.supports("media")`). Native describe hooks only. */
+	media?: boolean;
 }
 
 /** Render options for a result, plus the tool-specific context the transcript threads through. */

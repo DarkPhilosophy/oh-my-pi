@@ -133,11 +133,15 @@ Menu/app labels are untrusted data. A takeover grant does not authorize unrelate
 - reads: `value()`, `bounds()`, `attributes()`, `actions()`, `parent()`, `children()`;
 - mutations: `setValue(value)`, `perform(action)`, `press()`, `click({ button?, count?, modifiers?, takeover? })`, `doubleClick({ button?, modifiers?, takeover? })`, and `focus()`.
 
+On macOS, `press()` in a Mac Catalyst app first requests `AXScrollToVisible` when the element offers that action, then presses it: in those apps a press on a row scrolled out of view otherwise reports success and does nothing. A failed scroll request does not prevent the press.
+
 On macOS, `setValue` on a date or time control (one whose `AXValue` is a date) takes ISO-8601: `YYYY-MM-DD` changes the day and keeps the control's time of day, `YYYY-MM-DDTHH:MM[:SS]` is local time, and a date-time followed by `Z` or `±HH:MM` is that exact instant. Anything else is refused before a write, naming these forms and the control's current date, as is a local time that daylight saving skips or repeats (add an offset to pick a repeated one).
 
 On macOS, a ref whose element the app has since removed throws `StaleRef` from every element operation, without waiting for the snapshots to expire it.
 
 On macOS, `setValue(value)` on a popup button (`popupbutton`) chooses the menu option titled exactly `value`: it opens a closed menu, presses the option, and confirms the choice by reading the popup's value back. No match, or several options with that title, throws with the available option titles, and a menu the call opened is closed again.
+
+On macOS, `setValue(text)` on a native text field, text area or combo box replaces its whole value the way `win.type` inserts text, so the app handles the edit as typed input: a search field searches, and a field with suggestions may offer them. An unfocused field is focused first only when its app is not the frontmost one, where focusing it would move the user's caret; such a field, a secure text field, and an element without a settable selection are written through `AXValue` instead, which some apps show without storing. A background field focused for the write keeps its app's focus afterwards, since some apps drop an edit whose field loses focus before it is committed. Either way the field is read back, and a value other than `text` throws `AxFailed` naming what the field reads now (never for a secure field). Web content and terminals are refused before anything is written.
 
 AX actions need no screenshot. AX bounds and `desktop.elementAt()` use platform-native global desktop coordinates (logical points on macOS, physical pixels on Windows), not screenshot pixels. An element keeps its ref across AX snapshots; a ref throws `StaleRef` once its element is missing from the window's current and previous snapshots. A role or label change gives the element a new ref, and its old ref keeps working until it expires the same way.
 

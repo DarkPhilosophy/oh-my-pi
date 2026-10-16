@@ -79,7 +79,7 @@ export type CommandMetadataChangedListener = () => void | Promise<void>;
 /** Public summary of an asynchronous job. */
 export type AsyncJobSnapshotItem = Pick<
 	AsyncJob,
-	"id" | "type" | "status" | "label" | "startTime" | "endTime" | "agentId"
+	"id" | "type" | "status" | "label" | "startTime" | "endTime" | "agentId" | "ownerId"
 > & {
 	/** Full command line of a job that runs a process; `label` is cut to 120 characters. */
 	command?: string;
@@ -106,6 +106,16 @@ export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
 	delivery: AsyncJobDeliveryState;
+}
+
+/** Jobs of an agent and every subagent below it, with the lineage that nests them (see `AgentSession.getAsyncJobTree`). */
+export interface AsyncJobTree {
+	running: AsyncJobSnapshotItem[];
+	recent: AsyncJobSnapshotItem[];
+	/** The agent the tree is for; its own jobs are the top level. */
+	rootId?: string;
+	/** Subagents owning listed jobs, with the ancestors linking them to the root. */
+	agents: { id: string; parentId?: string }[];
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";
@@ -158,8 +168,6 @@ export interface InitialRetryFallbackState {
 /** Dependencies and initial state used to construct an AgentSession. */
 export interface AgentSessionConfig {
 	agent: Agent;
-	/** Shared with the provider stream wrapper: current Codex Code Mode tool exposure snapshot for turn metadata. */
-	codeModeState?: { namespacesInfo?: unknown };
 	sessionManager: SessionManager;
 	settings: Settings;
 	/**

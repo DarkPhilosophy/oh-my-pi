@@ -1,5 +1,5 @@
 import { cfgUsageMaskAccountLabels } from "@oh-my-pi/pi-coding-agent/commands/settings";
-import { describe, expect, it, spyOn } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -13,11 +13,13 @@ import type {
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { MarketplaceManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AgentSession, AsyncJobTree } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionDumpArchive } from "@oh-my-pi/pi-coding-agent/session/session-dump-format";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { getProjectDir, removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import * as mcpConfigWriter from "@oh-my-pi/pi-coding-agent/mcp/config-writer";
 
 import { cfgBrowserEnabled, cfgBrowserHeadless } from "@oh-my-pi/pi-coding-agent/tools/browser/settings";
 import { cfgExtendedContext } from "@oh-my-pi/pi-coding-agent/session/context-settings";
@@ -43,6 +45,7 @@ interface FakeAcpBuiltinSession {
 	setForcedToolChoice(toolName: string): void;
 	fetchUsageReports?: () => Promise<unknown>;
 	getAsyncJobSnapshot: (opts?: { recentLimit?: number }) => { running: unknown[]; recent: unknown[] } | null;
+	getAsyncJobTree: () => AsyncJobTree | null;
 	cancelAsyncJob: (id: string) => boolean;
 	formatSessionAsText: () => string;
 	dumpLlmRequestToTmpDir: () => Promise<string | undefined>;
@@ -167,6 +170,7 @@ function createRuntime() {
 		getHindsightSessionState: () => undefined,
 		async applyMemoryBackend() {},
 		getAsyncJobSnapshot: () => null,
+		getAsyncJobTree: () => null,
 		cancelAsyncJob: () => false,
 		formatSessionAsText: () => "",
 		dumpLlmRequestToTmpDir: async () => undefined,
@@ -613,42 +617,102 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("background jobs");
 	});
 
-	it("jobs: lists running and recent jobs from snapshot", async () => {
-		const { output, runtime } = createRuntime();
-		runtime.session.getAsyncJobSnapshot = () => ({
-			running: [{ id: "j1", type: "bash", status: "running", label: "npm install", startTime: Date.now() - 5000 }],
-			recent: [{ id: "j2", type: "task", status: "completed", label: "build done", startTime: Date.now() - 60_000 }],
-			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+	describe("jobs tree", () => {
+		beforeAll(async () => {
+			await initTheme();
 		});
 
-		const result = await executeAcpBuiltinSlashCommand("/jobs", runtime);
+		it("nests a subagent's jobs under the task job that runs it, inside one fence", async () => {
+			const { output, runtime } = createRuntime();
+			runtime.session.getAsyncJobTree = () => ({
+				rootId: "Main",
+				agents: [{ id: "Worker", parentId: "Main" }],
+				running: [
+					{
+						id: "j1",
+						type: "bash",
+						status: "running",
+						label: "npm install",
+						ownerId: "Main",
+						startTime: Date.now() - 5000,
+					},
+					{
+						id: "Worker",
+						type: "task",
+						status: "running",
+						label: "Worker",
+						ownerId: "Main",
+						agentId: "Worker",
+						startTime: Date.now() - 4000,
+					},
+					{
+						id: "j3",
+						type: "bash",
+						status: "running",
+						label: "cargo build",
+						ownerId: "Worker",
+						startTime: Date.now() - 3000,
+					},
+				],
+				recent: [
+					{
+						id: "j2",
+						type: "bash",
+						status: "completed",
+						label: "build done",
+						ownerId: "Main",
+						startTime: Date.now() - 60_000,
+						endTime: Date.now() - 50_000,
+					},
+				],
+			});
 
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("npm install");
-		expect(output[0]).toContain("build done");
-		expect(output[0]).toContain("Running Jobs");
-		expect(output[0]).toContain("Recent Jobs");
-	});
+			const result = await executeAcpBuiltinSlashCommand("/jobs", runtime);
 
-	it("jobs full: shows the untruncated command instead of the label", async () => {
-		const { output, runtime } = createRuntime();
-		const command = `pytest ${"tests/a ".repeat(40)}-q`;
-		runtime.session.getAsyncJobSnapshot = () => ({
-			running: [
-				{ id: "j1", type: "bash", status: "running", label: "pytest tests/a...", command, startTime: Date.now() },
-			],
-			recent: [{ id: "j2", type: "task", status: "completed", label: "build done", startTime: Date.now() - 60_000 }],
-			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+			expect(result).toEqual({ consumed: true });
+			const lines = (output[0] as string).split("\n");
+			const fenced = lines.slice(lines.indexOf("```text") + 1, lines.lastIndexOf("```"));
+			expect(fenced).toEqual([
+				expect.stringMatching(/^\[Worker\] task \(running\) — \S+$/),
+				expect.stringMatching(/^└─ \[j3\] bash \(running\) — \S+$/),
+				"     cargo build",
+				expect.stringMatching(/^\[j1\] bash \(running\)/),
+				"  npm install",
+				expect.stringMatching(/^\[j2\] bash \(completed\)/),
+				"  build done",
+			]);
 		});
 
-		await executeAcpBuiltinSlashCommand("/jobs", runtime);
-		await executeAcpBuiltinSlashCommand("/jobs full", runtime);
-		await executeAcpBuiltinSlashCommand("/jobs bogus", runtime);
+		it("jobs full: shows the untruncated command, fenced past any backticks in it", async () => {
+			const { output, runtime } = createRuntime();
+			const command = `echo \`\`\` && pytest ${"tests/a ".repeat(40)}-q`;
+			runtime.session.getAsyncJobTree = () => ({
+				agents: [],
+				running: [
+					{
+						id: "j1",
+						type: "bash",
+						status: "running",
+						label: "pytest tests/a...",
+						command,
+						startTime: Date.now(),
+					},
+				],
+				recent: [
+					{ id: "j2", type: "task", status: "completed", label: "build done", startTime: Date.now() - 60_000 },
+				],
+			});
 
-		expect(output[0]).not.toContain(command);
-		expect(output[1]).toContain(command);
-		expect(output[1]).toContain("build done");
-		expect(output[2]).toContain("Usage: /jobs [full|kill <id>|kill all]");
+			await executeAcpBuiltinSlashCommand("/jobs", runtime);
+			await executeAcpBuiltinSlashCommand("/jobs full", runtime);
+			await executeAcpBuiltinSlashCommand("/jobs bogus", runtime);
+
+			expect(output[0]).not.toContain(command);
+			expect(output[1]).toContain(`  ${command}`);
+			expect(output[1]).toContain("````text\n");
+			expect(output[1]).toContain("build done");
+			expect(output[2]).toContain("Usage: /jobs [full|kill <id>|kill all]");
+		});
 	});
 
 	it("jobs kill: collapses tabs/newlines and bounds the echoed id", async () => {
@@ -698,16 +762,18 @@ describe("ACP builtin slash commands", () => {
 	it("jobs full: strips control sequences and fences the command", async () => {
 		const { output, runtime } = createRuntime();
 		const command = `printf ${"x".repeat(150)} \x1b[2J\`\`\`\n# heading TAIL`;
-		runtime.session.getAsyncJobSnapshot = () => ({
+		runtime.session.getAsyncJobTree = () => ({
 			running: [{ id: "j1", type: "bash", status: "running", label: "printf x...", command, startTime: Date.now() }],
 			recent: [],
-			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+			agents: [],
 		});
 
 		await executeAcpBuiltinSlashCommand("/jobs full", runtime);
 
 		expect(output[0]).not.toContain("\x1b");
-		expect(output[0]).toContain(`\`\`\`\`\nprintf ${"x".repeat(150)} \`\`\`\n# heading TAIL\n\`\`\`\``);
+		expect(output[0]).toMatch(
+			/````text\n\[j1\] bash \(running\) — \S+\n {2}printf x{150} ```\n {2}# heading TAIL\n````$/,
+		);
 	});
 
 	// /dump
@@ -1450,12 +1516,16 @@ describe("wave 4 commands", () => {
 		expect(output[0]).toContain("reload");
 	});
 
-	it("/mcp resources: outputs server list or no-server message", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/mcp resources", runtime);
-		expect(result).toEqual({ consumed: true });
-		// No servers configured in tmp project dir — should report that
-		expect(output[0]).toMatch(/No MCP servers configured|No resources/);
+	it("/mcp resources: reports an explicitly empty server configuration", async () => {
+		const readConfig = spyOn(mcpConfigWriter, "readMCPConfigFile").mockResolvedValue({ mcpServers: {} });
+		try {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand("/mcp resources", runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("No MCP servers configured");
+		} finally {
+			readConfig.mockRestore();
+		}
 	});
 
 	it("/mcp unknown-verb: returns usage pointing to help", async () => {
@@ -1559,8 +1629,7 @@ describe("wave 5 — adapters and polish", () => {
 	it("/mcp add foo --url https://example.com --token X --scope project: outputs success or propagates write error", async () => {
 		// Uses project scope so it writes to /tmp/project/.omp/mcp.json which test infra controls.
 		// We verify the command either reports success or a meaningful error (not a parse error).
-		const mcpModule = await import("@oh-my-pi/pi-coding-agent/mcp/config-writer");
-		const spy = spyOn(mcpModule, "addMCPServer").mockResolvedValue(undefined);
+		const spy = spyOn(mcpConfigWriter, "addMCPServer").mockResolvedValue(undefined);
 		try {
 			const { output, runtime } = createRuntime();
 			const result = await executeAcpBuiltinSlashCommand(
@@ -1588,11 +1657,15 @@ describe("wave 5 — adapters and polish", () => {
 
 	// /mcp test — spy on connectToServer
 	it("/mcp test bogus: returns error when server not found in config", async () => {
-		const { output, runtime } = createRuntime();
-		// No servers in /tmp/project config — server not found
-		const result = await executeAcpBuiltinSlashCommand("/mcp test bogus", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("not found");
+		const readConfig = spyOn(mcpConfigWriter, "readMCPConfigFile").mockResolvedValue({ mcpServers: {} });
+		try {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand("/mcp test bogus", runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("not found");
+		} finally {
+			readConfig.mockRestore();
+		}
 	});
 
 	// /ssh add — spy on addSSHHost
@@ -1661,7 +1734,7 @@ describe("wave 5 — adapters and polish", () => {
 		(session as unknown as Record<string, unknown>).systemPrompt = ["You are a helpful assistant."];
 		session.messages = [
 			{ role: "user", content: "Hello, how are you?" },
-			{ role: "assistant", content: "I am doing well." },
+			{ role: "assistant", content: [{ type: "text", text: "I am doing well." }] },
 		];
 		const result = await executeAcpBuiltinSlashCommand("/context", runtime);
 		expect(result).toEqual({ consumed: true });

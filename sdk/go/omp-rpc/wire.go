@@ -2819,12 +2819,13 @@ func (v *FastModeResult) decodeFrom(raw map[string]json.RawMessage) error {
 }
 
 type CompactionResult struct {
-	Summary          string                     `json:"summary"`
-	FirstKeptEntryID string                     `json:"firstKeptEntryId"`
-	TokensBefore     int64                      `json:"tokensBefore"`
-	ShortSummary     *string                    `json:"shortSummary,omitempty"`
-	Details          json.RawMessage            `json:"details,omitempty"`
-	PreserveData     map[string]json.RawMessage `json:"preserveData,omitempty"`
+	Summary                      string                     `json:"summary"`
+	FirstKeptEntryID             string                     `json:"firstKeptEntryId"`
+	TokensBefore                 int64                      `json:"tokensBefore"`
+	ShortSummary                 *string                    `json:"shortSummary,omitempty"`
+	Details                      json.RawMessage            `json:"details,omitempty"`
+	PreserveData                 map[string]json.RawMessage `json:"preserveData,omitempty"`
+	ProviderReplayThroughEntryID *string                    `json:"providerReplayThroughEntryId,omitempty"`
 }
 
 func (v *CompactionResult) UnmarshalJSON(data []byte) error {
@@ -2840,6 +2841,7 @@ func (v *CompactionResult) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("shortSummary", &out.ShortSummary)
 	d.optional("details", &out.Details)
 	d.optional("preserveData", &out.PreserveData)
+	d.optional("providerReplayThroughEntryId", &out.ProviderReplayThroughEntryID)
 	if d.err != nil {
 		return d.err
 	}

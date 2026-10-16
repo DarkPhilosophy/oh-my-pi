@@ -11,6 +11,7 @@ import type {
 	CDPSession,
 	ElementHandle,
 	Frame,
+	HTTPRequest,
 	HTTPResponse,
 	JSHandle,
 	KeyboardTypeOptions,
@@ -419,8 +420,10 @@ interface TabApi {
 	dialog(): Promise<DialogState>;
 	handleDialog(opts: { accept: boolean; text?: string }): Promise<void>;
 	setDialogs(policy: DialogPolicy | null): Promise<void>;
-	text(selector: string): Promise<string | null>;
-	html(selector: string): Promise<string | null>;
+	/** Without a selector, reads the page `<body>`. */
+	text(selector?: string): Promise<string | null>;
+	/** Without a selector, reads the page `<body>`. */
+	html(selector?: string): Promise<string | null>;
 	value(selector: string): Promise<string | null>;
 	attr(selector: string, name: string): Promise<string | null>;
 	count(selector: string): Promise<number>;
@@ -900,6 +903,13 @@ interface RunPageScope {
  * The facade removes only run-owned listeners, preserving worker-level routing,
  * request logging, dialogs, and console capture. Raw interception is restored
  * to the tab's persistent route/allowlist state after a run that changed it.
+ *
+ * A listener added to the page while the run is attached is run-owned, whichever
+ * reference reached the page, except one added while the page is delivering an
+ * event to a handler the run did not add. Puppeteer's in-flight request tracking
+ * subscribes to request completion from inside its own `request` handler; removing
+ * those subscriptions with the run left `waitForNetworkIdle` waiting on a request
+ * an earlier run started.
  */
 export function createRunPageScope(
 	page: Page,
@@ -918,12 +928,33 @@ export function createRunPageScope(
 		const on = target.on;
 		const off = target.off;
 		const once = target.once;
+		const emit = target.emit;
+		let delivering = false;
+		const withDelivering = <T>(value: boolean, fn: () => T): T => {
+			const previous = delivering;
+			delivering = value;
+			try {
+				return fn();
+			} finally {
+				delivering = previous;
+			}
+		};
+		const listeners = new Map<Function, (...args: unknown[]) => unknown>();
+		const listenerFor = (handler: Function): ((...args: unknown[]) => unknown) => {
+			let listener = listeners.get(handler);
+			if (!listener) {
+				listener = (...args: unknown[]) => withDelivering(false, () => Reflect.apply(handler, target, args));
+				listeners.set(handler, listener);
+			}
+			return listener;
+		};
 		const setRequestInterception = target.setRequestInterception;
 		const originals = new Map<string, PropertyDescriptor | undefined>(
 			[
 				"on",
 				"off",
 				"once",
+				"emit",
 				"removeAllListeners",
 				"setRequestInterception",
 				"goto",
@@ -963,15 +994,20 @@ export function createRunPageScope(
 			on: {
 				configurable: true,
 				value: (type: unknown, handler: unknown): Page => {
-					Reflect.apply(on, target, [type, handler]);
-					if (typeof type === "string") handlers.push({ type, handler });
+					if (delivering || typeof type !== "string" || typeof handler !== "function") {
+						Reflect.apply(on, target, [type, handler]);
+					} else {
+						const listener = listenerFor(handler);
+						handlers.push({ type, handler: listener, original: handler });
+						Reflect.apply(on, target, [type, listener]);
+					}
 					return target;
 				},
 			},
 			once: {
 				configurable: true,
 				value: (type: unknown, handler: unknown): Page => {
-					if (typeof type !== "string" || typeof handler !== "function") {
+					if (delivering || typeof type !== "string" || typeof handler !== "function") {
 						Reflect.apply(once, target, [type, handler]);
 						return target;
 					}
@@ -979,7 +1015,7 @@ export function createRunPageScope(
 						Reflect.apply(off, target, [type, wrapper]);
 						const index = handlers.findIndex(entry => entry.handler === wrapper);
 						if (index >= 0) handlers.splice(index, 1);
-						Reflect.apply(handler, target, [event]);
+						withDelivering(false, () => Reflect.apply(handler, target, [event]));
 					};
 					handlers.push({ type, handler: wrapper, original: handler });
 					Reflect.apply(on, target, [type, wrapper]);
@@ -989,6 +1025,7 @@ export function createRunPageScope(
 			off: {
 				configurable: true,
 				value: (type: unknown, handler?: unknown): Page => {
+					let removed = false;
 					for (let i = handlers.length - 1; i >= 0; i--) {
 						const entry = handlers[i];
 						if (
@@ -997,9 +1034,36 @@ export function createRunPageScope(
 						) {
 							Reflect.apply(off, target, [entry.type, entry.handler]);
 							handlers.splice(i, 1);
+							removed = true;
+							if (handler !== undefined) break;
 						}
 					}
+					if (!removed && handler !== undefined) Reflect.apply(off, target, [type, handler]);
 					return target;
+				},
+			},
+			emit: {
+				configurable: true,
+				value: (type: unknown, event?: unknown): boolean => {
+					const request = type === "request" && typeof event === "object" ? (event as HTTPRequest | null) : null;
+					const enqueue = request?.enqueueInterceptAction;
+					if (!request || typeof enqueue !== "function") {
+						return withDelivering(true, () => Reflect.apply(emit, target, [type, event]));
+					}
+					const descriptor = Object.getOwnPropertyDescriptor(request, "enqueueInterceptAction");
+					Object.defineProperty(request, "enqueueInterceptAction", {
+						configurable: true,
+						value: (action: () => unknown): void => {
+							const queued = delivering;
+							Reflect.apply(enqueue, request, [() => withDelivering(queued, action)]);
+						},
+					});
+					try {
+						return withDelivering(true, () => Reflect.apply(emit, target, [type, event]));
+					} finally {
+						if (descriptor) Object.defineProperty(request, "enqueueInterceptAction", descriptor);
+						else Reflect.deleteProperty(request, "enqueueInterceptAction");
+					}
 				},
 			},
 			removeAllListeners: {
@@ -3235,11 +3299,11 @@ export class WorkerCore {
 					throwIfAborted(sig);
 					return this.#requireDownloads().list();
 				}),
-			text: selector =>
+			text: (selector = "body") =>
 				op(`tab.text(${JSON.stringify(selector)})`, quickOpMs, sig =>
 					queryText(page, normalizeSelector(selector), sig),
 				),
-			html: selector =>
+			html: (selector = "body") =>
 				op(`tab.html(${JSON.stringify(selector)})`, quickOpMs, sig =>
 					queryHtml(page, normalizeSelector(selector), sig),
 				),

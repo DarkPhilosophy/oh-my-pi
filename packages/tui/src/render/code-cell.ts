@@ -15,6 +15,7 @@ import {
 	formatStatusIcon,
 	replaceTabs,
 } from "./render-utils";
+import { wrapPrefixedLine } from "./hanging-wrap";
 import {
 	describeOutputBlock,
 	type NativeOutputBlockSection,
@@ -216,6 +217,7 @@ export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): St
 		}
 	}
 
+	const numberedCodeLines: string[] = [];
 	if (lineNumberWidth > 0 && visibleLineNumbers) {
 		for (let i = 0; i < codeLines.length; i++) {
 			const lineNum = visibleLineNumbers[i];
@@ -223,10 +225,14 @@ export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): St
 				lineNum !== null && lineNum !== undefined
 					? String(lineNum).padStart(lineNumberWidth, " ")
 					: " ".repeat(lineNumberWidth);
-			codeLines[i] = theme.fg("dim", `${gutter} `) + codeLines[i];
+			const prefix = theme.fg("dim", `${gutter} `);
+			numberedCodeLines.push(
+				...wrapPrefixedLine(prefix, " ".repeat(lineNumberWidth + 1), codeLines[i]!, outputBlockContentWidth(width)),
+			);
 		}
 	}
 
+	const displayCodeLines = lineNumberWidth > 0 ? numberedCodeLines : codeLines;
 	if (hiddenCodeLines > 0) {
 		const hint = formatExpandHint(theme, expanded, hiddenCodeLines > 0);
 		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
@@ -234,24 +240,23 @@ export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): St
 			// Earlier rows scrolled above the live tail window — mark them on top so
 			// the newest streamed line stays pinned to the bottom of the box.
 			const earlier = formatEarlierLines({ hidden: hiddenCodeLines, shown: maxCodeLines });
-			codeLines.unshift(`${theme.fg("dim", gutterPad + earlier)}${hint ? ` ${hint}` : ""}`);
+			displayCodeLines.unshift(`${theme.fg("dim", gutterPad + earlier)}${hint ? ` ${hint}` : ""}`);
 		} else {
 			const moreLine = formatMoreItems(hiddenCodeLines, "line");
-			codeLines.push(`${theme.fg("dim", gutterPad + moreLine)}${hint ? ` ${hint}` : ""}`);
+			displayCodeLines.push(`${theme.fg("dim", gutterPad + moreLine)}${hint ? ` ${hint}` : ""}`);
 		}
 	}
 
 	const outputLines = renderCellOutput(output, expanded, outputMaxLines, theme);
 
-	const sections: Array<{ label?: string; lines: readonly string[] }> = [{ lines: codeLines }];
+	const sections: Array<{ label?: string; lines: readonly string[] }> = [{ lines: displayCodeLines }];
 	const running =
 		options.status === "running" ||
 		options.status === "complete" ||
 		options.status === "error" ||
 		options.status === "warning";
 	if (options.stagedStatus) {
-		// The separator carries the state even when the cell has produced nothing yet, but only once it runs:
-		// a cell that has not started has no lower stage at all.
+		// A started cell keeps its live output separator even before producing output.
 		if (running) sections.push({ label: stagedOutputLabel(options, theme), lines: outputLines });
 	} else if (outputLines.length > 0) {
 		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
@@ -323,7 +328,14 @@ export function describeCodeCell(options: Omit<CodeCellOptions, "width">, theme:
 	const sections: NativeOutputBlockSection[] = [
 		{
 			key: "code",
-			body: [code(options.code ?? "", { lang: options.language, start, numbers: start !== undefined || undefined })],
+			body: [
+				code(options.code ?? "", {
+					lang: options.language,
+					start,
+					numbers: start !== undefined || undefined,
+					wrap: true,
+				}),
+			],
 		},
 	];
 	const output = describeCellOutput(options.output, expanded, outputMaxLines);

@@ -13,8 +13,9 @@
  */
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
+import * as AIError from "../../error";
 import { classifyGatewayError } from "../../error/gateway";
-import { createNativeJudge, isJudgmentApi } from "../../judgment/native";
+import { checkNativeJudgmentImages, createNativeJudge, isJudgmentApi } from "../../judgment/native";
 import * as systemOne from "../../providers/systemone-server";
 import { deterministicUuid } from "../../utils/deterministic-id";
 import {
@@ -64,6 +65,16 @@ export async function handleSystemOne(
 			422,
 			"invalid_request_error",
 			`Model ${parsed.modelId} does not answer System One judgments`,
+		);
+	}
+	// Model capability and dialect caps are known locally: reject before credential lookup or refresh.
+	try {
+		checkNativeJudgmentImages(model, parsed.request.images ?? []);
+	} catch (error) {
+		return systemOne.formatError(
+			422,
+			"invalid_request_error",
+			error instanceof Error ? error.message : String(error),
 		);
 	}
 	const client = resolveClientIdentity(req.headers);
@@ -117,7 +128,11 @@ export async function handleSystemOne(
 		return json(200, body, gatewayResponseHeaders(model, { requestId, costUsd: result.usage.cost.total, startedAt }));
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
-		const classified = classifyGatewayError(error);
+		const message = error instanceof Error ? error.message : String(error);
+		const classified =
+			error instanceof AIError.ValidationError
+				? { status: 422, type: "invalid_request_error", message }
+				: classifyGatewayError(error);
 		logger.warn("auth-gateway judgment failed", { format: "systemone", error: classified.message, peer });
 		return systemOne.formatError(classified.status, classified.type, classified.message);
 	}

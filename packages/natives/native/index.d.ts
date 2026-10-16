@@ -235,6 +235,85 @@ export declare class HighlightStream {
   push(chunk: string): string
 }
 
+/** One accepted or dialed IPC connection. */
+export declare class IpcConnection {
+  /**
+   * Dial `endpoint`. Rejects with code ENOENT (no endpoint), ECONNREFUSED
+   * (stale socket / no listener), ETIMEDOUT, EACCES (peer owned by another
+   * user, or permission), or the OS errno name.
+   */
+  static connect(endpoint: string, options: IpcConnectOptions): Promise<IpcConnection>
+  /**
+   * Begin delivery on a `lines` connection (throws `TypeError` on a `raw`
+   * one). Call `start`/`startRaw` exactly once. Frames received before
+   * start are buffered, never dropped. `onLine` gets each non-empty line
+   * (one trailing CR stripped, invalid UTF-8 replaced lossily). `onClose`
+   * fires exactly once, after the last frame — including after local
+   * `end()`/`destroy()`: `null` for an orderly close, otherwise
+   * `"<CODE>: <message>"`.
+   */
+  start(onLine: (line: string) => void, onClose: (reason: string | null) => void): void
+  /**
+   * Same as `start()` for a `raw` connection (throws `TypeError` on a
+   * `lines` one): `onChunk` gets each received chunk.
+   */
+  startRaw(onChunk: (chunk: Uint8Array) => void, onClose: (reason: string | null) => void): void
+  /**
+   * Send one frame. lines: a string without LF (`TypeError` otherwise);
+   * LF is appended. raw: string (UTF-8) or `Uint8Array` written as-is.
+   * Frames sent during one JS task are written together when it ends (a
+   * microtask), in order; `end()` writes them first. Returns false once
+   * unwritten bytes exceed 1 MiB (await `drained()` before sending more).
+   * After close: returns false and drops the frame.
+   */
+  send(frame: string | Uint8Array): boolean
+  /** Resolves when the write queue is empty, or the connection closed. */
+  drained(): Promise<void>
+  /**
+   * Graceful: write everything queued, then shut the write half (Unix) /
+   * close the pipe (Windows); onClose follows when the read side ends.
+   */
+  end(): void
+  /**
+   * Immediate close; queued writes are dropped; onClose(null) follows.
+   * Idempotent.
+   */
+  destroy(): void
+  /** Keep the event loop alive while delivering (default). */
+  ref(): void
+  /** Let the event loop exit while this connection is open. */
+  unref(): void
+  /** Whether the connection is closed (or `destroy()` was called). */
+  get closed(): boolean
+}
+
+/** Listening IPC endpoint. */
+export declare class IpcServer {
+  /**
+   * Bind and listen.
+   *
+   * Unix: creates the parent dir (0700) if missing; under an exclusive flock
+   * on `<path>.bind.lock`, rejects EADDRINUSE when a live server answers,
+   * otherwise replaces the stale socket file; the socket is chmod 0600 before
+   * `listen()`. Windows: first pipe instance (exists → EADDRINUSE), remote
+   * clients rejected, DACL granting only the current user.
+   * `onConnection` receives each accepted, peer-verified connection (not yet
+   * started).
+   */
+  static listen(endpoint: string, options: IpcListenOptions, onConnection: (connection: IpcConnection) => void): Promise<IpcServer>
+  /** The endpoint this server listens on. */
+  get endpoint(): string
+  /**
+   * Stop accepting. Unix: unlink the socket file if it is still the inode
+   * this server bound. Accepted connections are untouched. Idempotent.
+   */
+  close(): Promise<void>
+  /** Keep the event loop alive while listening (default). */
+  ref(): void
+  /** Let the event loop exit while listening. */
+  unref(): void
+}
+
 /** WebRTC peer that accepts 16 kHz mono PCM and renders remote Opus audio. */
 export declare class LiveWebRtcPeer {
   /**
@@ -1989,7 +2068,10 @@ export interface GrepOptions {
   pattern: string
   /** Directory or file to search: a host path or an absolute `scheme://` URL. */
   path: string
-  /** Glob filter for filenames (e.g., "*.ts"). */
+  /**
+   * Glob filter for file paths (e.g., "*.ts"); a matched directory selects
+   * every file under it.
+   */
   glob?: string
   /**
    * Match simple glob patterns at any depth (default: true; `*.ts` ->
@@ -2203,6 +2285,44 @@ export interface InlineSloppyRegion {
  */
 export declare function invalidateFsScanCache(path?: string | undefined | null): void
 
+/** Options for `IpcConnection.connect`. */
+export interface IpcConnectOptions {
+  /**
+   * `lines`: UTF-8 text frames delimited by LF; `raw`: byte chunks as
+   * received.
+   */
+  framing: "lines" | "raw"
+  /** Connect deadline. Default 3000 ms. Expiry rejects with code ETIMEDOUT. */
+  timeoutMs?: number
+  /** Max bytes of one received line (lines framing). Default 64 MiB. */
+  maxFrameBytes?: number
+}
+
+/**
+ * Platform endpoint for `name` scoped to directory `dir`.
+ *
+ * Unix: `<dir>/<stem>.sock`; when that path does not fit `sun_path` (104 bytes
+ * on macOS/BSD, 108 on Linux, including NUL), `/tmp/omp-<euid>/<hash16>.sock`.
+ * Windows: `\\.\pipe\omp-<stem>-<hash16(lowercase(resolve(dir)))>`.
+ * `stem` is `name` with every char outside `[A-Za-z0-9._-]` replaced by "_".
+ * Pure and deterministic: every process computes the same endpoint.
+ */
+export declare function ipcEndpoint(dir: string, name: string): string
+
+/** Options for `IpcServer.listen`. */
+export interface IpcListenOptions {
+  /**
+   * `lines`: UTF-8 text frames delimited by LF; `raw`: byte chunks as
+   * received.
+   */
+  framing: "lines" | "raw"
+  /**
+   * Max bytes of one received line (lines framing). Default 64 MiB.
+   * Exceeding closes that connection with reason "EMSGSIZE: …".
+   */
+  maxFrameBytes?: number
+}
+
 /** Kind enum of the backend selected by default for this build target. */
 export declare function isoBackend(): IsoBackendKind
 
@@ -2352,6 +2472,13 @@ export interface ListWorkspaceOptions {
    * to find them. Default: false.
    */
   collectAgentsMd?: boolean
+  /**
+   * Report unreadable directories instead of silently skipping them: an
+   * unreadable root fails the scan, and unreadable subdirectories are
+   * returned in `unreadableDirectories` while the walk continues. Default:
+   * false (startup discovery stays best-effort).
+   */
+  reportDirectoryErrors?: boolean
   /** Timeout in milliseconds for the operation. */
   timeoutMs?: number
   /** Abort signal for cancelling the operation. */
@@ -2369,6 +2496,11 @@ export interface ListWorkspaceResult {
   agentsMdFiles: Array<string>
   /** True when any output cap was hit. */
   truncated: boolean
+  /**
+   * Subdirectories whose contents could not be listed. Always empty unless
+   * `reportDirectoryErrors` is set.
+   */
+  unreadableDirectories: Array<WorkspaceDirectoryError>
 }
 
 /**
@@ -3743,8 +3875,8 @@ export declare function visibleWidth(text: string, tabWidth: number): number
  * [`enclosing_block_boundaries`], [`block_range_at`] and [`node_chain_at`]
  * are synchronous and parse on the JS thread when their source is not
  * cached; awaiting this first makes that parse a cache hit. Resolves without
- * parsing when the language is unrecognized or the source is too large for
- * the cache to keep.
+ * parsing when the language is unrecognized or the source is over 2 MiB,
+ * where a typical tree would not fit the cache's memory budget.
  */
 export declare function warmBlockParse(options: BlockParseOptions): Promise<undefined>
 
@@ -3799,6 +3931,14 @@ export interface WorkProfile {
   totalMs: number
   /** Number of samples collected. */
   sampleCount: number
+}
+
+/** A subdirectory the scan could not list. */
+export interface WorkspaceDirectoryError {
+  /** Forward-slash path relative to the scan root. */
+  path: string
+  /** Platform error, e.g. `Permission denied (os error 13)`. */
+  message: string
 }
 
 /**

@@ -132,10 +132,13 @@ and image protocols; it does not change history semantics.
 
 Inside tmux, the pane environment identifies tmux rather than the attached
 emulator. At startup, terminal detection asks the local tmux server for
-`#{client_termtype}` and maps recognized client names through the normal
-capability table; an unavailable `tmux` command or missing terminal-type reply
-keeps the environment fallback. Modified keys still require tmux
-`extended-keys`, while OSC notifications require `allow-passthrough`.
+`#{client_termtype}` and `#{client_termname}` and maps recognized names through
+the normal capability table: the terminal-type reply first, then a client `TERM`
+that names its emulator (`xterm-kitty`, `xterm-ghostty`, `wezterm`). The pane's
+own `TERM` (`tmux-*`) never selects an image protocol; an unrecognized client
+leaves images to the runtime SIXEL probe. Modified keys still require tmux
+`extended-keys`, while OSC notifications and Kitty graphics require
+`allow-passthrough`.
 
 `ProcessTerminal` pairs capability queries with typed DA1 sentinel owners.
 Private CSI replies may be split across stdin flushes, so reassembly must retain

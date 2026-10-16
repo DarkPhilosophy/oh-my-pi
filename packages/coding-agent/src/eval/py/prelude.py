@@ -888,12 +888,17 @@ if "__omp_prelude_loaded__" not in globals():
         if not isinstance(questions, dict):
             raise TypeError("judge(state, questions) expects questions as a dict keyed by id")
 
-    async def judge(state, questions):
-        """Answer typed questions over one ``state``; returns ``{id: answer}`` (choice/bool/score)."""
+    async def judge(state, questions, *, images=None):
+        """Answer typed questions over one ``state``; returns ``{id: answer}`` (choice/bool/score).
+
+        ``images`` is a list of local-path strings or embedded
+        ``{"type": "image", "data": ..., "mimeType": ...}`` attachments.
+        """
         _check_questions(questions)
-        result = await asyncio.to_thread(
-            _bridge_call, "__judge__", {"state": state, "questions": questions}
-        )
+        args = {"state": state, "questions": questions}
+        if images is not None:
+            args["images"] = images
+        result = await asyncio.to_thread(_bridge_call, "__judge__", args)
         if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
             raise RuntimeError("judge() did not return answers")
         return result["answers"]
@@ -990,6 +995,7 @@ if "__omp_prelude_loaded__" not in globals():
         states,
         questions,
         *,
+        images=None,
         concurrency=None,
         retries=None,
         min_ok=None,
@@ -1000,6 +1006,9 @@ if "__omp_prelude_loaded__" not in globals():
         ``states`` is ``{key: state}`` or a list (keys are indices). ``intent`` is an
         optional nonempty progress/job label. Item failures land in ``JudgmentItem.error``;
         only a run that dies wholesale raises from ``drain()``.
+
+        ``images`` optionally maps state keys to lists of local-path strings or embedded
+        ``{"type": "image", "data": ..., "mimeType": ...}`` attachments.
         """
         _check_questions(questions)
         if intent is not None and (
@@ -1012,6 +1021,16 @@ if "__omp_prelude_loaded__" not in globals():
             items = [{"key": index, "state": state} for index, state in enumerate(states)]
         else:
             raise TypeError("judge_batch(states, questions) expects states as a dict or list")
+        if images is not None:
+            if not isinstance(images, dict):
+                raise TypeError("judge_batch() images must be a dict keyed by input key")
+            item_keys = {item["key"] for item in items}
+            for key in images:
+                if key not in item_keys:
+                    raise ValueError(f"images contains unknown input key {json.dumps(key)}")
+            for item in items:
+                if item["key"] in images:
+                    item["images"] = images[item["key"]]
         args = {"op": "create", "items": items, "questions": questions}
         if concurrency is not None:
             args["concurrency"] = int(concurrency)

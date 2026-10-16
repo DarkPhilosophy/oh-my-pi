@@ -675,20 +675,33 @@ export async function listSessionFolders(): Promise<string[]> {
 }
 
 /**
- * List all session files in a folder, sorted by path.
- *
- * Order is load-bearing, not cosmetic: the fork guards in `insertMessageStats`
- * / `insertUserMessageStats` keep the FIRST file that claims an
- * `(entry_id, timestamp)` pair, and a fork copies its parent's entries
- * verbatim. Session filenames lead with an ISO timestamp, so syncing in path
- * order reaches the original session before any fork of it — otherwise the
- * owning file would follow raw `readdir` order and vary per filesystem.
+ * Name prefix of the scratch directories `omp gc --compress` creates beside
+ * the files it copies on APFS. Their `.jsonl` files are transient copies of
+ * transcripts, never transcripts of their own; a killed run can leave one
+ * behind until the next `omp gc --compress --apply` removes it.
+ */
+export const COMPRESS_SCRATCH_PREFIX = ".omp-gc-compress-";
+
+/** Whether `relativePath` lies inside a compress scratch directory. */
+export function isCompressScratchPath(relativePath: string): boolean {
+	return relativePath.split(/[\\/]/).some(part => part.startsWith(COMPRESS_SCRATCH_PREFIX));
+}
+
+/**
+ * List session files in path order, excluding compress scratch copies.
+ * Fork guards keep the first file claiming an entry and timestamp; timestamp-prefixed
+ * filenames put the original session before its forks regardless of filesystem order.
  */
 export async function listSessionFiles(folderPath: string): Promise<string[]> {
 	try {
 		const entries = await fs.readdir(folderPath, { recursive: true, withFileTypes: true });
 		return entries
-			.filter(e => e.isFile() && e.name.endsWith(".jsonl"))
+			.filter(
+				e =>
+					e.isFile() &&
+					e.name.endsWith(".jsonl") &&
+					!isCompressScratchPath(path.relative(folderPath, e.parentPath)),
+			)
 			.map(e => path.join(e.parentPath, e.name))
 			.sort();
 	} catch {

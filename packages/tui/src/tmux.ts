@@ -10,24 +10,49 @@ export function wrapTmuxPassthroughIfNeeded(payload: string, env: NodeJS.Process
 }
 
 const CLIENT_TERMTYPE_NAME = /^([A-Za-z][A-Za-z0-9._+-]*)(?=\s|\(|$)/u;
-const CLIENT_TERMTYPE_TIMEOUT_MS = 500;
-let cachedClientTerminalName: string | null | undefined;
+const CLIENT_TERMINAL_TIMEOUT_MS = 500;
+/** Client `TERM` values that name their emulator; tmux records this on every version. */
+const CLIENT_TERMNAME_PROGRAMS: ReadonlyArray<readonly [RegExp, string]> = [
+	[/^xterm-kitty$/u, "kitty"],
+	[/^xterm-ghostty$/u, "ghostty"],
+	[/^wezterm$/u, "wezterm"],
+];
+let cachedClientTerminalNames: readonly string[] | undefined;
 
-function queryTmuxClientTerminalName(env: NodeJS.ProcessEnv): string | null {
+/**
+ * Emulator name candidates from a `#{client_termtype}<TAB>#{client_termname}`
+ * line, best first: the terminal-type reply (tmux 3.4+, XTVERSION), then the
+ * emulator the client's `TERM` names when it ships its own terminfo entry. Both
+ * are kept because the reply can name an unrecognized program (a nested tmux
+ * answers `tmux 3.4`) while `TERM` still identifies the emulator.
+ */
+export function tmuxClientProgramsFromReport(report: string): string[] {
+	// Split before trimming: an empty terminal type leaves the line starting with the tab.
+	const [termtype = "", termname = ""] = report.split("\t");
+	const programs: string[] = [];
+	const program = CLIENT_TERMTYPE_NAME.exec(termtype.trim())?.[1];
+	if (program) programs.push(program);
+	const term = termname.trim().toLowerCase();
+	const termProgram = CLIENT_TERMNAME_PROGRAMS.find(([pattern]) => pattern.test(term))?.[1];
+	if (termProgram) programs.push(termProgram);
+	return programs;
+}
+
+function queryTmuxClientTerminalNames(env: NodeJS.ProcessEnv): readonly string[] {
 	const tmux = $which("tmux", { PATH: env.PATH });
-	if (!tmux) return null;
+	if (!tmux) return [];
 	try {
-		const result = Bun.spawnSync([tmux, "display-message", "-p", "#{client_termtype}"], {
+		const result = Bun.spawnSync([tmux, "display-message", "-p", "#{client_termtype}\t#{client_termname}"], {
 			env,
 			stdout: "pipe",
 			stderr: "ignore",
-			timeout: CLIENT_TERMTYPE_TIMEOUT_MS,
+			timeout: CLIENT_TERMINAL_TIMEOUT_MS,
 			killSignal: "SIGKILL",
 		});
-		if (result.exitCode !== 0) return null;
-		return CLIENT_TERMTYPE_NAME.exec(result.stdout.toString().trim())?.[1] ?? null;
+		if (result.exitCode !== 0) return [];
+		return tmuxClientProgramsFromReport(result.stdout.toString());
 	} catch {
-		return null;
+		return [];
 	}
 }
 
@@ -75,14 +100,47 @@ export function setTmuxPaneApcTitles(on: boolean, env: NodeJS.ProcessEnv = Bun.e
 }
 
 /**
- * Resolve the terminal emulator name recorded for this tmux client.
+ * Resolve the terminal emulator names recorded for this tmux client, best first.
  *
  * tmux overwrites pane identity variables with its own values, but retains the
- * attached client's terminal-type reply in `#{client_termtype}`. The local IPC
- * query runs once per process and degrades to `null` when unavailable.
+ * attached client's terminal-type reply in `#{client_termtype}` and its `TERM`
+ * in `#{client_termname}` (see {@link tmuxClientProgramsFromReport}). The local
+ * IPC query runs once per process and degrades to `[]` when unavailable.
  */
-export function resolveTmuxClientTerminalName(env: NodeJS.ProcessEnv = Bun.env): string | null {
-	if (!tmuxMultiplexer.isInside(env) || isBunTestRuntime()) return null;
-	if (cachedClientTerminalName === undefined) cachedClientTerminalName = queryTmuxClientTerminalName(env);
-	return cachedClientTerminalName;
+export function resolveTmuxClientTerminalNames(env: NodeJS.ProcessEnv = Bun.env): readonly string[] {
+	if (!tmuxMultiplexer.isInside(env) || isBunTestRuntime()) return [];
+	cachedClientTerminalNames ??= queryTmuxClientTerminalNames(env);
+	return cachedClientTerminalNames;
+}
+
+const SIXEL_CAPABILITY = /^\s*\d+: Sxl: \(flag\) true$/mu;
+let cachedClientSixel: { tmux: string; renders: boolean } | undefined;
+
+function queryTmuxClientRendersSixel(env: NodeJS.ProcessEnv): boolean {
+	const client = runTmux(["display-message", "-p", "#{client_name}"], env)?.trim();
+	if (!client) return false;
+	return SIXEL_CAPABILITY.test(runTmux(["show-messages", "-T", "-t", client], env) ?? "");
+}
+
+/**
+ * Whether tmux draws SIXEL to the client attached to this session: its
+ * effective terminal description for that client carries `Sxl`.
+ *
+ * A tmux built with SIXEL answers every pane's DA1 with attribute 4 and draws a
+ * `SIXEL IMAGE (WxH)` text placeholder for clients without SIXEL, so the pane's
+ * DA1 says nothing about the outer terminal. tmux itself renders SIXEL only
+ * when the client's terminal has `Sxl`, whether from terminfo,
+ * `terminal-overrides`, or the `sixel` feature (DA1 or `terminal-features`),
+ * and `show-messages -T` reports that merged description. The TUI consults
+ * this before trusting the pane's DA1 attribute. Queried once per tmux
+ * session; `false` outside tmux, with no attached client, or when the query
+ * fails. Nested tmux usually reports no `Sxl`: the inner client's terminal is
+ * the outer tmux, whose DA1 starts with level 1, which tmux does not parse
+ * for features.
+ */
+export function tmuxClientRendersSixel(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	const tmux = env.TMUX;
+	if (!tmux) return false;
+	if (cachedClientSixel?.tmux !== tmux) cachedClientSixel = { tmux, renders: queryTmuxClientRendersSixel(env) };
+	return cachedClientSixel.renders;
 }

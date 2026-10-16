@@ -43,6 +43,7 @@ import {
 	terminalMultiplexerSessions,
 } from "./terminal-multiplexer";
 import {
+	directPlacementLift,
 	encodeKittyDeleteAllImages,
 	encodeKittyDeleteImage,
 	encodeKittyDeletePlacement,
@@ -59,6 +60,7 @@ import {
 	TERMINAL,
 } from "./terminal-capabilities";
 import { compositeLineAt } from "./render/composite";
+import { tmuxMultiplexer } from "./multiplexers/tmux";
 import {
 	Ellipsis,
 	getWidthConfigEpoch,
@@ -69,6 +71,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "./utils";
+import { tmuxClientRendersSixel } from "./tmux";
 const OSC66_SPAN_REGEX = /\x1b\]66;([^;]*);([\s\S]*?)(?:\x07|\x1b\\)/g;
 /** Extra zero-width rows an OSC 66 scaled heading reserves below itself. */
 function getOsc66ReservedRows(line: string): number {
@@ -332,8 +335,7 @@ export interface Component {
 	 */
 	render(width: number): readonly string[];
 
-	/** Inline decision panels must keep displaced settled transcript rows in
-	 * native scrollback even when mounted inside a transient editor container. */
+	/** Inline decision panels retain displaced settled rows in native history. */
 	readonly retireDisplacedTranscript?: boolean;
 
 	/**
@@ -947,6 +949,10 @@ export class TUI extends Container {
 	// rows the paint prepended for a short viewport. Negative while prepended
 	// blanks outweigh replaced rows; zero on ordinary frames.
 	#providerViewportPadTop = 0;
+	// Whether native history holds rows the provider committed since the last
+	// destructive reset. Only paints write history and only a destructive reset
+	// erases it; an `append` resize replay keeps the rows it replays beneath.
+	#providerHistoryWritten = false;
 	// Viewport-relative row of the hardware cursor after the last normal paint
 	// (0 = parked at the viewport top). A resize reflows the normal buffer
 	// before the app hears about it; terminals keep the cursor attached to its
@@ -1266,6 +1272,7 @@ export class TUI extends Container {
 	overlayStack: {
 		component: Component;
 		options?: OverlayOptions;
+		/** Focus restored after closing; tracks live focus changes beneath an input-less key holder. */
 		preFocus: Component | null;
 		hidden: boolean;
 		/**
@@ -1430,6 +1437,9 @@ export class TUI extends Container {
 	setFocus(component: Component | null): void {
 		const holder = this.#getKeyHolderOverlay();
 		if (holder && !isOverlayFocusTarget(holder.component, component)) {
+			if (!holder.component.handleInput && this.#focusedComponent === holder.component) {
+				holder.preFocus = component;
+			}
 			const currentFocus = this.#focusedComponent;
 			component = isOverlayFocusTarget(holder.component, currentFocus) ? currentFocus : holder.component;
 		}
@@ -1585,6 +1595,27 @@ export class TUI extends Container {
 	}
 
 	/**
+	 * Rows of native history the last paint left on screen above a mutable
+	 * viewport that reached the bottom row, or `undefined` when that paint left
+	 * rows free below it (or none happened, or a destructive reset will repaint
+	 * from row zero). Rows above a bottom-reaching viewport may already sit in
+	 * native scrollback, which a later shrink cannot pull back down.
+	 */
+	getFilledHistoryRows(): number | undefined {
+		if (!this.#hasEverRendered || this.#clearScrollbackOnNextRender) return undefined;
+		const height = this.terminal.rows;
+		if (this.#providerWindow.length === 0 || this.#providerViewportTop + this.#providerWindow.length < height) {
+			return undefined;
+		}
+		return Math.min(this.#providerViewportTop, height);
+	}
+
+	/** Whether native history holds rows the frame provider committed since the last destructive reset. */
+	hasProviderHistory(): boolean {
+		return this.#providerHistoryWritten && !this.#clearScrollbackOnNextRender;
+	}
+
+	/**
 	 * Probe for opt-in normal-buffer click capture. The provider is read every
 	 * frame; while it returns true (and no fullscreen overlay owns the
 	 * display) the terminal reports button clicks as SGR events for inline
@@ -1726,6 +1757,9 @@ export class TUI extends Container {
 		this.terminal.onSixelSupport?.(supported => {
 			if (!supported || this.#stopped || this.#nativeLive || this.terminal.tspExpected) return;
 			if (isImageProtocolForced()) return;
+			// tmux answers DA1 for its own emulator; only its record of the
+			// attached client says whether SIXEL reaches the outer terminal.
+			if (tmuxMultiplexer.isInside() && !tmuxClientRendersSixel()) return;
 			// Keep consuming an already-requested XTSMGRAPHICS reply until it
 			// arrives or times out, even though DA1 has established support.
 			this.#enableSixelProtocol();
@@ -1971,7 +2005,7 @@ export class TUI extends Container {
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = undefined;
 		if (this.#altActive || this.#resizeAltActive) {
-			this.terminal.write(`${this.#takePendingAltEnter()}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			this.terminal.write(`${this.#takePendingAltEnter()}${this.#altScreenExit()}`);
 			setAltScreenActive(false);
 			this.#altActive = false;
 			this.#resizeAltActive = false;
@@ -2313,7 +2347,7 @@ export class TUI extends Container {
 		this.#suppressResizeUntil = this.#renderScheduler.now() + 100;
 		this.#altPreviousLines = [];
 		this.#altPreparedRows = [];
-		const exitSequence = `${this.#keyboardEnhancementExit()}\x1b[?1049l`;
+		const exitSequence = this.#altScreenExit();
 		// Only the provider plan frame emits a pending exit, and an exit already
 		// pending (a fused overlay close) owns that slot.
 		if (this.#frameProvider !== undefined && this.#pendingAltExit === "") {
@@ -2942,7 +2976,7 @@ export class TUI extends Container {
 		this.#cancelResizeProbe();
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
-			this.terminal.write(`${this.#takePendingAltEnter()}${this.#keyboardEnhancementExit()}\x1b[?1049l`);
+			this.terminal.write(`${this.#takePendingAltEnter()}${this.#altScreenExit()}`);
 			setAltScreenActive(false);
 		}
 		if (this.#altActive || this.#pendingAltExit) {
@@ -2954,7 +2988,7 @@ export class TUI extends Container {
 			const mouseExit = this.#mouseTracking !== "off" ? MOUSE_TRACKING_OFF : "";
 			const exitSequence = this.#pendingAltExit
 				? `${this.#takePendingAltEnter()}${this.#pendingAltExit}${mouseExit}`
-				: `${mouseExit}${this.#keyboardEnhancementExit()}\x1b[?1049l`;
+				: `${mouseExit}${this.#altScreenExit()}`;
 			this.terminal.write(exitSequence);
 			setAltScreenActive(false);
 			this.#altActive = false;
@@ -3329,9 +3363,9 @@ export class TUI extends Container {
 			this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
 		}
 
-		// A focused input owner can reserve its gesture before TUI-wide listeners
+		// The effective input owner can reserve its gesture before TUI-wide listeners
 		// and debug shortcuts see the key, then handle the raw event exactly once.
-		const focusedForCapture = this.#focusedComponent;
+		const focusedForCapture = this.#inputTarget();
 		if (
 			focusedForCapture?.handleInput &&
 			(!isKeyRelease(data) || focusedForCapture.wantsKeyRelease) &&
@@ -3370,15 +3404,10 @@ export class TUI extends Container {
 			return;
 		}
 
-		// Pass input to focused component (including Ctrl+C).
-		// The focused component can decide how to handle Ctrl+C.
-		// Opted-in components only dirty their focused subtree. Unregistered
-		// components retain the legacy full compose because their callbacks may
-		// mutate siblings; focus changes also require the new surface to paint.
-		const focused = this.#focusedComponent;
-		if (focused?.handleInput) {
+		const target = this.#inputTarget();
+		if (target?.handleInput) {
 			// Filter out key release events unless component opts in
-			if (isKeyRelease(data) && !focused.wantsKeyRelease) {
+			if (isKeyRelease(data) && !target.wantsKeyRelease) {
 				return;
 			}
 			// A keystroke's own handler runs here: editor mutation, autocomplete
@@ -3386,12 +3415,23 @@ export class TUI extends Container {
 			// attributable to the handler rather than to the paint that follows.
 			pushLoopPhase("ui:input");
 			try {
-				focused.handleInput(data);
+				target.handleInput(data);
 			} finally {
 				popLoopPhase();
 			}
 			this.requestRender();
 		}
+	}
+
+	/**
+	 * Component that receives keyboard input. An input-less key-holding overlay
+	 * leaves input with the focus it displaced; other focus owners keep their input.
+	 */
+	#inputTarget(): Component | null {
+		const focused = this.#focusedComponent;
+		if (focused?.handleInput) return focused;
+		const holder = this.#getKeyHolderOverlay();
+		return holder?.component === focused ? holder.preFocus : null;
 	}
 
 	/**
@@ -3766,7 +3806,12 @@ export class TUI extends Container {
 		return output;
 	}
 
-	/** Clip a direct placement and record its live owner; history placements have no mutable owner. */
+	/**
+	 * Clip a Kitty direct placement and record its live owner; history
+	 * placements have no mutable owner. Other direct placements (SIXEL,
+	 * iTerm2) have no delete command and composite over whatever pixels they
+	 * land on, so the rows they paint above `screenRow` are erased first.
+	 */
 	#imageLineSequence(
 		line: string,
 		screenRow: number,
@@ -3775,7 +3820,10 @@ export class TUI extends Container {
 	): string {
 		if (screenRow < 0) return line;
 		const parsed = parseKittyDirectPlacementLine(line);
-		if (!parsed) return line;
+		if (!parsed) {
+			const lift = Math.min(directPlacementLift(line), screenRow);
+			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${line}` : line;
+		}
 		const previous = placements?.get(placementRow);
 		const placementId = previous?.placementId ?? this.#nextImagePlacementId++;
 		const erase = previous ? encodeKittyDeletePlacement(previous.imageId, previous.placementId) : "";
@@ -4362,6 +4410,7 @@ export class TUI extends Container {
 			this.#providerWindow = [];
 			this.#providerVisibleHistory = [];
 			this.#providerPreparedRows = [];
+			this.#providerHistoryWritten = false;
 		}
 		// The viewport stays anchored directly below whatever history remains on
 		// screen. Appending K history rows moves the anchor down by K; the write
@@ -4786,6 +4835,7 @@ export class TUI extends Container {
 		this.#resizeBurstWidthChanged = false;
 		this.#resizeBurstResized = false;
 		this.#previousFrameLength = mutablePreparedLines.length;
+		if (preparedHistory.lines.length > 0 || replayViewportRows > 0) this.#providerHistoryWritten = true;
 		if (destructiveReset) {
 			this.#clearScrollbackOnNextRender = false;
 			this.#clearScrollbackWaitsForReplay = false;
@@ -4901,8 +4951,7 @@ export class TUI extends Container {
 			// restore it in the fused exit or later frames see matching states
 			// and inline click/hover stays dead until the setting toggles.
 			const mouseEnter = wantMouse !== "off" && this.#mouseTracking === "off" ? MOUSE_TRACKING_ON : "";
-			const enhancementExit = this.#keyboardEnhancementExit();
-			const exitSequence = `${mouseExit}${mouseEnter}${enhancementExit}\x1b[?1049l`;
+			const exitSequence = `${mouseExit}${mouseEnter}${this.#altScreenExit()}`;
 			// Session replacement finishes while its fullscreen selector still
 			// covers the old normal buffer. Fuse the restore into the destructive
 			// repaint so no stale frame can become visible between writes.
@@ -5470,14 +5519,15 @@ export class TUI extends Container {
 	}
 
 	/**
-	 * Resolve the active keyboard-enhancement exit sequence. Falls back to popping
-	 * kitty whenever a custom Terminal exposes its push sequence but predates the
-	 * `keyboardEnhancementExitSequence` property.
+	 * Leave the alternate screen: pop its keyboard-enhancement frame first, then
+	 * re-assert the main-screen mode for terminals that lose it on `?1049l`.
+	 * Falls back to popping kitty whenever a custom Terminal exposes its push
+	 * sequence but predates the `keyboardEnhancementExitSequence` property.
 	 */
-	#keyboardEnhancementExit(): string {
+	#altScreenExit(): string {
 		const exit = this.terminal.keyboardEnhancementExitSequence;
-		if (exit !== undefined) return exit ?? "";
-		return this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
+		const keyboardExit = exit !== undefined ? (exit ?? "") : this.terminal.kittyEnableSequence ? "\x1b[<u" : "";
+		return `${keyboardExit}\x1b[?1049l${this.terminal.keyboardEnhancementRestoreSequence ?? ""}`;
 	}
 
 	/**

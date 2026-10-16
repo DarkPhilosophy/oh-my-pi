@@ -443,15 +443,34 @@ function sanitizeMalformedToolCalls(messages: Message[]): Message[] {
 	return result;
 }
 
-function shouldDropTruncatedThinkingOnlyAssistant(msg: AssistantMessage): boolean {
+/**
+ * Whether {@link transformMessages} drops `msg` from every replay: a turn cut
+ * off by `length` / `error` / `aborted` that carries no text and no tool call.
+ */
+export function shouldDropTruncatedThinkingOnlyAssistant(msg: AssistantMessage): boolean {
 	const isTruncatedStop = msg.stopReason === "length" || msg.stopReason === "error" || msg.stopReason === "aborted";
 	return isTruncatedStop && !msg.content.some(block => block.type === "toolCall" || block.type === "text");
+}
+
+/**
+ * Whether `msg` reaches a replay as an assistant turn, so it can be the latest
+ * surviving one: {@link sanitizeMalformedToolCalls} drops its malformed tool
+ * calls, then {@link shouldDropTruncatedThinkingOnlyAssistant} a truncated
+ * turn left with no text and no tool call. On an already sanitized list this
+ * is `!shouldDropTruncatedThinkingOnlyAssistant(msg)`.
+ */
+export function isSurvivingAssistant(msg: AssistantMessage): boolean {
+	const isTruncatedStop = msg.stopReason === "length" || msg.stopReason === "error" || msg.stopReason === "aborted";
+	if (msg.content.length === 0) return !isTruncatedStop;
+	return msg.content.some(block =>
+		block.type === "toolCall" ? !isMalformedToolCall(block) : !isTruncatedStop || block.type === "text",
+	);
 }
 
 function getLatestSurvivingAssistantIndex(messages: readonly Message[]): number {
 	for (let index = messages.length - 1; index >= 0; index -= 1) {
 		const msg = messages[index]!;
-		if (msg.role === "assistant" && !shouldDropTruncatedThinkingOnlyAssistant(msg)) {
+		if (msg.role === "assistant" && isSurvivingAssistant(msg)) {
 			return index;
 		}
 	}
@@ -1117,17 +1136,13 @@ export function transformMessages<TApi extends Api>(
 
 				if (block.type === "fallback") {
 					// Server-side-fallback boundary marker (Anthropic beta
-					// `server-side-fallback-2026-06-01`). Only the official
-					// Anthropic endpoint accepts this block on replay: every
-					// other target either rejects unknown content blocks with a
-					// 400 (anthropic-compatible endpoints like Umans/Z.AI/MiniMax,
-					// and older omp gateways whose schema pre-dates this feature)
-					// or throws in its converter (Bedrock). Even the official
-					// replay path only accepts the block when the current request
-					// itself opts into the beta — but we don't know that here, so
-					// keep it and let `convertAnthropicMessages` re-check the
-					// per-request opt-in before serializing.
-					if (isAnthropicTarget && model.compat.officialEndpoint) return block;
+					// `server-side-fallback-2026-06-01`). Keep it for every
+					// Anthropic-messages target: `convertAnthropicMessages` decides
+					// per request whether the marker can go on the wire (official
+					// endpoint + beta opt-in), and when it cannot, the boundary is
+					// what tells it which model's signed reasoning to keep. Every
+					// other API rejects the block or throws in its converter.
+					if (isAnthropicTarget) return block;
 					return [];
 				}
 

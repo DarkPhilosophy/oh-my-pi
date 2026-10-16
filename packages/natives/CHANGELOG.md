@@ -7,6 +7,72 @@
 - Added persistent clipboard-write support through the public `@oh-my-pi/pi-natives/clipboard` entry point ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 - Added a persistent clipboard-write API through the public `@oh-my-pi/pi-natives/clipboard` entry point ([#9527](https://github.com/can1357/oh-my-pi/pull/9527) by [@DarkPhilosophy](https://github.com/DarkPhilosophy)).
 ### Changed
+### Changed
+
+- Reduced memory held by cached code-structure parses: the cache now caps estimated syntax-tree memory instead of source size, keeps only a file's current and previous parse, and reparses edited files incrementally ([#15886](https://github.com/can1357/oh-my-pi/pull/15886) by [@H4vC](https://github.com/H4vC))
+- Changed `warmBlockParse` to skip files over 2 MiB (was 4 MiB), the size above which a typical parse no longer fits the cache ([#15886](https://github.com/can1357/oh-my-pi/pull/15886) by [@H4vC](https://github.com/H4vC))
+
+### Fixed
+
+- Fixed `listWorkspace({ reportDirectoryErrors: true, maxDepth: 0 })` returning an empty result for an unreadable root instead of failing the scan ([#15789](https://github.com/can1357/oh-my-pi/pull/15789))
+
+## [18.11.1] - 2026-10-15
+
+### Added
+
+- Added `listWorkspace({ reportDirectoryErrors })`: an unreadable root fails the scan and unreadable subdirectories are returned in `unreadableDirectories` instead of being silently skipped ([#15769](https://github.com/can1357/oh-my-pi/issues/15769)).
+
+### Fixed
+
+- Fixed unnecessary worker scheduling overhead in `read` loops over regular files ([#15504](https://github.com/can1357/oh-my-pi/pull/15504) by [@mg-mg-mg](https://github.com/mg-mg-mg))
+- Fixed `astGrep` and `astEdit` missing parse errors when Tree-sitter recovered by inserting a missing token, so edits could rewrite files that do not parse; such files are now reported and skipped ([#15530](https://github.com/can1357/oh-my-pi/issues/15530), [#15851](https://github.com/can1357/oh-my-pi/pull/15851) by [@glyahh](https://github.com/glyahh))
+- Fixed `grep` and `astGrep` `glob` filters skipping the files under a directory the glob matches, so `{src,test}` or `sr?` found nothing; a matched directory now selects every file under it, so `dir/*` also matches files in `dir`'s subdirectories ([#15760](https://github.com/can1357/oh-my-pi/issues/15760))
+- Fixed `grep()` and `search()` showing the start of a line wider than `maxColumns`, with no `column`, when the only match was an empty one at the end of the file (`$` or `\z` on a last line without a newline); they now show the end of the line and its column ([#15411](https://github.com/can1357/oh-my-pi/pull/15411) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed embedded-shell `xargs` failing with "Argument list too long" on large input lists instead of splitting them into executable batches ([#15708](https://github.com/can1357/oh-my-pi/pull/15708) by [@mg-mg-mg](https://github.com/mg-mg-mg))
+- Fixed applying a submodule pin patch to the worktree failing with "does not exist" for a submodule directory or trying to write the pinned commit as a file; like `git apply`, the submodule's checkout is left untouched, an added pin creates its empty directory, and a removed one deletes only an empty (uninitialized) directory ([#15459](https://github.com/can1357/oh-my-pi/pull/15459))
+- Fixed `diffText`/`numstat` showing a moved submodule as a delete plus an add instead of Git's 100% rename, and `applyPatch` now applies such rename patches ([#15459](https://github.com/can1357/oh-my-pi/pull/15459))
+- Fixed `submodulePaths()` following `.gitmodules` paths that are absolute or contain `.`/`..`, which could point outside the repository or loop forever; like Git, such entries are ignored ([#15459](https://github.com/can1357/oh-my-pi/pull/15459))
+- Fixed `copyGitObjects` exposing partially copied objects and packs to concurrent Git readers and permanently skipping a file truncated by an interrupted copy; each file is now published atomically ([#15459](https://github.com/can1357/oh-my-pi/pull/15459))
+- Fixed embedded-shell `read` in a pipeline stage or async job queueing a second blocking worker while holding its own, which could hang every such read once the bounded blocking pool filled ([#15509](https://github.com/can1357/oh-my-pi/pull/15509))
+- Fixed Mermaid labels decoding legacy references such as `&#128;` or `#150;` to invisible C1 controls instead of the browser's `€` and `–` ([#15621](https://github.com/can1357/oh-my-pi/pull/15621))
+
+## [18.11.0] - 2026-10-14
+
+### Fixed
+
+- Fixed macOS `setValue` on native text fields in background apps such as Contacts, Reminders, Calendar, Font Book and System Settings returning success for text the app showed but never stored: it now enters the text the way `win.type` does, and a mismatch names what the field reads ([#15293](https://github.com/can1357/oh-my-pi/pull/15293) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed a macOS desktop session keeping the display awake for the rest of the process after a native request hung; the request's timeout or `close()` now releases it ([#15414](https://github.com/can1357/oh-my-pi/pull/15414) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed the macOS `computer` tool sometimes reading an empty page on its first read of a Chrome window, and leaving Electron apps it read in screen-reader mode until they quit ([#15604](https://github.com/can1357/oh-my-pi/pull/15604) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed macOS `press()` on a scrolled-out row in a Mac Catalyst app reporting success while nothing happened: the element is asked to scroll into view first ([#15607](https://github.com/can1357/oh-my-pi/pull/15607) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed shell builtins on Windows resolving drive-relative paths (`C:`, `C:name`) against the agent process's start directory instead of the shell's working directory, which let `cd /c/Temp/x && rm -rf C:` delete the start directory; `rm` now also refuses a bare drive operand like `.` ([#15511](https://github.com/can1357/oh-my-pi/issues/15511))
+- Fixed `renderMermaidAscii` printing character references in labels verbatim: HTML entities (`&lt;`, `&amp;`, `&#60;`, `&#x3C;`) and Mermaid entity codes (`#quot;`, `#60;`) now render as the characters they name ([#15619](https://github.com/can1357/oh-my-pi/issues/15619))
+- Fixed `read` and `while read` hanging on process-substitution input ([#15501](https://github.com/can1357/oh-my-pi/issues/15501))
+- Fixed standalone binaries extracting unused native addon variants on first launch ([#15462](https://github.com/can1357/oh-my-pi/issues/15462))
+- Fixed Git diffs failing when staged or committed changes update a submodule pin ([#15457](https://github.com/can1357/oh-my-pi/issues/15457))
+
+## [18.10.4] - 2026-10-13
+
+### Fixed
+
+- Fixed `pwsh` code blocks rendering without PowerShell syntax colors ([#15008](https://github.com/can1357/oh-my-pi/issues/15008)).
+
+## [18.10.2] - 2026-10-12
+
+### Added
+
+- Added in-process `env`, `du`, `chmod`, `fold`, `rmdir`, `od`, `df`, `uptime`, `id`, and `dd` shell builtins matching GNU coreutils 9.x options, output, and exit codes (`chmod` and `id` on Unix only; `dd` is disabled with the destructive set by `PI_DISABLE_UUTILS_DESTRUCTIVE`).
+- Added an in-process `nl` shell builtin (ported from uutils coreutils 0.8.0, matching GNU `nl`), with header/body/footer numbering styles including `pBRE` regex styles, logical-page section delimiters, `-l` blank-line grouping, and `ln`/`rn`/`rz` number formats.
+
+## [18.10.0] - 2026-10-12
+
+### Added
+
+- Added `IpcServer`, `IpcConnection`, and `ipcEndpoint`: a local IPC transport over Unix sockets and Windows named pipes with owner-only access, single-instance binding, stale-endpoint takeover, and newline framing.
+
+### Changed
+
+- Optimized transport performance with task-local write coalescing and batch-based newline processing
+
 ## [18.9.2] - 2026-10-11
 
 ### Fixed

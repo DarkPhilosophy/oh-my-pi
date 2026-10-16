@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import * as os from "node:os";
 import * as path from "node:path";
 import * as zlib from "node:zlib";
+import { decodePng } from "@oh-my-pi/pi-coding-agent/tools/browser/screenshot";
 import {
 	formatDimensionNote,
 	formatScreenshot,
@@ -9,6 +10,7 @@ import {
 	resizeImage,
 	type ScreenshotArea,
 } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
+import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 
 describe("formatScreenshot", () => {
 	function fakeResized(
@@ -417,6 +419,51 @@ describe("resizeImage minimum dimension", () => {
 		expect(meta.height).toBe(139);
 		expect(formatDimensionNote(result)).toContain("Multiply coordinates by 0.44");
 	});
+});
+
+describe("resizeImage translucency", () => {
+	// A white disk with an antialiased rim on transparent black, the way icons store it.
+	function whiteDiskPng(side: number): Uint8Array {
+		const pixels = new Uint8Array(side * side * 4);
+		const center = side / 2;
+		for (let y = 0; y < side; y++) {
+			for (let x = 0; x < side; x++) {
+				const coverage = Math.min(
+					1,
+					Math.max(0, center - 4 - Math.hypot(x + 0.5 - center, y + 0.5 - center) + 0.5),
+				);
+				if (coverage > 0) pixels.set([255, 255, 255, Math.round(coverage * 255)], (y * side + x) * 4);
+			}
+		}
+		return encodeRawPng(pixels, side, side, 4);
+	}
+
+	// JPEG would show the transparent black; resampling straight alpha would gray the rim.
+	// Both the first candidate and the ladders (an impossible budget) keep the disk white.
+	for (const excludeWebP of [false, true]) {
+		for (const maxBytes of [500 * 1024, 1]) {
+			it(`keeps a small icon's alpha without dark rims (excludeWebP: ${excludeWebP}, maxBytes: ${maxBytes})`, async () => {
+				const result = await resizeImage(
+					{ bytes: whiteDiskPng(64), mimeType: "image/png" },
+					{ excludeWebP, maxBytes },
+				);
+
+				expect(result.wasResized).toBe(true);
+				expect(result.mimeType).not.toBe("image/jpeg");
+				if (excludeWebP) expect(result.mimeType).toBe("image/png");
+				const { width, height, pixels } = decodePng(await new Bun.Image(result.buffer).png().bytes());
+				expect([width, height]).toEqual([result.width, result.height]);
+				expect(pixels[3]).toBe(0);
+				expect(pixels[((height >> 1) * width + (width >> 1)) * 4 + 3]).toBe(255);
+				let darkest = 255;
+				for (let i = 0; i < pixels.length; i += 4) {
+					if (pixels[i + 3] >= 32) darkest = Math.min(darkest, pixels[i], pixels[i + 1], pixels[i + 2]);
+				}
+				// Lossy WebP shifts colors a little; a rim bleeding black would be far darker.
+				expect(darkest).toBeGreaterThan(230);
+			});
+		}
+	}
 });
 
 describe("resizeImage env wiring", () => {

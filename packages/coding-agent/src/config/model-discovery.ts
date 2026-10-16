@@ -247,6 +247,12 @@ function toPositiveNumberOrUndefined(value: unknown): number | undefined {
 	return undefined;
 }
 
+/** Positive safe-integer token count from a discovery payload field, else undefined. */
+function toTokenLimitOrUndefined(value: unknown): number | undefined {
+	const parsed = toPositiveNumberOrUndefined(value);
+	return parsed !== undefined && Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
 function isLlamaCppUnlimitedSentinel(value: unknown): boolean {
 	if (typeof value === "number") {
 		return value === -1;
@@ -902,7 +908,10 @@ export async function discoverOpenAIModelsList(
 						id?: string;
 						max_model_len?: unknown;
 						context_length?: unknown;
+						max_output_tokens?: unknown;
+						max_completion_tokens?: unknown;
 						limits?: unknown;
+						top_provider?: unknown;
 						input?: unknown;
 						input_modalities?: unknown;
 						output?: unknown;
@@ -943,18 +952,25 @@ export async function discoverOpenAIModelsList(
 			extractOpenAIModelsListInputCapabilities(item) ??
 			reference?.input ?? ["text"];
 		const limits = isRecord(item.limits) ? item.limits : undefined;
-		const maxInputTokens = toPositiveNumberOrUndefined(limits?.max_input_tokens);
-		const maxOutputTokens = toPositiveNumberOrUndefined(limits?.max_output_tokens);
+		const maxInputTokens = toTokenLimitOrUndefined(limits?.max_input_tokens);
+		const maxOutputTokens = toTokenLimitOrUndefined(limits?.max_output_tokens);
 		const reportedLimitsContextWindow =
 			maxInputTokens !== undefined &&
 			maxOutputTokens !== undefined &&
-			Number.isSafeInteger(maxInputTokens) &&
-			Number.isSafeInteger(maxOutputTokens) &&
 			Number.isSafeInteger(maxInputTokens + maxOutputTokens)
 				? maxInputTokens + maxOutputTokens
 				: undefined;
+		// Gateways spell the output cap nested (`limits.max_output_tokens`),
+		// flat (`max_output_tokens`, OpenRouter-style `max_completion_tokens`),
+		// or under OpenRouter's `top_provider.max_completion_tokens` (ModelRelay
+		// and other OpenRouter-shaped catalogs). Each spelling is validated on
+		// its own so a malformed one never masks a usable sibling.
+		const topProvider = isRecord(item.top_provider) ? item.top_provider : undefined;
 		const reportedMaxTokens =
-			maxOutputTokens !== undefined && Number.isSafeInteger(maxOutputTokens) ? maxOutputTokens : undefined;
+			maxOutputTokens ??
+			toTokenLimitOrUndefined(item.max_output_tokens) ??
+			toTokenLimitOrUndefined(item.max_completion_tokens) ??
+			toTokenLimitOrUndefined(topProvider?.max_completion_tokens);
 		const reportedContextWindow =
 			toPositiveNumberOrUndefined(item.max_model_len) ??
 			toPositiveNumberOrUndefined(item.context_length) ??

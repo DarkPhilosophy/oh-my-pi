@@ -186,6 +186,7 @@ new Mnemopi({
 - Subagents do not own separate Mnemopi retain loops; they alias the parent state when a parent Mnemopi state exists, and otherwise remain inert.
 - At primary backend startup, eligible working-memory rows are promoted across owned banks before the first write can TTL-trim them. Promotion failures are logged without disabling the backend.
 - Backend startup is best-effort. If database/model initialization fails, the session continues with Mnemopi inert and logs a warning; memory tools then report that the backend is not initialized.
+- Local embedding models load once per machine, not once per session: each (model, fastembed cache dir) pair is served by one detached `omp mnemopi embed <model>` server owning an IPC endpoint under `~/.omp/run/mnemopi/` (log beside it). The first omp process that needs it spawns it; others connect. Inference runs in the server's private `onnxruntime` child. The server exits after 15 minutes without a request, freeing the model's memory, and is replaced when an omp process of another version connects. A steady-state embed that takes longer than 2 minutes fails, and the server kills and respawns its inference child.
 
 ## Shutdown and durability
 
@@ -193,7 +194,7 @@ Normal interactive and print-mode exit uses a deliberately lighter path than `/m
 
 1. The primary state retains the current transcript with new fact extraction disabled.
 2. It flushes extractions that were already in flight, but does not run per-session sleep or full cross-session promotion.
-3. Only after that drain settles does it close the owned SQLite bank handles; the embedding worker shuts down after state disposal because the drain may still use it.
+3. Only after that drain settles does it close the owned SQLite bank handles; the process drops its embedding-server connection after state disposal because the drain may still embed. The server keeps running for other sessions (and finishes a model download already in flight) until it idles out.
 
 Aliased subagent states do not own or close the shared banks; the parent state owns final retention, flushing, and handle closure.
 

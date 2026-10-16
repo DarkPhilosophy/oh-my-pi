@@ -53,14 +53,14 @@ function installLocalModelInitializer(setInitializer: (initializer: LocalModelIn
 	setInitializer(({ model, cacheDir }) =>
 		mnemopiEmbedClient.initialize(model, cacheDir).then(handle => {
 			if (handle) return handle;
-			throw new Error("mnemopi embed subprocess unavailable");
+			throw new Error("mnemopi embedding server unavailable");
 		}),
 	);
 }
 
 /**
  * Lazily load `@oh-my-pi/pi-mnemopi` (memoized) and route fastembed loads
- * through the dedicated embeddings subprocess. The override is installed once
+ * through the machine-shared embedding server. The override is installed once
  * — before any consumer gets the chance to call `embed()` — so
  * `onnxruntime-node`'s NAPI constructor + finalizer never run inside the
  * agent's address space (issue #3031). Test seams that swap the initializer
@@ -678,10 +678,10 @@ export class MnemopiSessionState {
 		const flat = withLoopPhase("mnemopi.recall", () => flattenAgentMessages(messages));
 		const lastUser = flat.findLast(message => message.role === "user");
 		if (!lastUser) return undefined;
-		const query = withLoopPhase("mnemopi.recall", () =>
-			composeRecallQuery(lastUser.content, flat, this.config.recallContextTurns),
-		);
-		const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
+		const truncated = withLoopPhase("mnemopi.recall", () => {
+			const query = composeRecallQuery(lastUser.content, flat, this.config.recallContextTurns);
+			return truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
+		});
 		return await this.recallForContext(truncated);
 	}
 
@@ -811,10 +811,10 @@ export class MnemopiSessionState {
 			const messages = withLoopPhase("mnemopi.recall", () => extractMessages(this.session.sessionManager));
 			const lastUser = messages.findLast(message => message.role === "user");
 			if (!lastUser) return;
-			const query = withLoopPhase("mnemopi.recall", () =>
-				composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns),
-			);
-			const truncated = truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
+			const truncated = withLoopPhase("mnemopi.recall", () => {
+				const query = composeRecallQuery(lastUser.content, messages, this.config.recallContextTurns);
+				return truncateRecallQuery(query, lastUser.content, this.config.recallMaxQueryChars);
+			});
 			try {
 				const recall = await this.#recallBlock(truncated);
 				record = recall && this.#deliveredRecall(recall, block => this.budgetRecallBlock(block));

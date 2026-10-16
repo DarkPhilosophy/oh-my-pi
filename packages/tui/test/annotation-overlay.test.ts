@@ -10,6 +10,7 @@ import type {
 	TextReviewOverlayResult,
 	TextReviewSource,
 } from "@oh-my-pi/pi-tui/overlays/annotation-types";
+import type { NativeUiEvent } from "../src/native/node";
 import { sliceByColumn, visibleWidth } from "../src/utils";
 
 const ENTER = "\r";
@@ -108,6 +109,11 @@ function makeTextOverlay(
 	return overlay;
 }
 
+/** A click on the native sheet's footer button `act`. */
+function click(act: string): NativeUiEvent {
+	return { type: "action", key: `actions/${act}`, act, mods: [] };
+}
+
 function makeTui(rows = 40): TUI {
 	return {
 		terminal: { rows },
@@ -157,6 +163,60 @@ describe("AnnotationOverlay", () => {
 
 	afterEach(() => {
 		setKeybindings(previousKeybindings);
+	});
+
+	describe("native sheet", () => {
+		it("titles the sheet by the review and routes its footer buttons like the keys", () => {
+			let result: CodeReviewOverlayResult | undefined;
+			const overlay = makeDiffOverlay(oneLineFiles, { onComplete: value => (result = value) });
+			expect(overlay.nativeOverlay).toMatchObject({ role: "omp.overlay.codeReview", size: "full" });
+
+			overlay.describe();
+			// Paste needs a note first; a draft blocks both actions.
+			overlay.handleNativeEvent(click("paste"));
+			expect(result).toBeUndefined();
+			overlay.handleInput(TAB);
+			overlay.handleInput("a");
+			for (const glyph of "rename this") overlay.handleInput(glyph);
+			overlay.handleNativeEvent(click("paste"));
+			expect(result).toBeUndefined();
+			overlay.handleInput(ENTER);
+
+			overlay.handleNativeEvent(click("paste"));
+			expect(result).toEqual({
+				action: "paste",
+				annotations: [expect.objectContaining({ scope: "line", note: "rename this" })],
+			});
+		});
+
+		it("opens a line's note on double-click and closes the draft before the review", () => {
+			let completed = false;
+			const overlay = makeDiffOverlay(oneLineFiles, { onComplete: () => (completed = true) });
+			overlay.describe();
+			overlay.handleNativeEvent({ type: "activate", key: "split/pane/lines", item: "l1" });
+			for (const glyph of "why") overlay.handleInput(glyph);
+			overlay.handleNativeEvent(click("close"));
+			expect(completed).toBe(false);
+			expect(overlay.getAnnotations()).toEqual([]);
+			overlay.handleNativeEvent(click("close"));
+			expect(completed).toBe(true);
+		});
+
+		it("annotates text as a full sheet with only the paste action", () => {
+			let result: TextReviewOverlayResult | undefined;
+			const overlay = makeTextOverlay({ id: "t", kind: "message", label: "Reply", text: "one\ntwo" }, value => {
+				result = value;
+			});
+			expect(overlay.nativeOverlay).toMatchObject({ role: "omp.overlay.annotateText", size: "full" });
+			overlay.describe();
+			overlay.handleNativeEvent(click("review"));
+			expect(result).toBeUndefined();
+			overlay.handleInput("A");
+			for (const glyph of "tighten") overlay.handleInput(glyph);
+			overlay.handleInput(ENTER);
+			overlay.handleNativeEvent(click("paste"));
+			expect(result).toEqual({ action: "paste", annotations: [{ scope: "text", note: "tighten" }] });
+		});
 	});
 
 	it("anchors a line note to the frozen source row and deletes it on an empty edit", () => {

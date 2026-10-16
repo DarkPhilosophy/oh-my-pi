@@ -54,6 +54,7 @@ describe("startup timing after a headless runner starts", () => {
 			getLastAssistantMessage: () => undefined,
 			disableStopTimeTodoReminders: () => {},
 			prepareForHeadlessAdvisorDrain: () => {},
+			waitForIdle: async () => {},
 			setTextOutputCommitted: () => {},
 			waitForAdvisorCatchup: async () => true,
 			prompt: async () => {

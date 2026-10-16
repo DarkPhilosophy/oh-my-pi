@@ -3571,6 +3571,108 @@ describe("AgentSession retry fallback", () => {
 		expect(getLastAssistantMessage(session).stopReason).toBe("error");
 	});
 
+	describe("when a fallback candidate's provider is outside the session's account pool", () => {
+		// A session restricted to an OAuth account pool (`task.agentAccountPools`) gets a
+		// MissingApiKeyError, not `undefined`, for any provider whose pooled accounts are
+		// all unavailable. The fallback walk must treat that candidate as unavailable.
+		function blockProvider(provider: string): void {
+			const originalGetApiKey = modelRegistry.getApiKey.bind(modelRegistry);
+			vi.spyOn(modelRegistry, "getApiKey").mockImplementation((model, sessionId, options) => {
+				if (model.provider === provider) {
+					return Promise.reject(
+						new AIError.MissingApiKeyError(
+							provider,
+							`No API key for provider: ${provider} (session ${sessionId} is restricted to its OAuth account pool and none of those accounts is available)`,
+						),
+					);
+				}
+				return originalGetApiKey(model, sessionId, options);
+			});
+		}
+
+		it("skips the blocked candidate and switches to the next one in the chain", async () => {
+			const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			const blockedModel = getBundledModel("openai-codex", "gpt-5.6-sol");
+			const nextModel = getBundledModel("openai", "gpt-4o-mini");
+			if (!primaryModel || !blockedModel || !nextModel) throw new Error("Expected bundled test models to exist");
+			blockProvider(blockedModel.provider);
+
+			const mock = createMockModel();
+			const requestedModels: string[] = [];
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					if (model.provider === primaryModel.provider) {
+						mock.push({ throw: "overloaded_error: provider returned error 503" });
+					} else {
+						mock.push({ content: [`ok:${model.provider}/${model.id}`] });
+					}
+					return mock.stream(model, context, options);
+				},
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 5,
+				"retry.fallbackChains": {
+					default: [`${blockedModel.provider}/${blockedModel.id}`, `${nextModel.provider}/${nextModel.id}`],
+				},
+			});
+			settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+			session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+			const { retryEndEvents } = trackRetryEvents(session);
+
+			await session.prompt("Recover past a pool-blocked fallback");
+			await session.waitForIdle();
+
+			expect(requestedModels).toEqual([
+				`${primaryModel.provider}/${primaryModel.id}`,
+				`${nextModel.provider}/${nextModel.id}`,
+			]);
+			expect(retryEndEvents).toEqual([expect.objectContaining({ success: true })]);
+			expect(getLastAssistantMessage(session).stopReason).toBe("stop");
+		});
+
+		it("ends the retry as a failure when the blocked candidate is the only one left", async () => {
+			const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			const blockedModel = getBundledModel("openai-codex", "gpt-5.6-sol");
+			if (!primaryModel || !blockedModel) throw new Error("Expected bundled test models to exist");
+			blockProvider(blockedModel.provider);
+
+			const mock = createMockModel();
+			const requestedModels: string[] = [];
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					mock.push({ throw: "overloaded_error: provider returned error 503" });
+					return mock.stream(model, context, options);
+				},
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 5,
+				"retry.maxRetries": 1,
+				"retry.fallbackChains": { default: [`${blockedModel.provider}/${blockedModel.id}`] },
+			});
+			settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+			session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+			const { retryEndEvents } = trackRetryEvents(session);
+
+			await session.prompt("Fail with only a pool-blocked fallback");
+			await session.waitForIdle();
+
+			const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+			expect(requestedModels).toEqual([primarySelector, primarySelector]);
+			expect(retryEndEvents).toEqual([expect.objectContaining({ success: false, attempt: 1 })]);
+			const last = getLastAssistantMessage(session);
+			expect(last.stopReason).toBe("error");
+			expect(last.errorMessage).toStartWith("Retry budget exhausted after 1 retry:");
+		});
+	});
+
 	it("substitutes the failing model id into provider-wildcard chain entries", async () => {
 		const primaryModel = getBundledModel("google", "gemini-3.5-flash");
 		const fallbackModel = getBundledModel("google-vertex", "gemini-3.5-flash");
@@ -3900,125 +4002,143 @@ describe("AgentSession retry fallback", () => {
 		]);
 	});
 
-	it("transfers Anthropic fallback credit redemption across same-provider refusal fallback even with signed thinking", async () => {
-		// Fable → Opus 4.8 is a catalog-permitted fallback-credit target pair.
-		const primaryModel = getBundledModel("anthropic", "claude-fable-5");
-		const fallbackModel = getBundledModel("anthropic", "claude-opus-4-8");
-		if (!primaryModel || !fallbackModel) {
-			throw new Error("Expected bundled test models to exist");
-		}
-
-		const requestedModels: string[] = [];
-		const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
-		const mock = createMockModel({ provider: "anthropic", id: primaryModel.id });
-		const refusalDetails = {
-			type: "refusal",
-			category: "cyber",
-			explanation: "Classifier declined this turn.",
-			fallback_credit_token: "fct_signed_test",
-			fallback_has_prefill_claim: true,
-		};
-		let requestCount = 0;
-		let fallbackTurnRedemption: AnthropicFallbackCreditHandle | undefined;
-		const agent = new Agent({
-			getApiKey: model => `${model.provider}-test-key`,
-			initialState: {
-				model: primaryModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-			streamFn: (model, context, options) => {
-				requestCount++;
-				requestedModels.push(`${model.provider}/${model.id}`);
-				if (requestCount === 1) {
-					mock.push({
-						content: [
-							{ type: "thinking", thinking: "Signed Sonnet reasoning.", thinkingSignature: "sonnet-signature" },
-							"Seeded turn",
-						],
-					});
-				} else if (requestCount === 2) {
-					mock.push({
-						content: [
-							{
-								type: "thinking",
-								thinking: "Fable thinking before refusal.",
-								thinkingSignature: "sig_fable_opaque_signature_12345",
-							},
-						],
-						stopReason: "error",
-						stopDetails: refusalDetails,
-						errorMessage: "Refusal (cyber): Classifier declined this turn.",
-						fallbackCreditHandle: {
-							token: "fct_signed_test",
-							prefillClaim: true,
-							params: { model: primaryModel.id, messages: [{ role: "user", content: "Test prompt" }] },
-							betas: ["fallback-credit-2026-06-01"],
-							expiresAt: Date.now() + 60000,
-						},
-					});
-				} else if (requestCount === 3) {
-					fallbackTurnRedemption = session?.consumeActiveFallbackCreditRedemption(model);
-					mock.push({ content: ["Recovered on Opus with credit"] });
-				} else {
-					throw new Error(
-						`Unexpected model requested during refusal fallback test: ${model.provider}/${model.id}`,
-					);
-				}
-				return mock.stream(model, context, options);
-			},
-		});
-
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"retry.baseDelayMs": 5,
-			"retry.maxRetries": 1,
-			"retry.fallbackChains": {
-				default: [`${fallbackModel.provider}/${fallbackModel.id}`],
-			},
-			"retry.fallbackRevertPolicy": "cooldown-expiry",
-		});
-		settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-		session.subscribe(event => {
-			if (event.type === "retry_fallback_applied") {
-				fallbackAppliedEvents.push(event);
+	it.each([{ swapRebuildsPrompt: false }, { swapRebuildsPrompt: true }])(
+		"redeems Anthropic fallback credit across a same-provider refusal fallback with signed thinking unless the swap rebuilt the prompt (%o)",
+		async ({ swapRebuildsPrompt }) => {
+			// Fable → Opus 4.8 is a catalog-permitted fallback-credit target pair.
+			const primaryModel = getBundledModel("anthropic", "claude-fable-5");
+			const fallbackModel = getBundledModel("anthropic", "claude-opus-4-8");
+			if (!primaryModel || !fallbackModel) {
+				throw new Error("Expected bundled test models to exist");
 			}
-		});
 
-		await session.prompt("Seed signed thinking");
-		await session.waitForIdle();
-		const seededAssistant = agent.state.messages.findLast(
-			(message): message is AssistantMessage => message.role === "assistant",
-		);
-		if (!seededAssistant) throw new Error("Expected seeded assistant message");
-		seededAssistant.api = primaryModel.api;
-		seededAssistant.provider = primaryModel.provider;
-		seededAssistant.model = primaryModel.id;
+			const requestedModels: string[] = [];
+			const fallbackAppliedEvents: Array<Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>> = [];
+			const mock = createMockModel({ provider: "anthropic", id: primaryModel.id });
+			const refusalDetails = {
+				type: "refusal",
+				category: "cyber",
+				explanation: "Classifier declined this turn.",
+				fallback_credit_token: "fct_signed_test",
+				fallback_has_prefill_claim: true,
+			};
+			let requestCount = 0;
+			let fallbackTurnRedemption: AnthropicFallbackCreditHandle | undefined;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					requestCount++;
+					requestedModels.push(`${model.provider}/${model.id}`);
+					if (requestCount === 1) {
+						mock.push({
+							content: [
+								{
+									type: "thinking",
+									thinking: "Signed Sonnet reasoning.",
+									thinkingSignature: "sonnet-signature",
+								},
+								"Seeded turn",
+							],
+						});
+					} else if (requestCount === 2) {
+						mock.push({
+							content: [
+								{
+									type: "thinking",
+									thinking: "Fable thinking before refusal.",
+									thinkingSignature: "sig_fable_opaque_signature_12345",
+								},
+							],
+							stopReason: "error",
+							stopDetails: refusalDetails,
+							errorMessage: "Refusal (cyber): Classifier declined this turn.",
+							fallbackCreditHandle: {
+								token: "fct_signed_test",
+								prefillClaim: true,
+								params: {
+									model: primaryModel.id,
+									messages: [{ role: "user", content: "Test prompt" }],
+									max_tokens: 1024,
+									stream: true,
+								},
+								betas: ["fallback-credit-2026-06-01"],
+								expiresAt: Date.now() + 60000,
+							},
+						});
+					} else if (requestCount === 3) {
+						fallbackTurnRedemption = session?.consumeActiveFallbackCreditRedemption(model);
+						mock.push({ content: ["Recovered on Opus with credit"] });
+					} else {
+						throw new Error(
+							`Unexpected model requested during refusal fallback test: ${model.provider}/${model.id}`,
+						);
+					}
+					return mock.stream(model, context, options);
+				},
+			});
 
-		await session.prompt("Recover from classifier refusal with signed thinking");
-		await session.waitForIdle();
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 5,
+				"retry.maxRetries": 1,
+				"retry.fallbackChains": {
+					default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+				},
+				"retry.fallbackRevertPolicy": "cooldown-expiry",
+			});
+			settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
 
-		expect(requestedModels).toEqual([
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-		]);
-		expect(fallbackAppliedEvents).toHaveLength(1);
-		expect(fallbackAppliedEvents[0].to).toBe(`${fallbackModel.provider}/${fallbackModel.id}`);
-		expect(session.model?.id).toBe(fallbackModel.id);
-		expect(fallbackTurnRedemption).toBeDefined();
-		expect(fallbackTurnRedemption?.token).toBe("fct_signed_test");
-		expect(session.consumeActiveFallbackCreditRedemption(fallbackModel)).toBeUndefined();
-		expect(session.consumeActiveFallbackCreditRedemption()).toBeUndefined();
-	});
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+			});
+			session.subscribe(event => {
+				if (event.type === "retry_fallback_applied") {
+					fallbackAppliedEvents.push(event);
+					// The frozen body carries the refused request's system prompt; a swap that
+					// rebuilt it must not replay the stale body.
+					if (swapRebuildsPrompt) agent.setSystemPrompt(["Rebuilt for the fallback model"]);
+				}
+			});
+
+			await session.prompt("Seed signed thinking");
+			await session.waitForIdle();
+			const seededAssistant = agent.state.messages.findLast(
+				(message): message is AssistantMessage => message.role === "assistant",
+			);
+			if (!seededAssistant) throw new Error("Expected seeded assistant message");
+			seededAssistant.api = primaryModel.api;
+			seededAssistant.provider = primaryModel.provider;
+			seededAssistant.model = primaryModel.id;
+
+			await session.prompt("Recover from classifier refusal with signed thinking");
+			await session.waitForIdle();
+
+			expect(requestedModels).toEqual([
+				`${primaryModel.provider}/${primaryModel.id}`,
+				`${primaryModel.provider}/${primaryModel.id}`,
+				`${fallbackModel.provider}/${fallbackModel.id}`,
+			]);
+			expect(fallbackAppliedEvents).toHaveLength(1);
+			expect(fallbackAppliedEvents[0].to).toBe(`${fallbackModel.provider}/${fallbackModel.id}`);
+			expect(session.model?.id).toBe(fallbackModel.id);
+			if (swapRebuildsPrompt) {
+				expect(fallbackTurnRedemption).toBeUndefined();
+			} else {
+				expect(fallbackTurnRedemption?.token).toBe("fct_signed_test");
+			}
+			expect(session.consumeActiveFallbackCreditRedemption(fallbackModel)).toBeUndefined();
+			expect(session.consumeActiveFallbackCreditRedemption()).toBeUndefined();
+		},
+	);
 
 	it("drops classifier refusal messages before later prompts", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");

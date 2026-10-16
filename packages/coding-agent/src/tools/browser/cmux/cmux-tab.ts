@@ -1458,14 +1458,16 @@ export class CmuxTab implements InProcessRunTab {
 		throw new ToolError("tab.recording() is not supported on the cmux backend");
 	}
 
-	async text(selector: string): Promise<string | null> {
+	/** Without a selector, reads the page `<body>`. */
+	async text(selector = "body"): Promise<string | null> {
 		return await this.queryElement<string>(
 			selector,
-			`element => (element.innerText || element.textContent || "").trim()`,
+			`element => (typeof element.innerText === "string" ? element.innerText : element.textContent || "").trim()`,
 		);
 	}
 
-	async html(selector: string): Promise<string | null> {
+	/** Without a selector, reads the page `<body>`. */
+	async html(selector = "body"): Promise<string | null> {
 		return await this.queryElement<string>(selector, "element => element.innerHTML");
 	}
 

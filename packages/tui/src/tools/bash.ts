@@ -74,6 +74,8 @@ export interface BashToolDetails {
 	requestedTimeoutSeconds?: number;
 	timeoutDisabled?: boolean;
 	wallTimeMs?: number;
+	/** False when no wall-time footer was emitted; absent on older results. */
+	wallTimeNoticeEmitted?: boolean;
 	/** Exit code of a command that ran to completion but failed (non-zero). */
 	exitCode?: number;
 	/** True when the command was killed by its timeout deadline (not a failure). */
@@ -87,8 +89,9 @@ export interface BashToolDetails {
 		timedOut: boolean;
 		pid?: number;
 	};
+	/** Background job behind the call; `cancelled`: killed (`proc://<id>/kill`) before it finished. */
 	async?: {
-		state: "running" | "completed" | "failed";
+		state: "running" | "completed" | "failed" | "cancelled";
 		jobId: string;
 		type: "bash";
 	};
@@ -220,6 +223,9 @@ function formatWallTimeSeconds(wallTimeMs: number): string {
 	return (wallTimeMs / 1000).toFixed(2);
 }
 
+/** Minimum duration for a model-facing wall-time notice; shorter runs keep timing only in details. */
+export const WALL_TIME_NOTICE_MIN_MS = 1000;
+
 /** Formats the model-facing command duration notice. */
 export function formatWallTimeNotice(wallTimeMs: number): string {
 	return `Wall time: ${formatWallTimeSeconds(wallTimeMs)} seconds`;
@@ -336,7 +342,7 @@ function stripBashNotices(
 			? strippedOutput
 			: stripTrailingNotice(strippedOutput, formatExitCodeNotice(details.exitCode));
 	const withoutWall =
-		details?.wallTimeMs === undefined
+		details?.wallTimeMs === undefined || details.wallTimeNoticeEmitted === false
 			? withoutExit
 			: stripTrailingNotice(withoutExit, formatWallTimeNotice(details.wallTimeMs));
 	return stripRawOutputArtifactNotice(withoutWall);
@@ -444,9 +450,9 @@ function shellRunState(
 	cancelled: boolean,
 ): RunState {
 	if (cancelled) return "cancelled";
+	if (details?.async?.state === "running") return "background";
 	if (isPartial) return "running";
 	if (details?.timedOut === true) return "timed-out";
-	if (details?.async?.state === "running") return "background";
 	if (isError || (details?.exitCode !== undefined && details.exitCode !== 0)) return "failed";
 	return "done";
 }
@@ -522,8 +528,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const renderArgs = toBashRenderArgs(args, config);
 			let cmdLines: string[] | undefined;
 			const isError = result.isError === true;
-			const isPartial = options.isPartial === true;
-			const success = !isPartial && !isError;
 			const details = result.details;
 			const isTimeout = details?.timedOut === true;
 			// Same head as `renderCall` in every state: the status lives on the Output separator below,
@@ -745,13 +749,13 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			const command = formatBashCommandText(toBashRenderArgs(args, config));
 			const previewLines = renderContext?.previewLines ?? BASH_DEFAULT_PREVIEW_LINES;
 			const state = shellRunState(details, isError, isPartial, options.cancelled === true);
-			// Settled: the measured wall time wins. A background job outlives the call: its run time is unknown here.
-			const elapsedMs =
-				state === "background"
+			// Live (a running call, or a parked job still streaming): the call's clock. Settled: the
+			// measured wall time wins. A frozen background snapshot's run time is unknown here.
+			const elapsedMs = isPartial
+				? options.elapsedMs
+				: state === "background"
 					? undefined
-					: isPartial
-						? options.elapsedMs
-						: (details?.wallTimeMs ?? options.elapsedMs);
+					: (details?.wallTimeMs ?? options.elapsedMs);
 			const meta = details?.meta;
 			const box = runBox(
 				[

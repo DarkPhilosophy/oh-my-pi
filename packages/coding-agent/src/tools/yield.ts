@@ -498,7 +498,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			);
 		}
 
-		const status = errorMessage !== undefined ? "aborted" : "success";
+		const status = errorMessage !== undefined && workPoolItemId === undefined ? "aborted" : "success";
+		if (workPoolItemId !== undefined && errorMessage !== undefined) data = { error: errorMessage };
 		let schemaValidationOverridden = false;
 		let schemaValidationFailureCount = 0;
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
@@ -636,10 +637,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#emptyResultFailures = 0;
 		if (status === "success" && isIncremental) this.#hasIncrementalSections = true;
 		let workPoolComplete = false;
-		let completedWorkPoolItem: WorkPoolYieldItem | undefined;
+		let submittedWorkPoolItem: WorkPoolYieldItem | undefined;
 		let remainingWorkPoolItems: readonly WorkPoolYieldItem[] = [];
-		if (status === "success" && workPoolItemId !== undefined) {
-			completedWorkPoolItem = workPoolItems.find(item => item.id === workPoolItemId);
+		if (workPoolItemId !== undefined) {
+			submittedWorkPoolItem = workPoolItems.find(item => item.id === workPoolItemId);
 			this.#submittedWorkPoolItems.add(workPoolItemId);
 			remainingWorkPoolItems = workPoolItems.filter(item => !this.#submittedWorkPoolItems.has(item.id));
 			workPoolComplete = remainingWorkPoolItems.length === 0;
@@ -647,10 +648,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		const responseText =
 			status === "aborted"
 				? `Task aborted: ${errorMessage}`
-				: completedWorkPoolItem !== undefined
+				: submittedWorkPoolItem !== undefined
 					? workPoolComplete
-						? `Item ${completedWorkPoolItem.index} submitted. All workpool items are complete; ending this turn.`
-						: `Item ${completedWorkPoolItem.index} submitted. Remaining item(s): ${remainingWorkPoolItems.map(item => item.index).join(", ")}.`
+						? `Item ${submittedWorkPoolItem.index} submitted. All workpool items are complete; ending this turn.`
+						: `Item ${submittedWorkPoolItem.index} submitted. Remaining item(s): ${remainingWorkPoolItems.map(item => item.index).join(", ")}.`
 					: schemaValidationOverridden
 						? `Result submitted (schema validation overridden after ${schemaValidationFailureCount} failed attempt(s)).`
 						: "Result submitted.";

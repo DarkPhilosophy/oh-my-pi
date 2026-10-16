@@ -7,12 +7,14 @@ import * as registry from "@oh-my-pi/pi-coding-agent/collab/registry";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as pluginHelpers from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { runRootCommand } from "@oh-my-pi/pi-coding-agent/main";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Composer, type ComposerPreferences } from "@oh-my-pi/pi-tui/prompt/composer";
+import * as composerCache from "@oh-my-pi/pi-tui/prompt/composer-cache";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import {
 	applyStartupComposerPreferences,
@@ -29,6 +31,7 @@ import { CombinedAutocompleteProvider, type Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./collab/helpers/in-memory-relay";
 import { assistantMsg, createTestSession } from "./utilities";
+import { cfgTierOpenai } from "@oh-my-pi/pi-coding-agent/session/settings";
 
 import {
 	cfgAutocompleteMaxVisible,
@@ -424,6 +427,54 @@ describe("Composer prepaint", () => {
 			} finally {
 				composer.stop();
 				message.dispose();
+			}
+		},
+	);
+
+	it.each([
+		{ configured: "priority", sessionFast: false, cachedFast: true },
+		{ configured: "none", sessionFast: true, cachedFast: false },
+	] as const)(
+		"prepaints fast mode from tier.openai=$configured, not a session-only /fast toggle",
+		async ({ configured, sessionFast, cachedFast }) => {
+			const testSession = await createTestSession();
+			const cache = composerCache.ComposerCache.open(path.join(testSession.tempDir, "composer.db"));
+			vi.spyOn(composerCache, "sharedComposerCache").mockReturnValue(cache);
+			const anthropic = testSession.session.model;
+			const openai = getBundledModel("openai", "gpt-5.2");
+			if (!anthropic || !openai) throw new Error("Bundled test models missing");
+			testSession.session.settings.setModelRole("default", `${openai.provider}/${openai.id}`);
+			vi.spyOn(testSession.session.modelRegistry, "hasConfiguredAuth").mockReturnValue(true);
+			vi.spyOn(testSession.session.modelRegistry, "getAvailable").mockReturnValue([openai, anthropic]);
+			cfgTierOpenai.set(testSession.session.settings, configured);
+			await testSession.session.setModel(openai);
+			testSession.session.setFastMode(sessionFast);
+			expect(testSession.session.isFastModeActive()).toBe(sessionFast);
+			const composer = new Composer({ terminal: new VirtualTerminal() });
+			composer.start();
+			const mode = new InteractiveMode(
+				testSession.session,
+				"test",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				composer,
+			);
+			vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
+			try {
+				await mode.init({ suppressWelcomeIntro: true });
+				await testSession.session.setModel(anthropic);
+				mode.stop();
+				const status = cache.read(testSession.sessionManager.getCwd()).status?.statusLine;
+				expect(status?.model?.id).toBe(openai.id);
+				expect(status?.fastMode).toBe(cachedFast);
+			} finally {
+				mode.stop();
+				cache.close();
+				await testSession.cleanup();
+				vi.restoreAllMocks();
 			}
 		},
 	);

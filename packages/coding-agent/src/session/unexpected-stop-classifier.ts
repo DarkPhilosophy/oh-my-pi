@@ -43,14 +43,8 @@ export function isUnexpectedStopCandidate(message: AssistantMessage): boolean {
 	if (message.stopReason !== "stop") return false;
 	let hasContent = false;
 	for (const content of message.content) {
-		if (content.type === "toolCall") return false;
-		// Delivered text only. A reasoning-only stop is the empty-stop path's
-		// subject whether or not its blocks are signed (`isDeliveredContent`), and
-		// that handler runs first and answers "continue"/"terminal" — while on
-		// "terminal" it FALLS THROUGH to this one. Claiming the same turn here
-		// would schedule a second recovery behind an already exhausted retry cap,
-		// so the two detectors must partition on one predicate instead of each
-		// approximating the other's.
+		if (content.type === "toolCall" || content.type === "image") return false;
+		// Signed and unsigned reasoning-only turns belong to the bounded empty-stop path.
 		if (content.type === "text" && /\S/.test(content.text)) {
 			hasContent = true;
 		}

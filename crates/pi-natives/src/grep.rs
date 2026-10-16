@@ -113,7 +113,8 @@ pub struct GrepOptions<'env> {
 	pub pattern:            String,
 	/// Directory or file to search: a host path or an absolute `scheme://` URL.
 	pub path:               String,
-	/// Glob filter for filenames (e.g., "*.ts").
+	/// Glob filter for file paths (e.g., "*.ts"); a matched directory selects
+	/// every file under it.
 	pub glob:               Option<String>,
 	/// Match simple glob patterns at any depth (default: true; `*.ts` ->
 	/// `**/*.ts`). Set false when `glob` is already relative to `path`.
@@ -505,12 +506,13 @@ fn first_match_in_line<M: Matcher>(
 ) -> Option<(usize, usize)> {
 	let buffer = mat.buffer();
 	let range = mat.bytes_range_in_buffer();
+	let terminator = searcher.line_terminator();
+	let terminated = terminator.is_suffix(&buffer[range.clone()]);
 	let end = if searcher.multi_line_with_matcher(matcher) {
 		buffer.len()
 	} else {
 		let mut end = range.end;
-		let terminator = searcher.line_terminator();
-		if terminator.is_suffix(&buffer[range.clone()]) {
+		if terminated {
 			end -= 1;
 			if terminator.is_crlf() && end > range.start && buffer[end - 1] == b'\r' {
 				end -= 1;
@@ -522,14 +524,17 @@ fn first_match_in_line<M: Matcher>(
 		.find_at(&buffer[..end], range.start)
 		.ok()
 		.flatten()?;
-	if found.start() >= range.end {
+	// A match at `range.end` begins on the next line, except an empty one
+	// (`$`, `\z`) after an unterminated last line.
+	if found.start() > range.end || (found.start() == range.end && terminated) {
 		return None;
 	}
 	let block = mat.bytes();
 	let (start, stop) = (found.start() - range.start, found.end().min(range.end) - range.start);
 	// `line` is `block` decoded and trimmed: offsets carry over unless lossy
 	// decoding replaced invalid bytes, which changes the byte lengths before
-	// them.
+	// them. An offset in the trimmed trailing whitespace maps to the end of
+	// `line`, the last column it shows.
 	let lossy = std::str::from_utf8(block).is_err();
 	let to_line = |offset: usize| -> usize {
 		let offset = if lossy {
@@ -1314,8 +1319,9 @@ fn build_grep_walk_request(
 ) -> Result<pi_walker::WalkRequest> {
 	let mut filter = pi_walker::WalkFilter::files_only();
 	if let Some(pattern) = glob {
-		let compiled = pi_walker::CompiledWalkGlob::new([pattern])
-			.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
+		let compiled =
+			pi_walker::CompiledWalkGlob::new(glob_util::search_scope_patterns(pattern.to_owned()))
+				.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
 		filter = filter.glob(compiled);
 	}
 
@@ -2978,6 +2984,19 @@ mod tests {
 		assert_eq!(found.column, Some(14_002));
 	}
 
+	#[test]
+	fn long_line_window_shows_an_empty_match_at_the_end_of_input() {
+		let line = "a".repeat(5_000);
+		for (pattern, multiline) in
+			[("$", false), (r"\z", false), ("x|$", false), ("$", true), (r"\z", true)]
+		{
+			let found = search_long_line(pattern, &line, multiline);
+			assert_eq!(found.column, Some(5_001), "{pattern} multiline={multiline}");
+			assert!(found.line.starts_with("...a"), "{pattern}: {}", found.line);
+			assert!(found.line.ends_with('a'), "{pattern}: {}", found.line);
+		}
+	}
+
 	#[cfg(unix)]
 	#[test]
 	fn streaming_grep_delivers_bounded_batches_and_returns_only_counts() {
@@ -3336,6 +3355,35 @@ mod tests {
 		let mut paths: Vec<&str> = result.matches.iter().map(|m| m.path.as_str()).collect();
 		paths.sort_unstable();
 		assert_eq!(paths, ["svc/y.go", "x.go"]);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn grep_glob_naming_directories_searches_their_files() {
+		let root = TempDirGuard::new();
+		write_file(&root.path().join("backend/auth/a.ts"), "needle auth\n");
+		write_file(&root.path().join("frontend/src/main.tsx"), "needle main\n");
+		write_file(&root.path().join("frontend/src/deep/x.tsx"), "needle deep\n");
+		write_file(&root.path().join("other/z.ts"), "needle other\n");
+
+		for (glob, expected) in [
+			(
+				"{backend/auth,frontend/src}",
+				&["backend/auth/a.ts", "frontend/src/deep/x.tsx", "frontend/src/main.tsx"][..],
+			),
+			("frontend/sr?", &["frontend/src/deep/x.tsx", "frontend/src/main.tsx"][..]),
+			("frontend/sr**", &["frontend/src/deep/x.tsx", "frontend/src/main.tsx"][..]),
+			("frontend/src/{main.tsx,App.tsx}", &["frontend/src/main.tsx"][..]),
+		] {
+			let mut config = base_grep_config(root.path());
+			config.glob = Some(glob.to_string());
+			config.recursive = Some(false);
+			let result = grep_sync(config, None, task::CancelToken::default())
+				.expect("directory glob grep should succeed");
+			let mut paths: Vec<&str> = result.matches.iter().map(|m| m.path.as_str()).collect();
+			paths.sort_unstable();
+			assert_eq!(paths, expected, "glob {glob}");
+		}
 	}
 
 	#[cfg(unix)]

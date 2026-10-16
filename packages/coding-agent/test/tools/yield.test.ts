@@ -82,6 +82,57 @@ describe("YieldTool", () => {
 		expect(next.details).toMatchObject({ type: ["next#1"], complete: true });
 	});
 
+	it("keeps a failed workpool item in the batch output and accepts its independent sibling", async () => {
+		const items = [
+			{ id: "review#1", index: 1 },
+			{ id: "review#2", index: 2 },
+		];
+		const tool = new YieldTool(createSession({ getWorkPoolYieldItems: () => items }));
+		const failed = await tool.execute("pool-failed", { key: 1, error: "review unavailable" });
+		expect(failed.details).toMatchObject({
+			status: "success",
+			error: "review unavailable",
+			data: { error: "review unavailable" },
+			type: ["review#1"],
+			complete: undefined,
+		});
+		expect(failed.content[0]).toMatchObject({ text: expect.stringContaining("Remaining item(s): 2") });
+		await expect(tool.execute("pool-duplicate", { key: 1, error: "again" })).rejects.toThrow("already submitted");
+		const completed = await tool.execute("pool-completed", { key: 2, data: { ok: true } });
+		if (!failed.details || !completed.details) throw new Error("yield details missing");
+		expect(completed.details.complete).toBe(true);
+		const assembled = assembleYieldResult(
+			[failed.details, completed.details],
+			undefined,
+			yieldSectionShapes(buildWorkPoolOutputSchema(items)),
+		);
+		expect(assembled?.data).toEqual({
+			"review#1": { error: "review unavailable" },
+			"review#2": { ok: true },
+		});
+		expect(buildOutputValidator(buildWorkPoolOutputSchema(items)).validator?.validate(assembled?.data).success).toBe(
+			true,
+		);
+	});
+
+	it("ends a workpool turn when its last item reports an error", async () => {
+		const items = [{ id: "review#1", index: 1 }];
+		const tool = new YieldTool(createSession({ getWorkPoolYieldItems: () => items }));
+		const failed = await tool.execute("pool-final-error", { key: 1, error: "review unavailable" });
+		if (!failed.details) throw new Error("yield details missing");
+		expect(failed.details).toMatchObject({
+			status: "success",
+			data: { error: "review unavailable" },
+			type: ["review#1"],
+			complete: true,
+		});
+		expect(
+			assembleYieldResult([failed.details], undefined, yieldSectionShapes(buildWorkPoolOutputSchema(items)))?.data,
+		).toEqual({
+			"review#1": { error: "review unavailable" },
+		});
+	});
+
 	it("assembles per-key workpool yields into the batch output schema", () => {
 		const items = [
 			{ id: "review#1", index: 1 },

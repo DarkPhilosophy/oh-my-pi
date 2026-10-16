@@ -63,6 +63,8 @@ export interface RunContext {
 	runId: string;
 	hooks: RuntimeHooks;
 	cwd: string;
+	/** Internal-URL roots the run started with; a later run's {@link JsRuntime.setLocalRoots} must not move them. */
+	localRoots: Record<string, string>;
 	filename?: string;
 	callOccurrences: Map<string, number>;
 	finalExpressionSet: boolean;
@@ -396,7 +398,7 @@ export class JsRuntime {
 		this.helpers = createHelpers({
 			cwd: () => this.#activeCwd(),
 			env: this.#env,
-			localRoots: () => this.#localRoots,
+			localRoots: () => this.#als.getStore()?.localRoots ?? this.#localRoots,
 			emitStatus: event => this.#activeHooks("emitStatus")?.onDisplay({ type: "status", event }),
 		});
 		this.#initialGlobalKeys = new Set(Object.getOwnPropertyNames(globalThis));
@@ -516,6 +518,7 @@ export class JsRuntime {
 			runId,
 			hooks,
 			cwd: this.#cwd,
+			localRoots: this.#localRoots,
 			finalExpressionSet: false,
 			finalExpressionValue: undefined,
 			callOccurrences: new Map(),
@@ -532,7 +535,7 @@ export class JsRuntime {
 		code: string,
 		filename: string | undefined,
 		hooks: RuntimeHooks,
-		options: { runId?: string; cwd?: string } = {},
+		options: { runId?: string; cwd?: string; localRoots?: Record<string, string> } = {},
 	): Promise<unknown> {
 		this.#activateGlobals("run code");
 		this.#namespaceRevision++;
@@ -541,6 +544,7 @@ export class JsRuntime {
 			runId: options.runId ?? crypto.randomUUID(),
 			hooks,
 			cwd: options.cwd ?? this.#cwd,
+			localRoots: options.localRoots ?? this.#localRoots,
 			filename,
 			finalExpressionSet: false,
 			finalExpressionValue: undefined,

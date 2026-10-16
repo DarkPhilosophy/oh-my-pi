@@ -2718,6 +2718,45 @@ describe("ModelRegistry runtime discovery", () => {
 			.find(m => m.provider === "openai-test" && m.id === "openai-test/no-context-model");
 		expect(fallback?.contextWindow).toBe(128000);
 	});
+	test("openai-models-list uses top_provider.max_completion_tokens over the bundled reference", async () => {
+		writeRawModelsJson({
+			"openai-test": {
+				baseUrl: "http://127.0.0.1:9995",
+				api: "openai-completions",
+				auth: "none",
+				discovery: { type: "openai-models-list" },
+			},
+		});
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:9995/v1/models") {
+				return new Response(
+					JSON.stringify({
+						data: [
+							// The bundled reference for this id advertises 65,536 output tokens.
+							{
+								id: "gemini-4-argon",
+								context_length: 1_048_576,
+								top_provider: { context_length: 1_048_576, max_completion_tokens: 32_768 },
+							},
+							{
+								id: "openai-test/limits-win",
+								limits: { max_output_tokens: 16_000 },
+								top_provider: { max_completion_tokens: 32_768 },
+							},
+						],
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+
+		expect(registry.find("openai-test", "gemini-4-argon")?.maxTokens).toBe(32_768);
+		expect(registry.find("openai-test", "openai-test/limits-win")?.maxTokens).toBe(16_000);
+	});
 	test("openai-models-list uses nested token limits with existing context precedence", async () => {
 		writeRawModelsJson({
 			"openai-test": {
@@ -2790,6 +2829,55 @@ describe("ModelRegistry runtime discovery", () => {
 		const legacyReference = registry.find("openai-test", "gpt-6-sol");
 		expect(legacyReference?.contextWindow).toBe(1_050_000);
 		expect(legacyReference?.maxTokens).toBe(128_000);
+	});
+
+	test("openai-models-list honors flat output caps over the bundled reference (#15811)", async () => {
+		writeRawModelsJson({
+			"openai-test": {
+				baseUrl: "http://127.0.0.1:9993",
+				api: "openai-completions",
+				auth: "none",
+				discovery: { type: "openai-models-list" },
+			},
+		});
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:9993/v1/models") {
+				return Response.json({
+					data: [
+						// Resolves to a bundled reference whose output limit reaches the
+						// whole window; the advertised cap must win.
+						{
+							id: "auto/deepseek-v4-flash",
+							context_length: 1_000_000,
+							max_input_tokens: 1_048_576,
+							max_output_tokens: 384_000,
+						},
+						{ id: "openai-test/completion-cap", context_length: 200_000, max_completion_tokens: 8_192 },
+						{
+							id: "openai-test/nested-wins",
+							context_length: 200_000,
+							limits: { max_output_tokens: 16_000 },
+							max_output_tokens: 64_000,
+						},
+						{
+							id: "openai-test/malformed-flat",
+							context_length: 200_000,
+							max_output_tokens: 1.5,
+							max_completion_tokens: 12_000,
+						},
+					],
+				});
+			}
+			throw new Error(`Unexpected URL: ${url}`);
+		};
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+		await registry.refresh();
+
+		expect(registry.find("openai-test", "auto/deepseek-v4-flash")?.maxTokens).toBe(384_000);
+		expect(registry.find("openai-test", "openai-test/completion-cap")?.maxTokens).toBe(8_192);
+		expect(registry.find("openai-test", "openai-test/nested-wins")?.maxTokens).toBe(16_000);
+		expect(registry.find("openai-test", "openai-test/malformed-flat")?.maxTokens).toBe(12_000);
 	});
 
 	test("openai-models-list discovery enriches thin /v1/models payloads from the bundled reference catalog", async () => {

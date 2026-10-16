@@ -4,8 +4,8 @@
  *
  * Each judgment API is one wire dialect: TypeSafe's System One route
  * (`POST /v1/systemone`), OpenRouter Decisions (`POST /api/alpha/decisions`,
- * same body), Cloudflare Workers AI decision models (`POST /ai/run/{model}`,
- * same body in Cloudflare's envelope; `systemone.ts`), and OpenAI Decisions
+ * same body), Cloudflare Workers AI (`POST /ai/run/{model}`, same body plus
+ * top-level data URL images; `systemone.ts`), and OpenAI Decisions
  * (`POST /v1/decisions`, translated both ways; `openai-decisions.ts`).
  * Credentials flow through {@link withAuth}, so a stored key rotates on
  * 401/403 exactly like chat providers; transient 429/5xx responses retry with
@@ -22,10 +22,10 @@
 import { resolveJudgmentQuestionsMax } from "@oh-my-pi/pi-catalog/compat/judgment-questions";
 import { TYPESAFE_DEFAULT_BASE_URL } from "@oh-my-pi/pi-catalog/discovery";
 import type { Api, FetchImpl } from "@oh-my-pi/pi-catalog/types";
-import { $env, isRecord } from "@oh-my-pi/pi-utils";
+import { $env, isRecord, parseImageMetadata } from "@oh-my-pi/pi-utils";
 import { type ApiKey, withAuth } from "../auth-retry";
 import * as AIError from "../error";
-import type { Model, Usage } from "../types";
+import type { ImageContent, Model, Usage } from "../types";
 import { getRetryAfterMsFromHeaders } from "../utils/retry-after";
 import { openaiDecisionsWire } from "./openai-decisions";
 import { openrouterDecisionsWire, typesafeWire, workersAiWire } from "./systemone";
@@ -38,7 +38,7 @@ import {
 	type Questions,
 	tokenUsage,
 } from "./types";
-import type { JudgmentWire } from "./wire";
+import type { JudgmentImageInput, JudgmentWire } from "./wire";
 
 export const TYPESAFE_PROVIDER = "typesafe";
 export const TYPESAFE_DEFAULT_MODEL = "jev-latest";
@@ -56,6 +56,26 @@ export type JudgmentApi = keyof typeof JUDGMENT_WIRES;
 /** Whether a catalog API answers judgments natively. */
 export function isJudgmentApi(api: Api): api is JudgmentApi {
 	return Object.hasOwn(JUDGMENT_WIRES, api);
+}
+
+/** Whether both the native protocol and catalog model support image input. */
+export function nativeJudgmentSupportsImages(model: Model): boolean {
+	return isJudgmentApi(model.api) && JUDGMENT_WIRES[model.api].images !== undefined && model.input.includes("image");
+}
+
+/**
+ * Reject `images` that `model`'s native judgment API cannot take — no image support, or a
+ * documented per-dialect cap exceeded — before any credential or upstream work.
+ * @throws {AIError.ValidationError} naming the reason.
+ */
+export function checkNativeJudgmentImages(model: Model, images: readonly ImageContent[]): void {
+	if (images.length === 0) return;
+	const limits = isJudgmentApi(model.api) ? JUDGMENT_WIRES[model.api].images : undefined;
+	const label = `${model.provider}/${model.id}`;
+	if (limits === undefined || !model.input.includes("image")) {
+		throw new AIError.ValidationError(`Native judgment backend ${label} does not support image inputs`);
+	}
+	checkImageLimits(label, images, limits);
 }
 
 /** `TYPESAFE_BASE_URL` when set, else the public API root; trailing slashes stripped. */
@@ -92,6 +112,11 @@ export interface NativeJudgeOptions extends NativeJudgeConnection {
 	 * requests are split. Unset: no cap.
 	 */
 	maxQuestions?: number;
+	/**
+	 * Whether the catalogued model accepts images. `false` disables image input;
+	 * a `true` value cannot enable a wire dialect that does not support images.
+	 */
+	supportsImages?: boolean;
 }
 
 /** Per-call options for {@link NativeJudge.judge}. */
@@ -128,8 +153,48 @@ function isAnswerOf(value: unknown, type: Answer["type"]): value is Answer {
 	return isRecord(value) && value.type === type;
 }
 
+/**
+ * Reject images the dialect's documented caps would make the upstream refuse.
+ * @throws {AIError.ValidationError} naming the first exceeded cap.
+ */
+function checkImageLimits(label: string, images: readonly ImageContent[], limits: JudgmentImageInput): void {
+	const reject = (detail: string): never => {
+		throw new AIError.ValidationError(`Native judgment backend ${label} ${detail}`);
+	};
+	if (limits.maxCount !== undefined && images.length > limits.maxCount) {
+		reject(`accepts at most ${limits.maxCount} images, got ${images.length}`);
+	}
+	let totalBytes = 0;
+	for (const [index, image] of images.entries()) {
+		const mimeType = image.mimeType.toLowerCase();
+		if (limits.mimeTypes && !limits.mimeTypes.includes(mimeType)) {
+			reject(`does not accept ${mimeType} images (images[${index}]); use ${limits.mimeTypes.join(", ")}`);
+		}
+		const bytes = Buffer.from(image.data, "base64");
+		totalBytes += bytes.length;
+		if (limits.maxBytes !== undefined && bytes.length > limits.maxBytes) {
+			reject(`accepts images up to ${limits.maxBytes} bytes; images[${index}] is ${bytes.length} bytes`);
+		}
+		const { maxPixels } = limits;
+		const metadata = maxPixels === undefined ? null : parseImageMetadata(bytes);
+		if (
+			maxPixels !== undefined &&
+			metadata?.width &&
+			metadata.height &&
+			metadata.width * metadata.height > maxPixels
+		) {
+			reject(`accepts images up to ${maxPixels} pixels; images[${index}] is ${metadata.width}x${metadata.height}`);
+		}
+	}
+	if (limits.maxTotalBytes !== undefined && totalBytes > limits.maxTotalBytes) {
+		reject(`accepts at most ${limits.maxTotalBytes} image bytes per request, got ${totalBytes}`);
+	}
+}
+
 export class NativeJudge implements Judge {
 	readonly label: string;
+	/** True when the selected native wire and model both accept image inputs. */
+	readonly supportsImages?: boolean;
 	readonly api: JudgmentApi;
 	readonly provider: string;
 	/** Wire model id sent with every request. */
@@ -156,6 +221,7 @@ export class NativeJudge implements Judge {
 			throw new RangeError(`NativeJudge maxQuestions must be a positive integer, got ${options.maxQuestions}`);
 		}
 		this.#maxQuestions = options.maxQuestions;
+		if (this.#wire.images !== undefined && options.supportsImages !== false) this.supportsImages = true;
 		this.label = `${this.provider}/${this.model}`;
 	}
 
@@ -163,6 +229,12 @@ export class NativeJudge implements Judge {
 		request: JudgmentRequest<Q>,
 		options?: NativeJudgeCallOptions,
 	): Promise<JudgmentResult<Q>> {
+		if (request.images?.length) {
+			if (this.supportsImages !== true || this.#wire.images === undefined) {
+				throw new AIError.ValidationError(`Native judgment backend ${this.label} does not support image inputs`);
+			}
+			checkImageLimits(this.label, request.images, this.#wire.images);
+		}
 		const ids = Object.keys(request.questions);
 		const cap = this.#maxQuestions;
 		if (cap !== undefined && ids.length > cap) return this.#judgeChunked(request, ids, cap, options);
@@ -196,7 +268,7 @@ export class NativeJudge implements Judge {
 			while (next < chunks.length && !signal.aborted) {
 				const index = next++;
 				try {
-					results[index] = await this.#judgeOnce({ state: request.state, questions: chunks[index] }, chunkOptions);
+					results[index] = await this.#judgeOnce({ ...request, questions: chunks[index] }, chunkOptions);
 				} catch (error) {
 					failed.abort(error);
 					throw error;
@@ -329,5 +401,6 @@ export function createNativeJudge(model: Model, connection: NativeJudgeConnectio
 		model: model.requestModelId ?? model.id,
 		baseUrl: model.baseUrl,
 		maxQuestions: resolveJudgmentQuestionsMax(model),
+		supportsImages: nativeJudgmentSupportsImages(model),
 	});
 }

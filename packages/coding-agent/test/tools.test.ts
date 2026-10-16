@@ -990,12 +990,12 @@ describe("Coding Agent Tools", () => {
 			expect(output).not.toContain("Showing line 1");
 		});
 
-		it("tail selector is verbatim under :raw and clamps to the whole file when N exceeds it", async () => {
+		it("raw tail selects the last two addressable lines, not the terminal newline", async () => {
 			const testFile = path.join(testDir, "tail-raw.txt");
 			fs.writeFileSync(testFile, "alpha\nbeta\ngamma\n");
 
 			const raw = getTextOutput(await readTool.execute("test-tail-raw", { path: `${testFile}:raw:-2` }));
-			expect(raw).toBe("gamma\n");
+			expect(raw).toBe("beta\ngamma");
 
 			const clamped = getTextOutput(await readTool.execute("test-tail-clamp", { path: `${testFile}:-50` }));
 			expect(clamped).toContain("alpha");
@@ -2348,14 +2348,13 @@ function b() {
 			expect(result.details?.timeoutSeconds).toBe(300);
 		});
 
-		it("should record wall time in text content and details", async () => {
-			const result = await bashTool.execute("test-call-walltime", { command: "echo wt" });
-
-			const output = getTextOutput(result);
-			expect(output).toContain("wt");
-			expect(output).toMatch(/Wall time: \d+\.\d{2} seconds/);
-			expect(typeof result.details?.wallTimeMs).toBe("number");
-			expect(result.details?.wallTimeMs).toBeGreaterThanOrEqual(0);
+		it("retains wall time and exit status for slow failed commands", async () => {
+			const result = await bashTool.execute("test-call-walltime-slow", { command: "sleep 1.1; echo wt; exit 7" });
+			expect(getTextOutput(result)).toContain("wt");
+			expect(getTextOutput(result)).toMatch(/Wall time: \d+\.\d{2} seconds/);
+			expect(result.details?.wallTimeMs).toBeGreaterThanOrEqual(1000);
+			expect(result.details?.exitCode).toBe(7);
+			expect(result.isError).toBe(true);
 		});
 
 		it("can re-forward a simple grep to the built-in tool with a compact warning", async () => {
@@ -2585,7 +2584,7 @@ function b() {
 
 		it("should auto-background at the threshold even with a longer timeout", async () => {
 			const deliveries: Array<{ jobId: string; text: string }> = [];
-			const updates: string[] = [];
+			const updates: Array<{ text: string; state?: string }> = [];
 			const asyncJobManager = new AsyncJobManager({
 				onJobComplete: async (jobId, text) => {
 					deliveries.push({ jobId, text });
@@ -2615,7 +2614,10 @@ function b() {
 				},
 				undefined,
 				update => {
-					updates.push(update.content?.find(block => block.type === "text")?.text ?? "");
+					updates.push({
+						text: update.content?.find(block => block.type === "text")?.text ?? "",
+						state: update.details?.async?.state,
+					});
 				},
 			);
 
@@ -2633,14 +2635,18 @@ function b() {
 			}
 			const runningJob = asyncJobManager.getJob(jobId);
 			expect(runningJob?.status).toBe("running");
-			const updatesAtBackground = updates.slice();
+			const updatesAtBackground = updates.length;
 			await runningJob?.promise;
 			await asyncJobManager.drainDeliveries({ timeoutMs: 1 });
 			expect(deliveries).toHaveLength(1);
 			expect(deliveries[0]?.jobId).toBe(jobId);
 			expect(deliveries[0]?.text).toContain("start");
 			expect(deliveries[0]?.text).toContain("done");
-			expect(updates).toEqual(updatesAtBackground);
+			// The job keeps filling the call's card and settles it with its outcome.
+			const jobFrames = updates.slice(updatesAtBackground);
+			expect(jobFrames.every(frame => frame.state !== undefined)).toBe(true);
+			expect(jobFrames.at(-1)?.state).toBe("completed");
+			expect(jobFrames.at(-1)?.text).toContain("done");
 			await asyncJobManager.dispose();
 		});
 

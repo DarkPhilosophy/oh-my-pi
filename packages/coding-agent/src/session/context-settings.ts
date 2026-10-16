@@ -81,7 +81,8 @@ export const cfgContextPromotionEnabled = register({
 		tab: "context",
 		group: "General",
 		label: "Auto-Promote Context",
-		description: "Promote to a larger-context model on context overflow instead of compacting",
+		description:
+			"Promote to the model's contextPromotionTarget on context overflow instead of compacting. Retry fallback switches are controlled by Retry Model Fallback",
 	},
 });
 
@@ -446,7 +447,7 @@ export const cfgSnapcompactToolResults = register({
 		group: "Experimental",
 		label: "Snapcompact Tool Results",
 		description:
-			"Experimental: render large historical tool results as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated read/search output.",
+			"Experimental: render large tool results, the newest one included, as dense PNG image(s) instead of text (vision models only). Saves tokens on accumulated search and command output; read results stay text unless the model is known to edit exactly from images.",
 	},
 });
 

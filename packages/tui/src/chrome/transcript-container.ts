@@ -105,6 +105,8 @@ interface TranscriptEntry {
 	 */
 	stableRowCountByWidth: Map<number, Map<number, number>>;
 	emitted: number;
+	/** A settled block's acknowledged physical prefix, relocatable after reflow. */
+	split?: RowSplit;
 	/** Position in the last logical live viewport; independent of durable retirement. */
 	viewportStart?: number;
 	borrowed?: boolean;
@@ -147,9 +149,17 @@ interface TranscriptEntry {
 	peakLiveRows?: { width: number; rows: number };
 }
 
+interface RowSplit {
+	readonly rows: number;
+	readonly width: number;
+	readonly hash: number | bigint;
+	readonly text: string;
+	located?: { readonly rendered: readonly string[]; readonly count: number };
+}
+
 type RetirementPolicy = "pressure" | "flush";
 type Offered =
-	| { batch: HistoryBatch; kind: "append"; entry: number; emittedEnd: number }
+	| { batch: HistoryBatch; kind: "append"; entry: number; emittedEnd: number; split?: RowSplit }
 	| { batch: HistoryBatch; kind: "commit"; end: number }
 	| { batch: HistoryBatch; kind: "replay" };
 
@@ -159,6 +169,12 @@ const PINNED_FRONTIER_WARN_MS = 30_000;
 const RETIREMENT_BUDGET_MS = 8;
 const EMPTY_ROWS: readonly string[] = [];
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
+
+function contentOf(rows: readonly string[]): string {
+	let text = "";
+	for (const row of rows) text += Bun.stripANSI(row).replace(/[^\p{L}\p{N}]/gu, "");
+	return text;
+}
 
 function isFinalized(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
@@ -517,6 +533,7 @@ export class TranscriptContainer extends Container {
 			entry.borrowedRows = undefined;
 			entry.viewportStart = undefined;
 			entry.emitted = 0;
+			entry.split = undefined;
 			entry.stableRows = EMPTY_STABLE_ROWS;
 			entry.renderedStableByWidth = new Map();
 			entry.stableRowCountByWidth = new Map();
@@ -928,8 +945,23 @@ export class TranscriptContainer extends Container {
 			const entry = this.#entries[offered.entry];
 			if (entry === undefined) return undefined;
 			const before = this.#renderStablePrefix(entry, entry.emitted, width);
-			const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
-			rows = after.slice(before.length);
+			if (offered.split !== undefined) {
+				const scrollback = renderForScrollback(() => this.#renderEntry(entry, width));
+				const cut =
+					width === offered.split.width ? offered.split.rows : this.#splitRowCount(entry, offered.split, width);
+				const prefix = scrollback.slice(0, cut);
+				offered.split = {
+					rows: prefix.length,
+					width,
+					hash: Bun.hash(prefix.join("\n")),
+					text: contentOf(prefix),
+				};
+				offered.emittedEnd = prefix.length;
+				rows = prefix.slice(before.length);
+			} else {
+				const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
+				rows = after.slice(before.length);
+			}
 		} else if (offered.kind === "commit") {
 			rows = this.#renderRange(this.#frontier, offered.end, width, true).rows;
 		} else {
@@ -964,12 +996,15 @@ export class TranscriptContainer extends Container {
 		) {
 			let tailRows = 0;
 			let keep = 0;
+			let overflow = 0;
 			for (let index = live.length - 1; index >= 0; index--) {
 				const { entry } = live[index]!;
 				this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-				const height = this.#renderEntry(entry, width).length;
+				const rendered = this.#renderEntry(entry, width);
+				const height = rendered.length - this.#renderStablePrefix(entry, entry.emitted, width).length;
 				const next = height > 0 ? tailRows + height + (tailRows > 0 ? 1 : 0) : tailRows;
 				if (next > room) {
+					overflow = next - room;
 					// Keep a block whose final rows still occupy the physical screen.
 					keep = index + (room > 0 && tailRows < room ? 0 : 1);
 					break;
@@ -980,7 +1015,10 @@ export class TranscriptContainer extends Container {
 			let end = this.#frontier;
 			while (end < limit && this.#entries[end]?.state === "settled" && !isTransient(this.#entries[end]!.component))
 				end++;
-			if (end === this.#frontier) return undefined;
+			if (end === this.#frontier) {
+				const head = live[0]!.entry;
+				return this.#offerPhysicalPrefix(head, width, overflow);
+			}
 			return this.#offerCommitRange(width, end, RETIREMENT_BUDGET_MS);
 		}
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
@@ -1091,6 +1129,7 @@ export class TranscriptContainer extends Container {
 					}
 					break;
 				}
+				if (after.length - before.length > overflow) break;
 				rows = after.slice(before.length);
 				emittedEnd += 1;
 			}
@@ -1136,6 +1175,10 @@ export class TranscriptContainer extends Container {
 			index++;
 		}
 		if (end === this.#frontier) {
+			if (policy === "pressure" && room > 0 && head !== undefined) {
+				const split = this.#offerPhysicalPrefix(head, width, total - room);
+				if (split !== undefined) return split;
+			}
 			if (policy === "pressure") this.#notePinnedFrontier();
 			return undefined;
 		}
@@ -1195,8 +1238,14 @@ export class TranscriptContainer extends Container {
 		if (offered === undefined || offered.batch.id !== id) return;
 		if (offered.kind === "append") {
 			const entry = this.#entries[offered.entry];
-			if (entry === undefined || offered.entry !== this.#frontier || offered.emittedEnd <= entry.emitted) return;
+			if (
+				entry === undefined ||
+				offered.entry !== this.#frontier ||
+				(offered.split === undefined && offered.emittedEnd <= entry.emitted)
+			)
+				return;
 			entry.emitted = offered.emittedEnd;
+			if (offered.split !== undefined) entry.split = offered.split;
 			// A divergent batch is followed by one ledger replay that rewrites it.
 			entry.historyDirty = false;
 		} else if (offered.kind === "commit") {
@@ -1423,9 +1472,62 @@ export class TranscriptContainer extends Container {
 		return rendered;
 	}
 
+	#splitRowCount(entry: TranscriptEntry, split: RowSplit, width: number): number {
+		const rendered = this.#renderEntry(entry, width);
+		if (split.located?.rendered === rendered) return split.located.count;
+		let count = 0;
+		if (
+			width === split.width &&
+			rendered.length >= split.rows &&
+			Bun.hash(rendered.slice(0, split.rows).join("\n")) === split.hash
+		) {
+			count = split.rows;
+		} else {
+			let consumed = 0;
+			while (count < rendered.length && consumed < split.text.length) {
+				const row = contentOf([rendered[count]!]);
+				if (row.length === 0 || !split.text.startsWith(row, consumed)) break;
+				consumed += row.length;
+				count++;
+			}
+		}
+		split.located = { rendered, count };
+		return count;
+	}
+
+	#offerPhysicalPrefix(entry: TranscriptEntry, width: number, overflow: number): HistoryBatch | undefined {
+		if (entry.state !== "settled" || entry.mode !== "mutable" || isTransient(entry.component) || overflow <= 0)
+			return undefined;
+		this.#setAllocation(entry, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+		const rendered = this.#renderEntry(entry, width);
+		const start = this.#renderStablePrefix(entry, entry.emitted, width).length;
+		const end = Math.min(rendered.length - 1, start + overflow);
+		if (end <= start) return undefined;
+		const scrollback = renderForScrollback(() => this.#renderEntry(entry, width));
+		if (scrollback.length !== rendered.length) return undefined;
+		const prefix = scrollback.slice(0, end);
+		const split: RowSplit = {
+			rows: end,
+			width,
+			hash: Bun.hash(prefix.join("\n")),
+			text: contentOf(prefix),
+		};
+		const batch: HistoryBatch = {
+			id: this.#nextBatchId++,
+			rows: scrollback.slice(start, end),
+			kind: "append",
+			divergent: entry.historyDirty === true || (entry.borrowed && !this.#borrowedPrefixMatches(entry, rendered)),
+		};
+		this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd: end, split };
+		return batch;
+	}
+
 	#renderStablePrefix(entry: TranscriptEntry, count: number, width: number): readonly string[] {
 		if (count === 0) return EMPTY_ROWS;
-		if (entry.mode === "mutable") return this.#renderEntry(entry, width).slice(0, count);
+		if (entry.mode === "mutable") {
+			const rows = entry.split === undefined ? count : this.#splitRowCount(entry, entry.split, width);
+			return this.#renderEntry(entry, width).slice(0, rows);
+		}
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		return appendOnly.renderTranscriptStableRows(Math.min(count, entry.stableRows.length), width);
 	}
@@ -1438,6 +1540,8 @@ export class TranscriptContainer extends Container {
 	 */
 	#projectedEmittedRowCount(entry: TranscriptEntry, index: number, width: number): number {
 		const offered = this.#offered;
+		const split = offered?.kind === "append" && offered.entry === index ? offered.split : entry.split;
+		if (split !== undefined) return this.#splitRowCount(entry, split, width);
 		const count = offered?.kind === "append" && offered.entry === index ? offered.emittedEnd : entry.emitted;
 		if (count === 0) return 0;
 		// Mutable staged publications already count physical rows; an allocated
@@ -1603,6 +1707,7 @@ export class TranscriptContainer extends Container {
 	#retireEntry(entry: TranscriptEntry): void {
 		entry.state = "committed";
 		entry.emitted = 0;
+		entry.split = undefined;
 		entry.stableRows = EMPTY_STABLE_ROWS;
 		entry.renderedStableByWidth = new Map();
 		entry.stableRowCountByWidth = new Map();
