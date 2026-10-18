@@ -32,7 +32,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - JavaScript `await tab.run(fnOrCode, { args?, timeout? })` runs a function or code string. Functions receive `{ tab, page, browser, wait, assert }`; cell closures are not captured. Plain data, functions, and `RegExp` values are supported in `args`.
 - Python `await tab.run(code, timeout=…)` accepts a JavaScript code string only. Direct Python helpers use the same method names; keyword arguments become a trailing JavaScript options object.
 - `tab.run` executes in an isolated JavaScript tab runtime with raw Puppeteer `page`/`browser`, ordinary Eval helpers, and full Bun/Node + tool-bridge access. It is not sandboxed.
-- Direct helpers and `tab.run` return real structured values. Nonempty inner `display` text prints in the outer Eval cell; screenshots surface as Eval images.
+- Direct helpers and `tab.run` return real structured values. Nonempty text printed inside `tab.run` prints in the outer Eval cell; screenshots surface as Eval images.
 - Selectors accept CSS plus Puppeteer `aria/…`, `text/…`, `xpath/…`, `pierce/…`, `label/…`, `placeholder/…`, `testid/…`, `alt/…`, `title/…`, and `role/<role>[name="…"]` query handlers; append ` exact` inside the role name filter for exact matching.
 - Navigation and re-renders invalidate observed ids and refs. Re-observe, then act in the same cell. Use `pushState(url)` for SPA navigation without a document load.
 - Use `tab.select` for `<select>` elements; `tab.fill` does not support them.

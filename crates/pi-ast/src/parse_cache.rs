@@ -237,13 +237,18 @@ impl Cache {
 		Lookup::Miss(base)
 	}
 
-	/// Whether `path` got its current version from a lookup newer than the
-	/// one that issued `ticket`, or might have and has since been forgotten.
+	/// Whether `path` got its current version in `lang` from a lookup newer
+	/// than the one that issued `ticket`, or might have and has since been
+	/// forgotten. A path re-tracked under another language carries no ticket
+	/// for `lang`, so it falls back to the forgotten floor too.
 	fn path_moved_since(&self, lang: SupportLang, path: &str, ticket: u64) -> bool {
-		match self.path_tickets.get(path) {
-			Some(tickets) => tickets
-				.iter()
-				.any(|&(other, latest)| other == lang && latest > ticket),
+		let latest = self
+			.path_tickets
+			.get(path)
+			.and_then(|tickets| tickets.iter().find(|&&(other, _)| other == lang))
+			.map(|&(_, latest)| latest);
+		match latest {
+			Some(latest) => latest > ticket,
 			None => ticket < self.forgotten_ticket_floor,
 		}
 	}
@@ -923,6 +928,43 @@ mod tests {
 			reparse_base(&mut cache, "a.ts"),
 			None,
 			"but it cannot become a.ts's current version"
+		);
+	}
+
+	#[test]
+	fn the_stale_fence_survives_its_path_returning_in_another_language() {
+		let mut cache = cache(MAX_ENTRIES, MAX_RETAINED_BYTES);
+		let (old, new) = ("const a = 1;\n", "const a = 2;\n");
+		let stale_ticket = lookup_ticket(&mut cache);
+		put(&mut cache, new, Some("a.ts"));
+		for i in 0..MAX_TRACKED_PATHS {
+			put(&mut cache, &format!("const other = {i};\n"), Some(&format!("o{i}.ts")));
+		}
+		assert!(!cache.path_tickets.contains_key("a.ts"));
+		// a.ts is tracked again, but only with a Python ticket.
+		let py = "x = 1\n";
+		let py_tree = tree_of(py, SupportLang::Python);
+		let py_cost = tree_cost(py, &py_tree, SupportLang::Python);
+		let py_ticket = lookup_ticket(&mut cache);
+		cache.insert(
+			key_for(py, SupportLang::Python),
+			py,
+			&py_tree,
+			Some("a.ts"),
+			py_cost,
+			py_ticket,
+		);
+		assert!(cache.path_tickets.contains_key("a.ts"));
+
+		let tree = tree_of(old, TS);
+		let cost = tree_cost(old, &tree, TS);
+		cache.insert(key_for(old, TS), old, &tree, Some("a.ts"), cost, stale_ticket);
+
+		assert!(hit(&mut cache, old).is_some(), "the stale tree is still cached");
+		assert_eq!(
+			reparse_base(&mut cache, "a.ts"),
+			None,
+			"but it cannot become a.ts's TypeScript version"
 		);
 	}
 

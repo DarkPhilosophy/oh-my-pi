@@ -278,11 +278,16 @@ export interface ExtensionCustomOptions {
 /** Wrap the current autocomplete provider with additional behavior (pi-compatible). */
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 
-/** The two renderings of a tool-approval prompt passed to `ExtensionUIContext.approve()`. */
+/** The renderings of a tool-approval prompt passed to `ExtensionUIContext.approve()`. */
 export interface ExtensionApprovalPrompt {
 	full: string;
 	compact: string;
+	/** Label of the "approve for this session" choice; absent when the call must be approved each time. */
+	session?: string;
 }
+
+/** An answer to `ExtensionUIContext.approve()`: this call only, later like calls this session too, or no. */
+export type ExtensionApprovalAnswer = "once" | "session" | "deny";
 
 /**
  * UI context for extensions to request interactive UI.
@@ -320,12 +325,15 @@ export interface ExtensionUIContext {
 	): Promise<ExtensionAskDialogResult | undefined>;
 
 	/**
-	 * Show a tool-approval prompt; true only for an explicit approval. Each prompt is a title line
-	 * then details: `compact` summarizes the tool's own details (command, path, content) to one
-	 * row for a host with little room, `full` keeps them whole. Absent: callers fall back to an
-	 * Approve/Deny `select`.
+	 * Show a tool-approval prompt; anything but an explicit approval is `deny`, and `session` only
+	 * when the prompt offers it. Each prompt is a title line then details: `compact` summarizes the
+	 * tool's own details (command, path, content) to one row for a host with little room, `full`
+	 * keeps them whole. Absent: callers fall back to an Approve/Deny `select`.
 	 */
-	approve?(prompt: ExtensionApprovalPrompt, dialogOptions?: ExtensionUIDialogOptions): Promise<boolean>;
+	approve?(
+		prompt: ExtensionApprovalPrompt,
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<ExtensionApprovalAnswer>;
 
 	/** Show a notification to the user. */
 	notify(message: string, type?: "info" | "warning" | "error"): void;
@@ -913,6 +921,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	mcpServerName?: string;
 	/** Original MCP tool name for discovery/search metadata. */
 	mcpToolName?: string;
+	/** MCP read-only annotation, independent of the approval tier. */
+	mcpReadOnlyHint?: boolean;
 	/** Previous public name when a rename changed minting. Forwarded through
 	 *  RegisteredToolAdapter so approval falls back to legacy `deny`/`prompt`. */
 	legacyName?: string;

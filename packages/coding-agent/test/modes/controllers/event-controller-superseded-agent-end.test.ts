@@ -12,20 +12,19 @@ import { createInteractiveModeContext } from "../../helpers/interactive-mode-con
  * streaming getter is backed by mutable flags the tests drive directly.
  */
 function createContext() {
-	const streamState = { isStreaming: false };
-	const mainStreamState = { isStreaming: false };
+	const streamState = { isStreaming: false, viewIsStreaming: false };
 	const ctx = createInteractiveModeContext({
 		session: {
 			get isStreaming() {
-				return mainStreamState.isStreaming;
+				return streamState.isStreaming;
 			},
 		},
 		viewSession: {
-			get isStreaming() {
-				return streamState.isStreaming;
-			},
 			isCompacting: false,
 			getLastAssistantMessage: () => undefined,
+			get isStreaming() {
+				return streamState.viewIsStreaming;
+			},
 		},
 	});
 	const loader = new Loader(
@@ -37,7 +36,7 @@ function createContext() {
 	ctx.ensureLoadingAnimation = vi.fn(() => {
 		ctx.loadingAnimation ??= loader;
 	});
-	return { ctx, streamState, mainStreamState, loader };
+	return { ctx, streamState, loader };
 }
 
 const AGENT_START = { type: "agent_start" } as unknown as AgentSessionEvent;
@@ -72,6 +71,7 @@ describe("EventController superseded agent_end", () => {
 		// the agent is streaming again. The interrupted turn's agent_end is still in
 		// flight through the async event pipeline.
 		streamState.isStreaming = true;
+		streamState.viewIsStreaming = true;
 		await controller.handleEvent(AGENT_START);
 
 		// The interrupted turn's agent_end finally propagates. Because the agent is
@@ -100,19 +100,56 @@ describe("EventController superseded agent_end", () => {
 		expect(ctx.loadingAnimation).toBeUndefined();
 	});
 
-	it("finishes the focused session while the main session is still streaming", async () => {
-		const { ctx, streamState, mainStreamState, loader } = createContext();
+	it("releases the loader when a focused worker ends while the main session still streams", async () => {
+		const { ctx, streamState, loader } = createContext();
 		const controller = new EventController(ctx);
 
+		streamState.viewIsStreaming = true;
 		await controller.handleEvent(AGENT_START);
-		expect(ctx.loadingAnimation).toBeDefined();
+		expect(ctx.loadingAnimation).toBe(loader);
 
-		mainStreamState.isStreaming = true;
-		streamState.isStreaming = false;
+		// The viewed worker finishes; the main session's run keeps going underneath.
+		streamState.isStreaming = true;
+		streamState.viewIsStreaming = false;
 		await controller.handleEvent(AGENT_END);
 
+		// A stale "Working…" row would otherwise stay under the finished worker.
 		expect(loader.stop).toHaveBeenCalledTimes(1);
 		expect(ctx.loadingAnimation).toBeUndefined();
+	});
+
+	it("keeps the loader when a stale agent_end lands after the viewed worker started a new turn", async () => {
+		const { ctx, streamState, loader } = createContext();
+		const controller = new EventController(ctx);
+
+		streamState.viewIsStreaming = true;
+		await controller.handleEvent(AGENT_START);
+		// The main session is idle, so the stale end passes the main-stream guard.
+		await controller.handleEvent(AGENT_END);
+
+		expect(loader.stop).not.toHaveBeenCalled();
+		expect(ctx.loadingAnimation).toBe(loader);
+	});
+
+	it("shows the idle auto-compaction loader and removes it after an abort", async () => {
+		const { ctx } = createContext();
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent({
+			type: "auto_compaction_start",
+			reason: "idle",
+			action: "context-full",
+		} as unknown as AgentSessionEvent);
+		expect(ctx.autoCompactionLoader).toBeDefined();
+
+		// An aborted compaction leaves no rebuilt transcript to refill the loader's row.
+		await controller.handleEvent({
+			type: "auto_compaction_end",
+			action: "context-full",
+			aborted: true,
+		} as unknown as AgentSessionEvent);
+		expect(ctx.autoCompactionLoader).toBeUndefined();
+		expect(ctx.statusContainer.children).toHaveLength(0);
 	});
 
 	it("flushes queued command panels at a non-terminal settle", async () => {

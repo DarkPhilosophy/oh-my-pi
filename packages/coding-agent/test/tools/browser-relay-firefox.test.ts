@@ -86,6 +86,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => {},
+			onExit: () => () => undefined,
 			async terminate() {},
 		};
 		const first = createFirefoxTab("active-open", browser, worker);
@@ -267,6 +268,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		};
 		const browser = createFirefoxHandle("ws://127.0.0.1:9333/session");
@@ -340,6 +342,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		};
 
@@ -381,6 +384,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => {
 				terminations++;
 			},
@@ -422,6 +426,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		} satisfies WorkerHandle;
 		const ac = new AbortController();
@@ -487,6 +492,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 					return () => listeners.delete(listener);
 				},
 				onError: () => () => undefined,
+				onExit: () => () => undefined,
 				terminate: async () => {
 					terminations++;
 				},
@@ -523,6 +529,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			send: msg => sent.push(msg.type),
 			onMessage: () => () => undefined,
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => {
 				terminations++;
 			},
@@ -559,6 +566,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			},
 			onMessage: () => () => undefined,
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		} satisfies WorkerHandle;
 		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
@@ -605,6 +613,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => {
 				terminated = true;
 				terminations++;
@@ -653,6 +662,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		};
 		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
@@ -708,6 +718,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 					return () => listeners.delete(listener);
 				},
 				onError: () => () => undefined,
+				onExit: () => () => undefined,
 				terminate: async () => undefined,
 			};
 			const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
@@ -749,6 +760,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			send: () => undefined,
 			onMessage: () => () => undefined,
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		} satisfies WorkerHandle;
 		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
@@ -798,6 +810,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		};
 		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
@@ -858,6 +871,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				return () => listeners.delete(listener);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		};
 		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
@@ -892,6 +906,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 			send: () => undefined,
 			onMessage: () => () => undefined,
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		} satisfies WorkerHandle;
 		const endpoint = createFirefoxHandle(DEFAULT_FIREFOX_BIDI_URL);
@@ -940,6 +955,7 @@ describe("Firefox WebDriver BiDi relay", () => {
 				},
 				onMessage: () => () => undefined,
 				onError: () => () => undefined,
+				onExit: () => () => undefined,
 				terminate: async () => {
 					terminations++;
 				},

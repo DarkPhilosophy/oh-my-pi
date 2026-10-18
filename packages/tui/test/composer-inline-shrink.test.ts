@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { EditorTopGap } from "@oh-my-pi/pi-tui/prompt/editor-top-gap";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { type Component, Container, getKeybindings, setKeybindings, Text } from "@oh-my-pi/pi-tui";
@@ -100,8 +101,14 @@ interface Harness {
 	editor: Container;
 }
 
-function makeHarness(columns = COLUMNS, rows = ROWS, transcriptRows = TRANSCRIPT_ROWS): Harness {
+function makeHarness(
+	columns = COLUMNS,
+	rows = ROWS,
+	transcriptRows = TRANSCRIPT_ROWS,
+	shellHistory: readonly string[] = [],
+): Harness {
 	const terminal = new VirtualTerminal(columns, rows);
+	if (shellHistory.length > 0) terminal.write(`${shellHistory.join("\r\n")}${"\r\n".repeat(rows + 1)}`);
 	const scheduler = new VirtualRenderScheduler();
 	const composer = new Composer({
 		terminal,
@@ -224,6 +231,39 @@ function blankBand(terminal: VirtualTerminal, bottom = "EDITOR"): number {
 		longest = Math.max(longest, run);
 	}
 	return longest;
+}
+
+/** Stream a 110-paragraph answer one paragraph per frame, then finalize it. */
+async function streamFinalizedAnswer(h: Harness): Promise<void> {
+	const message = new AssistantMessageComponent();
+	h.transcript.addChild(message);
+	const reply = (text: string): AssistantMessage => ({
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-codex-responses",
+		provider: "openai-codex",
+		model: "gpt-5.6-sol",
+		stopReason: "stop",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		timestamp: 1,
+	});
+	const lines = Array.from({ length: 110 }, (_, i) => `line${i}`);
+	for (let n = 1; n <= lines.length; n++) {
+		message.updateContent(reply(lines.slice(0, n).join("\n\n")), { transient: true });
+		h.composer.ui.requestRender();
+		await h.scheduler.settle(h.terminal);
+	}
+	message.updateContent(reply(lines.join("\n\n")));
+	message.markTranscriptBlockFinalized();
+	h.composer.ui.requestRender();
+	await h.scheduler.settle(h.terminal);
 }
 
 beforeAll(async () => {
@@ -609,6 +649,135 @@ describe("composer inline shrink (#11007)", () => {
 		expect(words.length).toBe(text.split(/\s+/).filter(Boolean).length);
 		h.composer.stop();
 	});
+
+	for (const placement of ["above", "below"] as const) {
+		it(`clears a settled extension widget ${placement} the editor without a seam band or erasing shell history`, async () => {
+			const rows = 30;
+			const shell = Array.from({ length: 12 }, (_, i) => `shell${i}`);
+			const h = makeHarness(COLUMNS, rows, 0, shell);
+			const above = new Container();
+			above.addChild(
+				new EditorTopGap(
+					() => false,
+					() => "band",
+				),
+			);
+			const below = new Container();
+			const widget = new InlineWidget();
+			const root = placement === "above" ? above : below;
+			root.addChild(widget);
+			h.composer.setRuntimeChildren([h.transcript, above, h.editor, below]);
+			await h.scheduler.settle(h.terminal);
+			widget.rows = 7;
+			await streamFinalizedAnswer(h);
+			await h.scheduler.advance(h.terminal, 300);
+			const history = (): string[] =>
+				h.terminal
+					.getScrollBuffer()
+					.map(row => Bun.stripANSI(row).trim())
+					.filter(row => /^(shell|line|next)\d+$/.test(row));
+			const expected = [...shell, ...Array.from({ length: 110 }, (_, i) => `line${i}`)];
+			expect(history()).toEqual(expected);
+			expect(
+				h.terminal
+					.getViewport()
+					.map(row => Bun.stripANSI(row).trim())
+					.filter(row => row.startsWith("Live widget row ")),
+			).toEqual(Array.from({ length: 7 }, (_, i) => `Live widget row ${i}`));
+
+			root.removeChild(widget);
+			h.composer.ui.requestRender();
+			await h.scheduler.advance(h.terminal, 300);
+			const editorRow = h.terminal.getViewport().findIndex(row => row.includes("EDITOR"));
+			expect(editorRow).toBeLessThan(rows - 1);
+			expect(editorRow).toBeGreaterThanOrEqual(0);
+			expect(blankBand(h.terminal)).toBeLessThanOrEqual(2);
+			expect(history()).toEqual(expected);
+			for (let frame = 0; frame < 3; frame++) {
+				h.composer.ui.requestRender();
+				await h.scheduler.advance(h.terminal, 300);
+				expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(editorRow);
+				expect(blankBand(h.terminal)).toBeLessThanOrEqual(2);
+				expect(history()).toEqual(expected);
+			}
+
+			// New output naturally fills the freed rows and restores bottom alignment.
+			const next = Array.from({ length: 40 }, (_, i) => `next${i}`);
+			for (const row of next) h.transcript.addChild({ render: () => [row] });
+			h.composer.ui.requestRender();
+			await h.scheduler.settle(h.terminal);
+			await h.scheduler.advance(h.terminal, 300);
+			expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(rows - 1);
+			expect(blankBand(h.terminal)).toBeLessThanOrEqual(2);
+			expect(history()).toEqual([...expected, ...next]);
+			h.composer.stop();
+		});
+
+		for (const timing of ["before settlement", "after settlement"] as const) {
+			it(`preserves every transcript and shell row when an extension widget ${placement} the editor appears ${timing}`, async () => {
+				const rows = 30;
+				const shell = Array.from({ length: 12 }, (_, i) => `shell${i}`);
+				const h = makeHarness(COLUMNS, rows, 0, shell);
+				const persistent = new InlineWidget();
+				const above = new Container();
+				above.addChild(
+					new EditorTopGap(
+						() => false,
+						() => "band",
+					),
+				);
+				const below = new Container();
+				const root = placement === "above" ? above : below;
+				h.composer.setRuntimeChildren([h.transcript, persistent, above, h.editor, below]);
+				try {
+					await h.scheduler.settle(h.terminal);
+					persistent.rows = 3;
+					await streamFinalizedAnswer(h);
+					await h.scheduler.settle(h.terminal);
+					if (timing === "after settlement") await h.scheduler.advance(h.terminal, 300);
+
+					// Extension agent_end work can install chrome after the final busy
+					// paint, including after the first idle height has already settled.
+					const widget = new InlineWidget();
+					widget.rows = 7;
+					root.addChild(widget);
+					h.composer.ui.requestRender();
+					await h.scheduler.advance(h.terminal, 300);
+					const history = (): string[] =>
+						h.terminal
+							.getScrollBuffer()
+							.map(row => Bun.stripANSI(row).trim())
+							.filter(row => /^(shell|line)\d+$/.test(row));
+					const expected = [...shell, ...Array.from({ length: 110 }, (_, i) => `line${i}`)];
+					expect(history()).toEqual(expected);
+					expect(
+						h.terminal
+							.getViewport()
+							.map(row => Bun.stripANSI(row).trim())
+							.filter(row => row.startsWith("Live widget row ")),
+					).toEqual([
+						...Array.from({ length: 3 }, (_, i) => `Live widget row ${i}`),
+						...Array.from({ length: 7 }, (_, i) => `Live widget row ${i}`),
+					]);
+
+					root.removeChild(widget);
+					h.composer.ui.requestRender();
+					await h.scheduler.advance(h.terminal, 300);
+					const editorRow = h.terminal.getViewport().findIndex(row => row.includes("EDITOR"));
+					expect(editorRow).toBeGreaterThanOrEqual(0);
+					expect(editorRow).toBeLessThan(rows - 1);
+					expect(blankBand(h.terminal)).toBeLessThanOrEqual(2);
+					expect(history()).toEqual(expected);
+					h.composer.ui.requestRender();
+					await h.scheduler.advance(h.terminal, 300);
+					expect(h.terminal.getViewport().findIndex(row => row.includes("EDITOR"))).toBe(editorRow);
+					expect(history()).toEqual(expected);
+				} finally {
+					h.composer.stop();
+				}
+			});
+		}
+	}
 
 	it("shrinks in place when a live block collapses under retired history", async () => {
 		const h = makeHarness();

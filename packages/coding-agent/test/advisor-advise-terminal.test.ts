@@ -59,6 +59,8 @@ describe("advisor advise-only turn terminates the review", () => {
 		};
 		const settings = Settings.isolated({
 			"advisor.syncBacklog": "1",
+			// This suite verifies delivery, independently of semantic note filtering.
+			"advisor.curator": "off",
 			"compaction.enabled": false,
 			"retry.enabled": false,
 			"todo.enabled": false,

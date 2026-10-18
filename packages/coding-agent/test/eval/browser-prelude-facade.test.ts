@@ -100,7 +100,7 @@ describe("browser JavaScript facade", () => {
 		const session = makeSession();
 		const prelude = createBrowserPrelude(session);
 		const context = createContext({
-			__omp_display__: (value: unknown) => displays.push(value),
+			__omp_log__: (_level: string, value: unknown) => displays.push(value),
 			__omp_prelude__: async (name: string, parameters: unknown) => {
 				expect(name).toBe("browser");
 				calls.push(parameters);
@@ -325,7 +325,7 @@ describe("browser facade Chromium helper E2E", () => {
 			const context = createContext({
 				__name__: name,
 				__url__: `data:text/html,${encodeURIComponent(html)}`,
-				__omp_display__: (value: unknown) => displayed.push(value),
+				__omp_log__: (_level: string, value: unknown) => displayed.push(value),
 				__omp_prelude__: async (preludeName: string, parameters: unknown) => {
 					expect(preludeName).toBe("browser");
 					const result = await prelude.invoke(parameters, {
@@ -354,9 +354,9 @@ describe("browser facade Chromium helper E2E", () => {
 				expect(title).toBe("Clicked");
 				expect(await runInContext("__e2eTab.run((_scope, value) => value + 1, { args: [7] })", context)).toBe(8);
 				expect(
-					await runInContext("__e2eTab.run('display(\"worker display text\"); return { value: 3 };')", context),
+					await runInContext("__e2eTab.run('print(\"worker print text\"); return { value: 3 };')", context),
 				).toEqual({ value: 3 });
-				expect(displayed).toContain("worker display text");
+				expect(displayed).toContain("worker print text");
 
 				const observation = await runInContext("__e2eTab.observe()", context);
 				expect(field(observation, "elements")).toBeArray();

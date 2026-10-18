@@ -403,7 +403,8 @@ const FIELD_RULES: Record<string, Rule> = {
 		"metadata",
 		"internal_chat_message_metadata_passthrough",
 		"block",
-		"jsonOutputs",
+		// Eval cell pretty views: printed tables/JSON/Markdown of user data.
+		"views",
 		"structured",
 		"xdev",
 		"response",

@@ -212,7 +212,9 @@ export interface TspMarkdownProps {
 }
 export interface TspCodeProps {
 	text?: string;
+	/** The language of text that is no file's (`bash`, `json`); wins over `path`. */
 	lang?: string;
+	/** The file the text comes from: the terminal picks the grammar from it (and heads a block outside a tool card with it). */
 	path?: string;
 	start?: number;
 	numbers?: boolean;
@@ -230,7 +232,9 @@ export interface TspDiffProps {
 	/** Unified diff text (or give `hunks`). */
 	text?: string;
 	hunks?: readonly TspDiffHunk[];
+	/** The file the diff changes: the terminal picks the grammar from it. Not drawn. */
 	path?: string;
+	/** A language overriding the one `path` gives. */
 	lang?: string;
 	mode?: "unified" | "split" | "auto";
 }

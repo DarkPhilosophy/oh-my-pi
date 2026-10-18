@@ -7,9 +7,11 @@
  * - format the generic approval prompt body.
  */
 import type { AgentTool, ToolApprovalDecision, ToolTier } from "@oh-my-pi/pi-agent-core";
+import { replaceTabs } from "@oh-my-pi/pi-tui";
+import { isRecord, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
-import type { ExtensionUIContext } from "../extensibility/extensions/types";
-
+import { normalizeToLF } from "../edit/normalize";
+import type { ExtensionApprovalAnswer, ExtensionUIContext } from "../extensibility/extensions/types";
 import { cfgToolsApproval, cfgToolsApprovalMode } from "./settings";
 
 export type { ToolApproval, ToolApprovalDecision, ToolTier } from "@oh-my-pi/pi-agent-core";
@@ -89,7 +91,10 @@ export interface ResolvedApproval {
 	reason?: string;
 	override: boolean;
 	source?: "tool" | "user" | "mode";
-	/** User-policy key that produced `source: "user"` (defaults to the tool name). */
+	/**
+	 * User-policy key that produced `source: "user"` (defaults to the tool name), or the keyed
+	 * sub-tool (an `xd://` device) a tool-owned or mode decision is about.
+	 */
 	policyKey?: string;
 }
 
@@ -314,6 +319,7 @@ export function resolveApproval(
 		tier: decision.tier,
 		override: false,
 		source: "mode",
+		...(decision.policyKey ? { policyKey: decision.policyKey } : {}),
 		...(decision.reason ? { reason: decision.reason } : {}),
 	};
 }
@@ -361,6 +367,67 @@ export function truncateForPrompt(value: string, maxChars = DEFAULT_PROMPT_TRUNC
 	return `${value.slice(0, maxChars)}[…${omitted}ch elided…]`;
 }
 
+function formatPayloadValue(value: unknown, indent: number): string {
+	if (value === null) return "null";
+	if (typeof value === "boolean" || typeof value === "number") return String(value);
+	if (typeof value === "string") {
+		const normalized = replaceTabs(normalizeToLF(value));
+		if (normalized.includes("\n")) {
+			const padding = " ".repeat(indent);
+			// Keep delimiters and commas outside the body, including in arrays.
+			// JSON-escape each row so terminal controls remain visible text.
+			const lines = normalized
+				.split("\n")
+				.map(line => `${padding}  ${sanitizeText(JSON.stringify(line).slice(1, -1))}`);
+			return `"\n${lines.join("\n")}\n${padding}"`;
+		}
+		return sanitizeText(JSON.stringify(normalized));
+	}
+	if (Array.isArray(value)) {
+		if (value.length === 0) return "[]";
+		const items = value.map((item, index) => {
+			const isLast = index === value.length - 1;
+			const nextIndent = indent + 2;
+			const formatted = formatPayloadValue(item, nextIndent);
+			return " ".repeat(nextIndent) + formatted + (isLast ? "" : ",");
+		});
+		return "[\n" + items.join("\n") + "\n" + " ".repeat(indent) + "]";
+	}
+	if (isRecord(value)) {
+		const entries = Object.entries(value);
+		if (entries.length === 0) return "{}";
+		const lines: string[] = ["{"];
+		for (let i = 0; i < entries.length; i++) {
+			const [key, entryValue] = entries[i]!;
+			const isLast = i === entries.length - 1;
+			const keyStr = sanitizeText(JSON.stringify(key));
+			const keyIndent = " ".repeat(indent + 2);
+			const formatted = formatPayloadValue(entryValue, indent + 2);
+			lines.push(`${keyIndent}${keyStr}: ${formatted}${isLast ? "" : ","}`);
+		}
+		lines.push(" ".repeat(indent) + "}");
+		return lines.join("\n");
+	}
+	return replaceTabs(sanitizeText(String(value)));
+}
+
+/**
+ * Layout a decoded device or MCP argument payload:
+ * - standard JSON layout with 2-space indentation
+ * - multiline strings (manifests, scripts, policy documents) expanded into quoted blocks
+ * - tabs sanitized to spaces
+ */
+export function formatApprovalArguments(args: unknown, options?: { showEmpty?: boolean }): string[] {
+	if (args === undefined) {
+		return [];
+	}
+	if (!options?.showEmpty && (args === null || (typeof args === "object" && Object.keys(args).length === 0))) {
+		return [];
+	}
+	const formatted = formatPayloadValue(args, 0);
+	return [`Arguments:\n${truncateForPrompt(formatted)}`];
+}
+
 /** The prompt's header rows: tool name, MCP origin, and the reason it asks. */
 function approvalHeader(tool: ApprovalSubject, reason?: string): string[] {
 	const lines = [`Allow tool: ${tool.name}`];
@@ -378,7 +445,13 @@ function approvalHeader(tool: ApprovalSubject, reason?: string): string[] {
 /** The tool's own detail rows for `args` (command, path, content), blanks dropped. */
 function approvalDetails(tool: ApprovalSubject, args: unknown): string[] {
 	const details = tool.formatApprovalDetails?.(args);
-	return (typeof details === "string" ? [details] : (details ?? [])).filter(detail => detail.length > 0);
+	if (details !== undefined) {
+		return (typeof details === "string" ? [details] : details).filter(detail => detail.length > 0);
+	}
+	if (tool.name.startsWith("mcp__")) {
+		return formatApprovalArguments(args);
+	}
+	return [];
 }
 
 /** Format the approval prompt body shown to the user: the header, then the tool's own details. */
@@ -406,25 +479,45 @@ function approvalSummary(details: readonly string[]): string | undefined {
 }
 
 /**
+ * What an "approve for this session" answer may cover for a `resolved` prompt: the subject the
+ * prompt names (the tool, or its `xd://` device) and a grant key that also pins the tier, so
+ * approving a write never covers an exec call of the same tool. Undefined when the prompt must
+ * stay per-call: only a prompt the approval mode raised is grantable, never a critical override
+ * or an explicit `prompt` policy (the user's or the tool's own).
+ */
+export function sessionApprovalScope(
+	resolved: ResolvedApproval,
+	toolName: string,
+): { subject: string; key: string } | undefined {
+	if (resolved.policy !== "prompt" || resolved.source !== "mode") return undefined;
+	const subject = resolved.policyKey ?? toolName;
+	return { subject, key: `${subject}\0${resolved.tier}` };
+}
+
+/**
  * Ask the user to approve a call: the host's approval dialog when it has one (it gets the full
  * prompt and a compact one with the details summarized to a row, so the composer beneath it
- * keeps its room), else an Approve/Deny select with the full prompt (RPC, ACP, extension hosts).
- * `appendix` lines follow the prompt on both. True only for an explicit approval.
+ * keeps its room), else a select with the full prompt (RPC, ACP, extension hosts). `appendix`
+ * lines follow the prompt on both. With a `sessionSubject`, both also offer to approve that
+ * subject for the rest of the session. Anything but an explicit approval is `deny`.
  */
 export async function requestApproval(
 	ui: Pick<ExtensionUIContext, "select" | "approve">,
 	tool: ApprovalSubject,
 	args: unknown,
-	reason?: string,
-	appendix: readonly string[] = [],
-): Promise<boolean> {
+	options: { reason?: string; appendix?: readonly string[]; sessionSubject?: string } = {},
+): Promise<ExtensionApprovalAnswer> {
+	const { reason, appendix = [], sessionSubject } = options;
 	const header = approvalHeader(tool, reason);
 	const details = approvalDetails(tool, args);
 	const full = [...header, ...details, ...appendix].join("\n");
+	const session = sessionSubject === undefined ? undefined : `Approve ${sessionSubject} for this session`;
 	if (ui.approve) {
 		const summary = approvalSummary(details);
 		const compact = [...header, ...(summary === undefined ? [] : [summary]), ...appendix].join("\n");
-		return (await ui.approve({ full, compact })) === true;
+		const answer = await ui.approve({ full, compact, ...(session ? { session } : {}) });
+		return answer === "once" || (answer === "session" && session) ? answer : "deny";
 	}
-	return (await ui.select(full, ["Approve", "Deny"])) === "Approve";
+	const choice = await ui.select(full, session ? ["Approve", session, "Deny"] : ["Approve", "Deny"]);
+	return choice === "Approve" ? "once" : session && choice === session ? "session" : "deny";
 }

@@ -31,6 +31,9 @@ class FakeSelectionWorker implements WorkerHandle {
 	onError(): () => void {
 		return () => undefined;
 	}
+	onExit(): () => void {
+		return () => undefined;
+	}
 	async terminate(): Promise<void> {
 		this.terminateCalls++;
 	}
@@ -175,6 +178,7 @@ describe("Firefox shared worker selection recovery", () => {
 				return () => replacementHandlers.delete(handler);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			terminate: async () => undefined,
 		};
 		const oldHandlers = new Set<(message: WorkerOutbound) => void>();
@@ -193,6 +197,7 @@ describe("Firefox shared worker selection recovery", () => {
 				return () => oldHandlers.delete(handler);
 			},
 			onError: () => () => undefined,
+			onExit: () => () => undefined,
 			async terminate() {
 				order.push("old-terminate-start");
 				terminationStarted.resolve();

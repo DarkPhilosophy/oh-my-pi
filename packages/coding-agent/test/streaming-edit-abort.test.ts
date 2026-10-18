@@ -15,7 +15,7 @@ import { cfgEditMode } from "@oh-my-pi/pi-coding-agent/edit/settings";
 function createGuard(
 	streamingAbort: boolean,
 	cwd = process.cwd(),
-	settings = Settings.isolated({ "edit.streamingAbort": streamingAbort }),
+	settings = Settings.isolated({ "edit.mode": "patch", "edit.streamingAbort": streamingAbort }),
 ): { guard: StreamingEditGuard; aborts: { count: number; reason?: unknown } } {
 	const aborts: { count: number; reason?: unknown } = { count: 0 };
 	const guard = new StreamingEditGuard({
@@ -31,6 +31,7 @@ function createGuard(
 		resolveActiveEditMode: () => cfgEditMode.get(settings),
 		isDisposed: () => false,
 		promptGeneration: () => 0,
+		promptSequence: () => 0,
 		emitNotice() {},
 		schedulePostPromptTask() {},
 		discardAssistantTurn() {},
@@ -263,6 +264,7 @@ describe("streaming edit abort", () => {
 			resolveActiveEditMode: () => "hashline" as const,
 			isDisposed: () => false,
 			promptGeneration: () => 0,
+			promptSequence: () => 0,
 			localProtocolOptions: () => ({}),
 			emitNotice() {},
 			schedulePostPromptTask() {},

@@ -7,6 +7,16 @@ class "minimax" {
 	}
 	// Replaces the MiniMax lineage branch in both OpenAI baselines.
 	reasoning-deltas-may-be-cumulative #true
+	// Replaces the identity default: M2/M3 thinking rides Anthropic adaptive
+	// thinking on every Messages route, custom provider ids included.
+	on-api "anthropic-messages" {
+		family "m2" {
+			thinking-mode "anthropic-adaptive"
+		}
+		family "m3" {
+			thinking-mode "anthropic-adaptive"
+		}
+	}
 	on "aimlapi" "coreweave" "fireworks" "huggingface" "kilo" "nanogpt" "novita" "nvidia" \
 		"opencode-go" "opencode-zen" "together" "venice" "wafer-serverless" "zenmux" {
 		family "m3" {

@@ -3303,12 +3303,22 @@ describe("large documents", () => {
 	for (const [name, doc] of displayMathScans) {
 		it(`lexes ${name} in time proportional to the document`, () => {
 			// CPU time, not wall time: a parallel run deschedules this process,
-			// which stretches wall time without adding work.
+			// which stretches wall time without adding work. Some platforms
+			// (Windows) account CPU time in ~16ms ticks, coarser than one lex of
+			// the small document, so each sample repeats the lex until it spans
+			// many ticks and reports the cost of one pass.
+			const minSampleMicros = 100_000;
 			const cost = (text: string): number => {
 				const start = process.cpuUsage();
-				extractMarkdownLinks(text);
-				const { user, system } = process.cpuUsage(start);
-				return user + system;
+				let passes = 0;
+				let elapsed = 0;
+				do {
+					extractMarkdownLinks(text);
+					passes++;
+					const { user, system } = process.cpuUsage(start);
+					elapsed = user + system;
+				} while (elapsed < minSampleMicros);
+				return elapsed / passes;
 			};
 			const small = doc(32 * 1024);
 			const large = doc(512 * 1024);

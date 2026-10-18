@@ -28,7 +28,7 @@
 	const invoke = async (action, options) => {
 		const response = await globalThis.__omp_prelude__("browser", { ...options, action });
 		if (response && typeof response.text === "string" && response.text.length > 0) {
-			globalThis.__omp_display__(response.text);
+			globalThis.__omp_log__("log", response.text);
 		}
 		return response && typeof response.details === "object" && response.details !== null ? response.details : {};
 	};

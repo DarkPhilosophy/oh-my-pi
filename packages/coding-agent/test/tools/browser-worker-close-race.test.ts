@@ -5,6 +5,7 @@ import { loadPuppeteerInWorker } from "@oh-my-pi/pi-coding-agent/tools/browser/l
 import { WorkerCore } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-worker";
 import type { Transport, WorkerInbound, WorkerOutbound } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
 import { spawnInlineWorkerForTest } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
+import { newUploadStagingDir } from "@oh-my-pi/pi-coding-agent/tools/browser/upload-files";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -193,6 +194,7 @@ async function initializeBiDiWorker(pages: ControlledBiDiPage[]): Promise<{ tran
 			targetId: pages[0]?.id ?? "",
 			browserWSEndpoint: "ws://127.0.0.1:1/session",
 			safeDir: getPuppeteerDir(),
+			uploadDir: newUploadStagingDir(),
 			dialogs: "accept",
 		},
 	});
@@ -377,6 +379,7 @@ it("does not acknowledge inline close until a late browser connection has discon
 				targetId: "",
 				browserWSEndpoint: "ws://127.0.0.1:1/session",
 				safeDir: getPuppeteerDir(),
+				uploadDir: newUploadStagingDir(),
 			},
 		});
 		await connecting.promise;
@@ -420,6 +423,7 @@ it("bounds supervisor termination while retaining cleanup of a late connection",
 				targetId: "",
 				browserWSEndpoint: "ws://127.0.0.1:1/session",
 				safeDir: getPuppeteerDir(),
+				uploadDir: newUploadStagingDir(),
 			},
 		});
 		await connecting.promise;

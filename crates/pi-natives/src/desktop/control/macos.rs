@@ -197,8 +197,8 @@ impl EscapeMonitor {
 		let Some((run_loop, stop_source)) = receive.recv().ok().flatten() else {
 			let _ = worker.join();
 			return Err(DesktopError::permission_denied(
-				"cannot monitor emergency Escape; macOS Accessibility/Input Monitoring permission is \
-				 required before input",
+				"cannot start the emergency Escape monitor: macOS refused its event tap, so no input \
+				 was sent; check Accessibility for the app that launched omp",
 			));
 		};
 		Ok(Self { thread: Some(worker), run_loop, stop_source })

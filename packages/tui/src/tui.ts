@@ -49,6 +49,7 @@ import {
 	encodeKittyDeletePlacement,
 	encodeKittyPlacementLine,
 	applyHerdrKittyGraphics,
+	getTerminalBackgroundColor,
 	ImageProtocol,
 	isImageProtocolForced,
 	isInsideTerminalMultiplexer,
@@ -59,6 +60,7 @@ import {
 	synchronizedOutputUserOverride,
 	TERMINAL,
 } from "./terminal-capabilities";
+import { onTerminalBackgroundFallbackChange } from "./theme/theme";
 import { compositeLineAt } from "./render/composite";
 import { tmuxMultiplexer } from "./multiplexers/tmux";
 import {
@@ -1061,6 +1063,8 @@ export class TUI extends Container {
 	#terminalFocusListeners = new Set<(focused: boolean) => void>();
 	#terminalFocused = true;
 	#startListeners = new Set<StartListener>();
+	/** True from the end of start() until stop(): the terminal modes start listeners enable are live. */
+	#started = false;
 	#paintListeners = new Set<PaintListener>();
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
@@ -1174,6 +1178,7 @@ export class TUI extends Container {
 	#forceViewportRepaintOnNextRender = false;
 	#hasEverRendered = false;
 	#stopped = false;
+	#appearanceReportUnsubscribe: (() => void) | undefined;
 	#cancelPostmortemRestore?: () => void;
 	/** True between a `deferInput` start() and enableInput(). */
 	#inputDeferred = false;
@@ -1708,6 +1713,34 @@ export class TUI extends Container {
 	start(options?: TUIStartOptions): void {
 		this.#stopped = false;
 		this.#hasStarted = true;
+		this.#appearanceReportUnsubscribe?.();
+		let backgroundRgb: number | undefined;
+		let subscribed = true;
+		const repaintForBackgroundChange = () => {
+			if (!subscribed || this.#stopped) return;
+			const nextBackgroundRgb = getTerminalBackgroundColor();
+			// Track RGB before the SIXEL guard: the startup OSC 11 reply usually
+			// arrives before DA1 enables SIXEL, so revisiting the same color once
+			// SIXEL is live must not replay identical rows.
+			if (nextBackgroundRgb === backgroundRgb) return;
+			backgroundRgb = nextBackgroundRgb;
+			if (TERMINAL.imageProtocol !== ImageProtocol.Sixel) return;
+			// Track RGB even during optimistic native ownership: fallback paints
+			// with the latest color, so a later return to the startup RGB must repaint.
+			// Never write rows while the native surface still owns rendering.
+			if (this.#nativeLive) return;
+			this.invalidate();
+			// Match theme changes: replay owned history on direct terminals, but
+			// leave multiplexer scrollback intact and repaint only the viewport.
+			this.requestRender(true, { clearScrollback: !isInsideTerminalMultiplexer() });
+		};
+		const unsubscribe = this.terminal.onAppearanceReport?.(repaintForBackgroundChange);
+		const unsubscribeFallback = onTerminalBackgroundFallbackChange(repaintForBackgroundChange);
+		this.#appearanceReportUnsubscribe = () => {
+			subscribed = false;
+			unsubscribe?.();
+			unsubscribeFallback();
+		};
 		this.#debugPaint = undefined;
 		this.#debugServer?.stop();
 		this.#debugServer = undefined;
@@ -1861,16 +1894,14 @@ export class TUI extends Container {
 				},
 			},
 		);
+		// ProcessTerminal.start() resets the previous owner's RGB. Seed only
+		// after that reset so an identical OSC 11 reply still repaints fallback rows.
+		backgroundRgb = TERMINAL.imageProtocol === ImageProtocol.Sixel ? getTerminalBackgroundColor() : undefined;
 		if (this.#stopped) return;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = postmortem.register("tui-restore", () => this.stop());
-		for (const listener of this.#startListeners) {
-			try {
-				listener();
-			} catch {
-				// Startup listeners are feature hooks; one broken hook must not prevent rendering.
-			}
-		}
+		for (const listener of this.#startListeners) this.#runStartListener(listener);
+		this.#started = !this.#stopped;
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
 		if (!this.#inputDeferred) {
@@ -2746,11 +2777,27 @@ export class TUI extends Container {
 		if (this.#heldInput !== undefined && this.#heldFocus === previous) this.#heldFocus = next;
 	}
 
+	/**
+	 * Register a hook that re-enables terminal modes on every start(). A hook
+	 * added while the TUI is already running (a prepaint composer starts it
+	 * before the interactive mode wires its controllers) missed that start, so
+	 * it runs immediately instead of waiting for a stop/start cycle that may
+	 * never come.
+	 */
 	addStartListener(listener: StartListener): () => void {
 		this.#startListeners.add(listener);
+		if (this.#started) this.#runStartListener(listener);
 		return () => {
 			this.#startListeners.delete(listener);
 		};
+	}
+
+	#runStartListener(listener: StartListener): void {
+		try {
+			listener();
+		} catch {
+			// Startup listeners are feature hooks; one broken hook must not prevent rendering.
+		}
 	}
 
 	addInputListener(listener: InputListener): () => void {
@@ -2963,6 +3010,8 @@ export class TUI extends Container {
 	}
 
 	stop(): void {
+		this.#appearanceReportUnsubscribe?.();
+		this.#appearanceReportUnsubscribe = undefined;
 		this.#cancelPostmortemRestore?.();
 		this.#cancelPostmortemRestore = undefined;
 		this.#debugServer?.stop();
@@ -3037,6 +3086,7 @@ export class TUI extends Container {
 		// (and live-session ghosts are already bounded by the inline-image budget).
 		this.#clearSixelProbeState();
 		this.#stopped = true;
+		this.#started = false;
 		this.#watchdog.stop();
 		if (this.#renderTimer) {
 			this.#renderTimer.cancel();
@@ -3102,6 +3152,13 @@ export class TUI extends Container {
 			return;
 		}
 		this.#requestOrdinaryRender();
+	}
+
+	/** Run `callback` after `delayMs` on the render scheduler's clock, unless the TUI has stopped. */
+	scheduleAfter(delayMs: number, callback: () => void): RenderTimer {
+		return this.#renderScheduler.scheduleRender(() => {
+			if (!this.#stopped) callback();
+		}, delayMs);
 	}
 
 	/**

@@ -84,8 +84,17 @@ describe("eval renderer: viewport tail window for cell code", () => {
 		const details: EvalToolDetails = {
 			language: "js",
 			languages: ["js"],
-			jsonOutputs: [{ preview: { ok: true } }],
-			cells: [{ index: 0, code: "display(r)", language: "js", output: "", status: "complete", statusEvents: [] }],
+			cells: [
+				{
+					index: 0,
+					code: "print(r)",
+					language: "js",
+					output: '{"preview":{"ok":true}}',
+					views: [{ text: '{"preview":{"ok":true}}', view: { kind: "json", value: { preview: { ok: true } } } }],
+					status: "complete",
+					statusEvents: [],
+				},
+			],
 		};
 		const rendered = evalToolRenderer
 			.renderResult({ content: [{ type: "text", text: "" }], details }, { expanded: false, isPartial: false }, theme)

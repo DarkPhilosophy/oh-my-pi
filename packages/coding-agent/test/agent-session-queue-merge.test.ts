@@ -134,10 +134,10 @@ describe("AgentSession queue coalescing", () => {
 		const gate = Promise.withResolvers<void>();
 		const claimed = Promise.withResolvers<void>();
 		const original = target.agent.prepareQueuedMessages;
-		target.agent.prepareQueuedMessages = async (messages, signal) => {
+		target.agent.prepareQueuedMessages = async (messages, signal, context) => {
 			claimed.resolve();
 			await gate.promise;
-			return original ? original(messages, signal) : undefined;
+			return original ? original(messages, signal, context) : undefined;
 		};
 		let queuedDuringClaim: readonly string[] = [];
 		let armed = false;

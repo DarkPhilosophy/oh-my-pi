@@ -173,6 +173,14 @@ Scope differs between the two `PI_PROXY` forms:
 Loopback, link-local, private-range (`10/8`, `172.16/12`, `192.168/16`), and
 `NO_PROXY` targets always bypass, so local model servers and MCP hosts stay direct.
 
+### Request body compression
+
+Request bodies of 1 KiB or more are compressed when sent to a provider's own endpoint that decodes them, as declared by the `request-encodings` / `endpoint-hosts` catalog rules: the official Anthropic API (gzip), the ChatGPT Codex backend (zstd), and the GitHub Copilot API at `api[.individual|.business|.enterprise].githubcopilot.com` (zstd, falling back to gzip). Proxies, relays, models.yml gateways (even under a built-in provider id), and every other host receive uncompressed JSON. If an endpoint, or a TLS-inspecting proxy in front of it, rejects an encoding and the uncompressed resend succeeds, that encoding stays off for the host for the rest of the process.
+
+| Variable                 | Behavior                                                                          |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `PI_REQUEST_COMPRESSION` | `0`/`false`/`no`/`off` sends every request body uncompressed (enabled by default) |
+
 ### Anthropic Foundry Gateway (Azure / enterprise proxy)
 
 When `CLAUDE_CODE_USE_FOUNDRY` is enabled, Anthropic requests switch to Foundry mode:
@@ -340,7 +348,6 @@ therefore completes through the paste-code path.
 | `PI_CODEX_WEBSOCKET`                        | `1`/`true` enables websocket transport preference                                                                                                                                                             |
 | `PI_CODEX_RESPONSES_LITE`                   | `1`/`true` opts normal inference into Responses Lite; `0`/`false` forces the standard Responses body; unset defaults normal inference to full Responses                                                       |
 | `PI_OPENAI_STATEFUL`                        | Overrides the stateful-chaining default for the platform OpenAI Responses API (`previous_response_id`, forces `store: true`): on by default against api.openai.com, off elsewhere                             |
-| `PI_CODEX_ZSTD`                             | `0`/`false` disables zstd compression of request bodies sent to the official Codex API (enabled by default)                                                                                                   |
 | `PI_CODEX_WEBSOCKET_IDLE_TIMEOUT_MS`        | Positive integer override (default `300000`)                                                                                                                                                                  |
 | `PI_CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS` | First-event timeout override (default `300000`)                                                                                                                                                               |
 | `PI_CODEX_WEBSOCKET_PING_INTERVAL_MS`       | Ping interval override (default `10000`)                                                                                                                                                                      |

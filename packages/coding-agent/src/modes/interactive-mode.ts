@@ -352,7 +352,9 @@ import type {
 	InteractiveSelectorDialogOptions,
 	RenderSessionContextOptions,
 	RightInfoProvider,
+	SessionPickHandler,
 	ShowStatusOptions,
+	SelectOnlyModelSelectorOptions,
 	SubmittedUserInput,
 } from "./types";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -1873,8 +1875,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#toolUiContextSetter = setToolUIContext;
 		this.lspServers = lspServers;
 		this.mcpManager = mcpManager;
+		// An MCP sign-in can wait for the user mid-turn; like the auto-QA and cfg:// prompts below, it runs as a wait for
+		// the user (AgentSession.waitForUser).
 		this.mcpManager?.setAuthHandler((serverName, challenge) =>
-			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
+			this.session.waitForUser(() => new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge)),
 		);
 		this.#eventBus = eventBus;
 		this.#hostedDetach = host?.onDetach;
@@ -2208,7 +2212,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// signal arriving mid-Ctrl+C no-ops instead of racing a second dispose.
 		this.#signalTeardown = createSessionTeardown({
 			getDraftText: () => this.#inputController.getDraftText(),
-			beginDispose: () => this.session.beginDispose(),
+			beginDispose: () => {
+				this.session.beginDispose();
+				this.statusLine.dispose();
+			},
 			saveDraft: text => this.sessionManager.saveDraft(text),
 			disposeSession: async reason => {
 				await this.#btwController.dispose();
@@ -2228,16 +2235,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Wire the report_tool_issue consent gate to the Yes/No dialog popup.
 		// The handler is process-global — subagent tools (which can't reach
 		// `showHookSelector` on their own) resolve through this exact closure.
-		// Persist against the UI owner's settings, including hosted sessions that
-		// deliberately do not install a process-global Settings singleton.
-		setAutoQaConsentHandler(() => this.#promptAutoQaConsent(), this.settings);
+		// Persist against the UI owner's settings, including hosted sessions.
+		setAutoQaConsentHandler(() => this.session.waitForUser(() => this.#promptAutoQaConsent()), this.settings);
 		// Same wiring for cfg:// writes: every settings change the agent makes is
 		// confirmed here, and `/save` persists to disk. Subagents and headless
 		// sessions are refused by the handler before reaching this host. Changes
 		// to this session's settings get the settings panel's in-process side
 		// effects (a `defaultThinkingLevel` change also switches the live session).
 		setCfgApprovalHost({
-			approve: (request, options) => this.#promptCfgChange(request, options?.signal),
+			// With `ask.timeout` set the prompt settles on its own and the turn goes on, so it stays agent time,
+			// like a timed `ask`.
+			approve: (request, options) =>
+				askTimeoutMs(this.session.settings) === undefined
+					? this.session.waitForUser(() => this.#promptCfgChange(request, options?.signal))
+					: this.#promptCfgChange(request, options?.signal),
 			applied: change => {
 				if (change.settings !== this.session.settings) return;
 				this.#selectorController.handleSettingChange(change.path, change.value);
@@ -2542,6 +2553,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			// so that paint does not build it on the JS thread. Fresh sessions skip it
 			// and pay the cost lazily on the first highlight, if any.
 			if (this.session.messages.length > 0) void warmHighlighter();
+			// Open the model API connection while the user reads the first frame.
+			this.session.prewarmModelConnection();
 			if (!$env.PI_NO_TITLE && !this.sessionManager.getSessionName()) {
 				this.#inputController.prewarmTinyTitleModel();
 			}
@@ -2601,6 +2614,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.subscribe(event => {
 				if (event.type === "model_changed") {
 					this.#updateWelcomeModel();
+					this.#scheduleComposerStatusPersist();
+					this.session.prewarmModelConnection();
 				}
 				if (event.type === "config_warnings_changed") {
 					this.#syncConfigWarningHeader();
@@ -4157,7 +4172,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// their own mode.
 		const context = this.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(this.settings),
-			keepDanglingToolCalls: this.viewSession.isStreaming,
+			keepInFlightToolCalls: this.viewSession.isStreaming,
 		});
 		const preservedLiveToolCallIds = new Set(livePendingTools.keys());
 		const replayedLiveToolResultIndices = new Map<string, number>();
@@ -5443,10 +5458,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		// write/edit guard. The standing handler below consumes plan-approval
 		// dispatches.
 		const planAugmentations: string[] = [];
+		// A shadowing extension tool named `write` has no `xd://` transport, so plan
+		// approval would never dispatch and the turn would loop on propose writes
+		// forever (issue #14030). Drop it from the active set rather than carrying it
+		// over: keeping it active breaks both the read-only guarantee and approval.
 		if (this.session.hasBuiltInTool("write")) {
 			planAugmentations.push("write");
+		} else if (previousTools.includes("write")) {
+			this.showWarning(
+				"Plan mode: the `write` tool is provided by an extension and cannot submit plans. Disable it to use plan mode.",
+			);
 		}
-		const uniquePlanTools = [...new Set([...previousTools, ...planAugmentations])];
+		const uniquePlanTools = [...new Set([...previousTools.filter(name => name !== "write"), ...planAugmentations])];
 
 		this.#planModePreviousToolPresentation = {
 			enabled: previousTools.filter(name => !isMCPToolName(name)),
@@ -7639,7 +7662,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		const cmd = [...resolveCliEntryCmd(), ...restartArgv(process.argv.slice(2), this.#resumableSessionId())];
+		const sessionFile = this.sessionManager.isSessionOnDisk() ? this.sessionManager.getSessionFile() : undefined;
+		const cmd = [
+			...resolveCliEntryCmd(),
+			...restartArgv(process.argv.slice(2), sessionFile ? path.resolve(sessionFile) : undefined),
+		];
 		await postmortem.cleanup();
 		await postmortem.drainStdout();
 		if (process.platform !== "win32") {
@@ -8839,7 +8866,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		void this.#selectorController.showGitTui(revision);
 	}
 
-	showModelSelector(options?: { temporaryOnly?: boolean }): void {
+	showModelSelector(options?: { temporaryOnly?: boolean; selectOnly?: SelectOnlyModelSelectorOptions }): void {
 		this.#selectorController.showModelSelector(options);
 	}
 
@@ -8867,8 +8894,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showThinkingSelector();
 	}
 
-	showSessionSelector(source?: ForeignSessionSource): void {
-		void this.#selectorController.showSessionSelector(source);
+	showSessionSelector(source?: ForeignSessionSource, onSelect?: SessionPickHandler): void {
+		void this.#selectorController.showSessionSelector(source, onSelect);
 	}
 
 	async handleResumeSession(sessionPath: string): Promise<void> {

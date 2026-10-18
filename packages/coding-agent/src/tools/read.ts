@@ -1231,8 +1231,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	/**
 	 * Reinterpret a read target pointing at a video file. Timestamp selectors
 	 * (`clip.mp4:1h5m42s`, `clip.mp4:0:05`) never survive line-selector parsing,
-	 * so peel one off the raw path whenever the base names an existing video
-	 * file; a literal file named by the full path (colon included) still wins.
+	 * so peel one off the raw path whenever it parses as a video frame or
+	 * timestamp selector; a literal file named by the peeled path wins, and
+	 * `splitPathAndSelPreferringLiteral` already reports the full entry as the
+	 * peeled path whenever that entry exists. The base does not have to sit in
+	 * the session cwd: unique workspace suffixes still resolve it, and a genuinely
+	 * missing file then reports its path instead of a colon-mangled one.
 	 */
 	async #applyVideoSelectorFallback(
 		literalSplit: { path: string; sel?: string },
@@ -1240,8 +1244,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	): Promise<{ path: string; sel?: string }> {
 		const videoSplit = splitVideoReadTarget(readPath);
 		if (!videoSplit) return literalSplit;
-		if ((await probeLiteralPathExists(videoSplit.path, this.session.cwd)) === "missing") return literalSplit;
-		if ((await probeLiteralPathExists(readPath, this.session.cwd)) === "exists") return literalSplit;
+		if ((await probeLiteralPathExists(literalSplit.path, this.session.cwd)) === "exists") return literalSplit;
 		return videoSplit;
 	}
 
@@ -1501,6 +1504,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		outputText: string;
 		columnCut: ColumnCut | undefined;
 		displayContent?: { text: string; startLine: number; lineNumbers?: Array<number | null> };
+		rowPrefixes?: boolean;
 		bridgeResult?: AgentToolResult<ReadToolDetails>;
 	}> {
 		const rawSelector = isRawSelector(parsed);
@@ -1664,7 +1668,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (notices.length > 0) {
 			outputText = outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n");
 		}
-		return { outputText, columnCut, displayContent };
+		return { outputText, columnCut, displayContent, rowPrefixes: shouldAddHashLines || shouldAddLineNumbers };
 	}
 
 	async execute(
@@ -2260,6 +2264,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					}
 					details = {
 						displayContent: { text: renderedSummary.displayText, startLine: 1 },
+						rowPrefixes: renderedSummary.rowPrefixes,
 						summary: {
 							lines: countTextLines(renderedSummary.text),
 							elidedSpans: renderedSummary.elidedRanges.length,
@@ -2289,7 +2294,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					if (multiResult.bridgeResult) return multiResult.bridgeResult;
 					content = [{ type: "text", text: multiResult.outputText }];
 					sourcePath = absolutePath;
-					details = multiResult.displayContent ? { displayContent: multiResult.displayContent } : {};
+					details = {
+						...(multiResult.displayContent && { displayContent: multiResult.displayContent }),
+						rowPrefixes: multiResult.rowPrefixes,
+					};
 					columnCut = multiResult.columnCut;
 				} else {
 					// Raw text or line-range mode
@@ -2644,6 +2652,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						sourcePath = renderAbsolutePath;
 					}
 					if (reachedEof) details.totalLines = totalFileLines;
+					details.rowPrefixes = shouldAddHashLines || shouldAddLineNumbers;
 
 					if (hashContext?.tag) {
 						recordFullySeenRows(getEditStore(this.session), absolutePath, hashContext.tag, outputText, cutLines);

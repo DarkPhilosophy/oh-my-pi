@@ -18,6 +18,7 @@ import {
 	requestApproval,
 	resolveApproval,
 	resolveApprovalFromContext,
+	sessionApprovalScope,
 	truncateForPrompt,
 } from "../../tools/approval";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
@@ -344,10 +345,15 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			context !== undefined &&
 			Object.hasOwn(context, "acpApprovedArgs") &&
 			Bun.deepEquals(effectiveParams, context.acpApprovedArgs);
+		// A prompt the approval mode raised can be approved for the rest of the session; provider
+		// safety checks are per-call, so they never offer it.
+		const sessionScope =
+			pendingSafetyChecks.length === 0 ? sessionApprovalScope(resolved, this.tool.name) : undefined;
+		const sessionApproved = sessionScope !== undefined && this.runner.hasSessionApproval(sessionScope.key);
 		const approvalCheck = {
 			required:
 				pendingSafetyChecks.length > 0 ||
-				(resolved.policy === "prompt" && !acpBypass && (explicitPrompt || !xdevBypass)),
+				(resolved.policy === "prompt" && !acpBypass && !sessionApproved && (explicitPrompt || !xdevBypass)),
 			reason: resolved.reason,
 		};
 
@@ -411,7 +417,13 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				pendingSafetyChecks.length > 0 ? ["Provider safety checks:", ...safetyCheckLines(pendingSafetyChecks)] : [];
 			let approved: boolean;
 			try {
-				approved = await requestApproval(uiContext, this.tool, resolvedArgs, approvalCheck.reason, safetyAppendix);
+				const answer = await requestApproval(uiContext, this.tool, resolvedArgs, {
+					reason: approvalCheck.reason,
+					appendix: safetyAppendix,
+					sessionSubject: sessionScope?.subject,
+				});
+				approved = answer !== "deny";
+				if (answer === "session" && sessionScope) this.runner.grantSessionApproval(sessionScope.key);
 			} catch (err) {
 				await emitApprovalResolved(false, err instanceof Error ? err.message : "approval aborted");
 				cancelPreflight();

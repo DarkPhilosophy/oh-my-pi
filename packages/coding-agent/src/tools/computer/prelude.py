@@ -60,7 +60,7 @@ def _make_computer():
         return {"method": method, "args": _arguments(args, kwargs)}
 
     class _Observation(dict):
-        """A non-silent observe() result; its displays leave out the `ax` tree observe() already printed."""
+        """A non-silent observe() result; its printed text leaves out the `ax` tree observe() already printed."""
 
         __slots__ = ()
 
@@ -69,9 +69,6 @@ def _make_computer():
 
         def __repr__(self):
             return repr(self._shown())
-
-        def _repr_mimebundle_(self, include=None, exclude=None):
-            return {"application/json": self._shown(), "text/plain": repr(self)}
 
         def __reduce__(self):
             # Pickle and copy as the plain dict, `ax` included: this class is local to the prelude.

@@ -28,7 +28,7 @@
 	const invoke = async (action, options) => {
 		const response = await globalThis.__omp_prelude__("computer", { ...options, action });
 		if (response && typeof response.text === "string" && response.text.length > 0) {
-			globalThis.__omp_display__(response.text);
+			globalThis.__omp_log__("log", response.text);
 		}
 		return response && typeof response.details === "object" && response.details !== null ? response.details : {};
 	};
@@ -171,7 +171,7 @@
 			foundElements((await callValue(via(step("find", [query])))).map(makeElement)),
 		);
 		// A non-silent observe() already printed its tree; `ax` stays readable but is left out
-		// of display, spread and serialization, so a trailing `await win.observe()` shows it once.
+		// of printing, spread and serialization, so a trailing `await win.observe()` shows it once.
 		defineMethod(win, "observe", async options => {
 			const silent = Boolean(options?.silent);
 			const observation = await callValue(via(step("observe", [options])));

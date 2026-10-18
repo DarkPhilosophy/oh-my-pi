@@ -571,6 +571,8 @@ export interface OpenAICompat {
 	reasoningDeltasMayBeCumulative?: boolean;
 	/** Strip leaked DeepSeek chat-template special tokens from visible content deltas. Default: auto-detected. */
 	stripDeepseekSpecialTokens?: boolean;
+	/** Drop assistant thinking blocks from replayed chat-completions history. Default: false. */
+	stripThinkingHistory?: boolean;
 	/** Heal leaked chat-template/tool-call/thinking markup from visible content deltas. Default: auto-detected. */
 	streamMarkupHealingPattern?: OpenAIStreamMarkupHealingPattern;
 	/** Whether this wire may revise already-streamed text (`stream-revision` axis). Unassigned: append-only. */
@@ -1042,6 +1044,7 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 			| "requiresAssistantAfterToolResult"
 			| "requiresAssistantContentForToolCalls"
 			| "stripDeepseekSpecialTokens"
+			| "stripThinkingHistory"
 			| "streamMarkupHealingPattern"
 			| "reasoningDeltasMayBeCumulative"
 			| "emptyLengthFinishIsContextError"
@@ -1080,6 +1083,9 @@ export type ResolvedOpenAICompat = ResolvedOpenAISharedCompat &
 		cacheControlFormat?: OpenAICompat["cacheControlFormat"];
 		thinkingKeep?: OpenAICompat["thinkingKeep"];
 		streamIdleTimeoutMs?: number;
+		stripThinkingHistory?: boolean;
+		/** The configured `baseUrl` is the official OpenAI API (provider `openai`); unset otherwise. */
+		officialEndpoint?: boolean;
 		toolStrictMode: ResolvedToolStrictMode;
 		/** The model sits behind Vercel AI Gateway. */
 		isVercelGatewayHost: boolean;
@@ -1333,6 +1339,14 @@ export type ResolvedGoogleCompat = Required<
 	maxImagePayloadBytes?: number;
 };
 
+/** Ollama chat history compatibility resolved by the catalog. */
+export interface OllamaCompat {
+	/** Omit assistant thinking when the deployment rejects it in history. */
+	stripThinkingHistory?: boolean;
+}
+
+export type ResolvedOllamaCompat = Required<OllamaCompat>;
+
 /** Sparse, user-authored compat overrides for a given API (models.json / config vocabulary). */
 export type CompatConfigOf<TApi extends Api> = TApi extends
 	| "openai-completions"
@@ -1349,7 +1363,9 @@ export type CompatConfigOf<TApi extends Api> = TApi extends
 				? DevinCompat
 				: TApi extends "google-generative-ai" | "google-vertex" | "google-gemini-cli"
 					? GoogleCompat
-					: undefined;
+					: TApi extends "ollama-chat"
+						? OllamaCompat
+						: undefined;
 
 /** Resolved compat for a given API: complete record, materialized once by `buildModel`. */
 export type CompatOf<TApi extends Api> = TApi extends "openrouter"
@@ -1366,7 +1382,9 @@ export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 						? ResolvedDevinCompat
 						: TApi extends "google-generative-ai" | "google-vertex" | "google-gemini-cli"
 							? ResolvedGoogleCompat
-							: undefined;
+							: TApi extends "ollama-chat"
+								? ResolvedOllamaCompat
+								: undefined;
 
 /** Provider-native compaction endpoint configuration for one model. */
 export interface RemoteCompactionConfig<TApi extends Api = Api> {
@@ -1567,6 +1585,12 @@ export interface Model<TApi extends Api = Api> {
 	 */
 	imageInputDecoder?: "stb";
 	/**
+	 * Most images one request may carry, from user configuration. Replaces the
+	 * catalog's `image-count-budget` for hosts no rule names, such as a custom
+	 * gateway in front of a vendor with a higher limit.
+	 */
+	imageCountBudget?: number;
+	/**
 	 * Native provider tool-call support. `false` is the only unsupported signal:
 	 * `true` and `undefined` both mean callers may use native tools. Catalog and
 	 * discovery sources should set this sparsely when an upstream explicitly
@@ -1648,6 +1672,8 @@ export interface Model<TApi extends Api = Api> {
 	contextWindow: number | null;
 	/** Preserve the host's supplied window instead of applying inferred expansion or reference-price caps. */
 	contextWindowAuthoritative?: boolean;
+	/** The long-context price tier does not cap the runtime context window when extended context is off. */
+	longContextWindowUncapped?: boolean;
 	/** Optional larger prompt window available when extended context is enabled. */
 	maxContextWindow?: number;
 	maxTokens: number | null;

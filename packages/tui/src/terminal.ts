@@ -25,6 +25,7 @@ import {
 	NotifyProtocol,
 	setCellDimensions,
 	setOsc99Supported,
+	setTerminalBackgroundColor,
 	setTerminalGlyphProtocol,
 	TERMINAL,
 } from "./terminal-capabilities";
@@ -61,6 +62,38 @@ const TSP_OSC_PREFIX = `\x1b]877;${TSP_PREFIX.slice(2)}`;
 
 /** How long a TSP hello waits for its reply inside tmux, which answers DA1 itself. */
 const TSP_TMUX_HELLO_TIMEOUT_MS = 1000;
+
+/** Tern names itself in `TERM_PROGRAM`; a multiplexer started in a Tern pane may leave it behind. */
+function isTernPane(env: NodeJS.ProcessEnv): boolean {
+	return env.TERM_PROGRAM?.toLowerCase() === "tern";
+}
+
+/**
+ * Why a TSP `hello` cannot reach the terminal from this environment, or
+ * `null` when nothing in between is known to drop APC.
+ *
+ * In a Tern pane only a multiplexer's session marker counts: Tern sets
+ * `TERM=xterm-kitty`, so a `screen*`/`tmux*` TERM next to `TERM_PROGRAM=tern`
+ * without a marker was rewritten (shell rc, dev shell, `.env`), not set by a
+ * multiplexer. Elsewhere the TERM fallback keeps classifying sessions whose
+ * markers were stripped.
+ *
+ * devenv (2.0+) runs `devenv shell` in its own PTY and redraws the pane from a
+ * terminal emulator to keep its reload status line: it forwards DA1 to the
+ * real terminal but drops APC, so the DA1 reply always wins. It exports
+ * `DEVENV_RELOAD_FILE` only into that reloading shell; `devenv shell
+ * --no-reload` runs the shell on the real terminal.
+ */
+function tspPathBlocker(env: NodeJS.ProcessEnv): string | null {
+	const multiplexer = isTernPane(env)
+		? terminalMultiplexerSessions(env).find(session => session.ownsScreenGrid)
+		: classifyTerminalMultiplexerModule(env);
+	if (multiplexer?.ownsScreenGrid) return `inside a ${multiplexer.id} session, which swallows APC`;
+	if (env.DEVENV_RELOAD_FILE) {
+		return "inside devenv's reloading shell, which redraws the pane and drops APC; `devenv shell --no-reload` avoids it";
+	}
+	return null;
+}
 
 /**
  * The TSP message a reassembled input string holds, in APC form, or
@@ -140,9 +173,22 @@ export function chunkForConPTY(data: string, maxChunkBytes: number = MAX_CONPTY_
 	let pos = 0;
 	while (pos < len) {
 		let bytes = 0;
-		// Index just past the most recent `\n` we've consumed inside [pos, i):
-		// the natural cut point that leaves escape sequences intact.
+		// Index just past the most recent line terminator we have consumed
+		// inside [pos, i): the natural cut point that leaves escape sequences
+		// and rows intact.
+		//
+		// Both terminators must be tracked. A full paint separates rows with
+		// `\r\n` and a newline alone is enough. A *diff* paint does not: TUI's
+		// row diff (`TUI#renderProviderFrame`, the `diffable` branch) addresses
+		// every changed row with `CSI row;1H` and closes it with a bare `\r`,
+		// emitting no `\n` anywhere in the frame. A newline-only tracker
+		// therefore finds no boundary in a diff paint and falls through to the
+		// hard cut at `i`, slicing the buffer through the middle of a row's
+		// text. Every boundary between two `process.stdout.write` calls is a
+		// point a foreign writer can inject into, so a hard cut lets unrelated
+		// output land inside a row instead of between rows.
 		let lastNewlineEnd = -1;
+		let lastCarriageReturnEnd = -1;
 		let i = pos;
 		while (i < len) {
 			const cu = data.charCodeAt(i);
@@ -168,16 +214,25 @@ export function chunkForConPTY(data: string, maxChunkBytes: number = MAX_CONPTY_
 				cuBytes = 3;
 			}
 			if (bytes + cuBytes > maxChunkBytes && i > pos) {
-				// Would overflow the cap. Cut at the last newline if we found one,
-				// otherwise hard-cut at the current code-point boundary.
-				const cut = lastNewlineEnd > pos ? lastNewlineEnd : i;
-				chunks.push(data.slice(pos, cut));
-				pos = cut;
+				// Cut at the last line terminator. A `\r` that opens a `\r\n` pair is
+				// never tracked (see below), so the pair always stays in one
+				// `WriteFile` call. Falls back to the code-point boundary `i` only
+				// when the window holds no terminator at all (a single row longer
+				// than the cap), which still makes forward progress.
+				const cut = Math.max(lastNewlineEnd, lastCarriageReturnEnd);
+				let end = cut > pos ? cut : i;
+				// A hard cut landing between `\r` and `\n` moves back before the `\r`.
+				if (end === i && data.charCodeAt(i) === 0x0a && data.charCodeAt(i - 1) === 0x0d && i - 1 > pos) end = i - 1;
+				chunks.push(data.slice(pos, end));
+				pos = end;
 				break;
 			}
 			bytes += cuBytes;
 			i += cuLen;
+			// A `\r` directly followed by `\n` is half of a `\r\n` pair, even when the
+			// `\n` lies past the cap, so it is never a cut point on its own.
 			if (cu === 0x0a) lastNewlineEnd = i;
+			else if (cu === 0x0d && data.charCodeAt(i) !== 0x0a) lastCarriageReturnEnd = i;
 		}
 		if (i >= len) {
 			chunks.push(data.slice(pos));
@@ -499,7 +554,7 @@ export type GlyphProtocolReportHandler = (supported: boolean) => void;
 /**
  * Outcome of the Tern Surface Protocol `hello` probe: the terminal's reply,
  * or null when it answered the DA1 sentinel first (no TSP) or the probe was
- * skipped (`PI_TUI_NATIVE=0`, multiplexers).
+ * skipped (`PI_TUI_NATIVE=0`, multiplexers, devenv's reloading shell).
  */
 export type TspHelloHandler = (hello: TspHello | null) => void;
 
@@ -902,6 +957,7 @@ export class ProcessTerminal implements Terminal {
 	#tspPending = false;
 	#tspResult: TspHello | null | undefined;
 	#tspQueryGeneration = 0;
+	#tspFallbackLogged = false;
 	#tspCallbacks: TspHelloHandler[] = [];
 	/** Hello deadline inside tmux, where no DA1 sentinel can end the probe. */
 	#tspTimeout: NodeJS.Timeout | undefined;
@@ -1056,13 +1112,13 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	get tspExpected(): boolean {
-		// A multiplexer started from Tern can leave `TERM_PROGRAM=tern` behind
-		// while swallowing APC, even when `PI_TUI_NATIVE=1` forces the probe.
+		// A multiplexer or relay started from Tern can leave `TERM_PROGRAM=tern`
+		// behind while swallowing APC, even when `PI_TUI_NATIVE=1` forces the probe.
 		return (
-			$env.TERM_PROGRAM?.toLowerCase() === "tern" &&
-			!isInsideTerminalMultiplexer($env) &&
+			isTernPane($env) &&
+			tspPathBlocker($env) === null &&
 			!isTerminalHeadless() &&
-			this.#shouldQueryTspSupport()
+			this.#tspProbeSkipReason() === null
 		);
 	}
 
@@ -1090,6 +1146,8 @@ export class ProcessTerminal implements Terminal {
 		// Own stdout: out-of-band writers route through this terminal, and the
 		// emergency restore finds it on crash.
 		setActiveTerminal(this);
+		// RGB belongs to this ownership session, including deferred-input prepaint.
+		setTerminalBackgroundColor(undefined);
 		terminalEverStarted = true;
 		// Own the blocking write(2) on a pump thread (unix TTYs only). A stale
 		// prebuilt natives module without the export falls back to direct writes.
@@ -1546,7 +1604,10 @@ export class ProcessTerminal implements Terminal {
 					}
 					case "tsp": {
 						// DA1 before any `tsp;r` reply: the terminal doesn't speak TSP.
-						this.#resolveTspSupport(null);
+						this.#resolveTspSupport(
+							null,
+							"DA1 was answered before a hello reply: the terminal, or a layer in between, dropped the APC query",
+						);
 						break;
 					}
 				}
@@ -1883,17 +1944,28 @@ export class ProcessTerminal implements Terminal {
 		}
 	}
 
-	#shouldQueryTspSupport(): boolean {
+	/** Why the `hello` probe does not run, or `null` when it does. */
+	#tspProbeSkipReason(): string | null {
 		const override = $env.PI_TUI_NATIVE;
-		if (override === "0") return false;
+		if (override === "0") return "PI_TUI_NATIVE=0";
 		// tmux makes APC bodies the pane title unless the hosting terminal asked
 		// for TSP through `@tern-tsp`: no override may force the probe there.
-		if (tmuxMultiplexer.isInside($env)) return tmuxSessionSpeaksTsp($env);
-		if (override === "1") return true;
-		if (canQueryHerdrNativeTransport($env)) return true;
-		// Multiplexers swallow APC, so the reply could never arrive.
-		if (isInsideTerminalMultiplexer($env)) return false;
-		return !isBunTestRuntime();
+		if (tmuxMultiplexer.isInside($env)) {
+			return tmuxSessionSpeaksTsp($env) ? null : "inside a tmux session without the @tern-tsp option";
+		}
+		if (override === "1") return null;
+		if (canQueryHerdrNativeTransport($env)) return null;
+		// The reply could never arrive.
+		const blocker = tspPathBlocker($env);
+		if (blocker !== null) return blocker;
+		return isBunTestRuntime() && $env.PI_TUI_TSP_PROBE !== "1" ? "bun test runtime" : null;
+	}
+
+	/** A Tern pane that ends up on the classic renderer says why in the log, once. */
+	#logTspFallback(reason: string): void {
+		if (this.#tspFallbackLogged || !isTernPane($env)) return;
+		this.#tspFallbackLogged = true;
+		logger.debug("TSP: Tern pane keeps the classic renderer", { reason });
 	}
 
 	#queryTspSupport(): void {
@@ -1902,11 +1974,12 @@ export class ProcessTerminal implements Terminal {
 		this.#tspResult = undefined;
 		this.#tspReplyBuffer = "";
 		if (this.#dead) return;
+		const skipReason = this.#tspProbeSkipReason();
 		const probe = (available: boolean) => {
 			if (!this.#active || this.#dead || generation !== this.#tspQueryGeneration) return;
 			if (!available) {
 				this.#tspPending = true;
-				this.#resolveTspSupport(null);
+				this.#resolveTspSupport(null, skipReason ?? "native transport unavailable");
 				return;
 			}
 			this.#tspPending = true;
@@ -1916,7 +1989,7 @@ export class ProcessTerminal implements Terminal {
 				setTmuxPaneApcTitles(false, $env);
 				this.#tspTimeout = setTimeout(() => {
 					this.#tspTimeout = undefined;
-					this.#resolveTspSupport(null);
+					this.#resolveTspSupport(null, `no hello reply through tmux within ${TSP_TMUX_HELLO_TIMEOUT_MS} ms`);
 				}, TSP_TMUX_HELLO_TIMEOUT_MS);
 				this.#safeWrite(encodeTspHelloQuery());
 				return;
@@ -1924,7 +1997,7 @@ export class ProcessTerminal implements Terminal {
 			this.#da1SentinelOwners.push({ kind: "tsp" });
 			this.#safeWrite(`${encodeTspHelloQuery()}\x1b[c`);
 		};
-		if (this.#shouldQueryTspSupport()) probe(true);
+		if (skipReason === null) probe(true);
 		else if (!isBunTestRuntime() && $env.PI_TUI_NATIVE !== "0" && canDiscoverHerdrNativeTransport($env)) {
 			this.#tspPending = true;
 			void queryHerdrNativeTransport({ ...$env }).then(probe, () => probe(false));
@@ -1950,12 +2023,14 @@ export class ProcessTerminal implements Terminal {
 		this.#inputHandler?.(sequence);
 	}
 
-	#resolveTspSupport(hello: TspHello | null): void {
+	/** `reason` says why a `null` hello means no TSP. */
+	#resolveTspSupport(hello: TspHello | null, reason?: string): void {
 		if (!this.#tspPending) return;
 		this.#tspPending = false;
 		const result = hello !== null && hello.v === TSP_VERSION ? hello : null;
 		if (hello !== null && result === null) logger.warn("TSP: unsupported protocol version", { v: hello.v });
 		if (result === null) {
+			this.#logTspFallback(reason ?? `unsupported protocol version ${String(hello?.v)}`);
 			this.#endTspTmuxPane();
 		} else {
 			clearTimeout(this.#tspTimeout);
@@ -1998,7 +2073,11 @@ export class ProcessTerminal implements Terminal {
 			const max = 16 ** hex.length - 1;
 			return max > 0 ? value / max : 0;
 		};
-		const luminance = 0.299 * normalize(rHex) + 0.587 * normalize(gHex) + 0.114 * normalize(bHex);
+		const r = normalize(rHex);
+		const g = normalize(gHex);
+		const b = normalize(bHex);
+		setTerminalBackgroundColor((Math.round(r * 255) << 16) | (Math.round(g * 255) << 8) | Math.round(b * 255));
+		const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
 		const mode: TerminalAppearance = luminance < 0.5 ? "dark" : "light";
 		const changed = mode !== this.#appearance;
 		this.#appearance = mode;
@@ -2271,11 +2350,13 @@ export class ProcessTerminal implements Terminal {
 		this.#active = false;
 		this.#tspQueryGeneration++;
 		this.#inputDeferred = false;
-		if (this.#headless) return;
 		// Release stdout ownership (out-of-band writers and emergency cleanup)
+		// before headless/teardown exits, without disturbing another owner's RGB.
 		if (getActiveTerminal() === this) {
 			setActiveTerminal(null);
+			setTerminalBackgroundColor(undefined);
 		}
+		if (this.#headless) return;
 
 		// Release terminal ownership of fd 2 first so external programs,
 		// suspend, and shutdown see the real stderr even if a later teardown

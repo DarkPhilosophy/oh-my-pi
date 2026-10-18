@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, OAuthAccess, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { resolveApiKeyOnce } from "@oh-my-pi/pi-ai";
-import { type AuthApiKeyOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
+import { type AuthApiKeyOptions, type AuthPeekOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
@@ -627,7 +627,11 @@ export class ModelRegistry {
 		if (this.#backgroundRefresh) {
 			return;
 		}
-		const refreshPromise = this.refresh(strategy)
+		// `refresh()` synchronously reloads static config, which can reset startup
+		// discovery states. Start it on a microtask so a caller can validate
+		// against the hydrated startup catalog right after kicking the refresh off.
+		const refreshPromise = Promise.resolve()
+			.then(() => this.refresh(strategy))
 			.catch(error => {
 				logger.warn("background model refresh failed", {
 					error: error instanceof Error ? error.message : String(error),
@@ -1345,6 +1349,11 @@ export class ModelRegistry {
 		);
 	}
 
+	/**
+	 * Credential-less cache namespace. Wrong for credential-scoped providers
+	 * (`isCredentialScopedModelCacheProvider`), whose discovery writes hash the
+	 * credential in; those load only through their model manager.
+	 */
 	#resolveStartupModelCacheProviderId(providerId: string): string {
 		const baseUrl =
 			this.#runtimeProviderOverrides.get(providerId)?.baseUrl ??
@@ -1611,6 +1620,9 @@ export class ModelRegistry {
 				)
 			: withDecoderMetadata;
 
+		// User config plumbing, not catalog policy: an ollama provider configured
+		// for Responses moves its completions-discovered rows onto that API.
+		// KDL `api-routes` key on model ids and cannot see the provider config.
 		if (providerConfig.provider !== "ollama" || providerConfig.api !== "openai-responses") {
 			return withRemoteCompaction;
 		}
@@ -2293,7 +2305,7 @@ export class ModelRegistry {
 		// Skip providers already handled by configured discovery (e.g. user-configured ollama with discovery.type)
 		const configuredDiscoveryProviders = new Set(this.#discoverableProviders.map(p => p.provider));
 		const managerOptions = (
-			await this.#collectBuiltInModelManagerOptions(configuredDiscoveryProviders, providerFilter)
+			await this.#collectBuiltInModelManagerOptions(strategy, configuredDiscoveryProviders, providerFilter)
 		).filter(opts => {
 			if (configuredDiscoveryProviders.has(opts.providerId)) {
 				return false;
@@ -2349,6 +2361,7 @@ export class ModelRegistry {
 		return projectId ? projectId : undefined;
 	}
 	async #collectBuiltInModelManagerOptions(
+		strategy: ModelRefreshStrategy,
 		configuredDiscoveryProviders?: ReadonlySet<string>,
 		providerFilter?: ReadonlySet<string>,
 	): Promise<ModelManagerOptions<Api>[]> {
@@ -2467,7 +2480,17 @@ export class ModelRegistry {
 		});
 		// OAuth-backed managers resolve credentials lazily inside fetchDynamicModels.
 		// Peeking here is intentional: startup cache hits must not refresh tokens.
-		const peekKey = (descriptor: { providerId: string }) => this.#peekApiKeyForProvider(descriptor.providerId);
+		const peekKey = async (descriptor: { providerId: string }): Promise<string | undefined> => {
+			const key = await this.#peekApiKeyForProvider(descriptor.providerId);
+			if (
+				strategy === "offline" &&
+				!isAuthenticated(key) &&
+				isCredentialScopedModelCacheProvider(descriptor.providerId)
+			) {
+				return (await this.#peekApiKeyForProvider(descriptor.providerId, { includeExpired: true })) ?? key;
+			}
+			return key;
+		};
 		const [standardProviderKeys, specialKeys] = await Promise.all([
 			Promise.all(standardProviderDescriptors.map(peekKey)),
 			Promise.all(enabledSpecialProviderDescriptors.map(peekKey)),
@@ -2952,9 +2975,6 @@ export class ModelRegistry {
 			if (!model.contextWindowAuthoritative) {
 				({ model, tiers } = this.#applyContextWindowPolicies(model, extendedContext, compactionPoints));
 			}
-			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {
-				model = applyModelOverride(model, { omitMaxOutputTokens: true });
-			}
 			if (tiers) this.#policyWindowTiers.set(model, tiers);
 			return model;
 		});
@@ -3009,29 +3029,18 @@ export class ModelRegistry {
 		// Extended context off: cap models with a premium long-context price
 		// tier (e.g. GPT-5.6 bills 2x input above 272K) at the standard-pricing
 		// threshold so compaction fires before a request crosses into the tier.
-		// xai-oauth carries public xAI prices only for API-equivalent stats;
-		// SuperGrok requests remain subscription-backed, so its estimated tier
-		// must not constrain the runtime context window. Explicit per-model
+		// Rows flagged `longContextWindowUncapped` (catalog
+		// `long-context-window-uncapped`, e.g. subscription-backed hosts whose
+		// tier prices are estimates) keep their full window. Explicit per-model
 		// `contextWindow` overrides reapply later in composition and win over
 		// this cap.
-		if (!extendedContext && model.provider !== "xai-oauth") {
+		if (!extendedContext && model.longContextWindowUncapped !== true) {
 			const threshold = model.cost.longContext?.inputThreshold;
 			if (threshold !== undefined && model.contextWindow !== null && model.contextWindow > threshold) {
 				model = applyModelOverride(model, { contextWindow: threshold });
 			}
 		}
-		if (model.id !== "gpt-5.4" || model.provider === "github-copilot") {
-			return model;
-		}
-		const overrides = this.#modelOverrides.get(model.provider)?.get(model.id);
-		if (!overrides) {
-			return applyModelOverride(model, { contextWindow: 1_000_000 });
-		}
-		this.#warnUnservedOverrideKind(model, overrides);
-		return applyModelOverride(model, {
-			contextWindow: overrides.contextWindow ?? 1_000_000,
-			...overrides,
-		});
+		return model;
 	}
 
 	#parseModels(config: ModelsConfig): CustomModelOverlay[] {
@@ -3268,14 +3277,22 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Whether a config-declared discovery provider has not yet produced a
-	 * catalog in this process. A cold discovery cache (e.g. after `omp update`
-	 * bumps the cache namespace) leaves the provider in its initial `idle`
-	 * state with no models, so a selector the provider will supply looks
-	 * unknown until background discovery lands (#10048).
+	 * Whether an unresolved selector on `provider` may still be supplied by
+	 * discovery this process has not finished. Two states qualify:
+	 * - `idle`: a config-declared provider with a cold cache has no catalog yet
+	 *   (e.g. after `omp update` bumps the cache namespace, #10048).
+	 * - `cached`/`unavailable` while the initial background refresh is in
+	 *   flight: startup replayed a cache row or fell back to the bundled
+	 *   catalog, and that refresh may still add ids (a cold namespace after an
+	 *   upgrade, or a cache row keyed to another credential). With no refresh
+	 *   running (an embedder that manages discovery itself) these states are
+	 *   final, so unresolved selectors warn immediately.
 	 */
 	isProviderDiscoveryPending(provider: string): boolean {
-		return this.#providerDiscoveryStates.get(provider)?.status === "idle";
+		const status = this.#providerDiscoveryStates.get(provider)?.status;
+		if (status === "idle") return true;
+		if (status !== "cached" && status !== "unavailable") return false;
+		return this.#backgroundRefresh !== undefined && !this.#initialRefreshSettled;
 	}
 
 	/**
@@ -3462,11 +3479,11 @@ export class ModelRegistry {
 		});
 	}
 
-	async #peekApiKeyForProvider(provider: string): Promise<string | undefined> {
+	async #peekApiKeyForProvider(provider: string, options?: AuthPeekOptions): Promise<string | undefined> {
 		if (this.#keylessProviders.has(provider) && this.authStorage.keys.source(provider) === undefined) {
 			return kNoAuth;
 		}
-		return this.authStorage.keys.peek(provider);
+		return this.authStorage.keys.peek(provider, options);
 	}
 
 	/**
