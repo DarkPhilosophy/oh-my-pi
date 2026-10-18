@@ -2182,6 +2182,9 @@ export class SessionAdvisors {
 	 *    agent-initiated turn as busy, so idle triggers are refused (#5628 review).
 	 */
 	#deliverAdvisorBatch(notes: AdvisorNote[], content: string, steer: boolean): void {
+		// Curation may resolve the entire batch. Its diagnostic summary is not
+		// advice: do not persist a card, arm an interrupt, or start a continuation.
+		if (notes.length === 0) return;
 		const details = { notes } satisfies AdvisorMessageDetails;
 		if (steer) {
 			// Plan mode preserves would-be-steering advice as a visible card:

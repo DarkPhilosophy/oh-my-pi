@@ -1174,6 +1174,25 @@ describe("terminal frame plans", () => {
 		expect(terminal.getViewport().map(row => row.trimEnd())).toEqual(["editor", ""]);
 	});
 
+	it.each([8, 40])("hands off beneath the transcript without a screen-sized blank gap (%i rows)", height => {
+		const terminal = new VirtualTerminal(120, height);
+		const provider = new FlushProvider();
+		const tui = new TUI(terminal, undefined, { renderScheduler: scheduler });
+		tui.setFrameProvider(provider);
+		tui.stop();
+		terminal.write("SHELL");
+		const buffer = plainBuffer(terminal);
+		expect(buffer.slice(0, buffer.indexOf("SHELL") + 1)).toEqual([
+			"final one",
+			"final two",
+			"live one",
+			"live two",
+			"editor",
+			"SHELL",
+		]);
+		expect(provider.acknowledged).toEqual([1, 2]);
+	});
+
 	it("keeps visible history above the anchored viewport while room remains", () => {
 		const terminal = new VirtualTerminal(20, 6);
 		const provider = new Provider({

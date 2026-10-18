@@ -11,6 +11,7 @@
  * protocol, because the composed frame itself is never mutated.
  */
 import { RESERVED_IMAGE_ROW } from "./components/image";
+import { parseKittyDirectPlacementLine } from "./terminal-capabilities";
 import { padding, replaceTabs, truncateToWidth, visibleWidth } from "./utils";
 
 const TRAILING_PADDING_RE = /[ \t]+((?:\x1b\[[0-9;]*m)*)$/u;
@@ -157,7 +158,12 @@ export function compositeRightPanelsInRange(
 		if (isOccupiedLine(line, i)) occupied[i] = true;
 		if (isBackfilledOccupiedLine(line, i)) {
 			occupied[i] = true;
-			for (let j = i - 1; j >= 0 && baseLines[j] === RESERVED_IMAGE_ROW; j--) occupied[j] = true;
+			const placement = parseKittyDirectPlacementLine(line);
+			if (placement?.underlay !== undefined) {
+				for (let j = Math.max(0, i - placement.rows + 1); j < i; j++) occupied[j] = true;
+			} else {
+				for (let j = i - 1; j >= 0 && baseLines[j] === RESERVED_IMAGE_ROW; j--) occupied[j] = true;
+			}
 		}
 	}
 

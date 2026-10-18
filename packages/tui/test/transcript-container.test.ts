@@ -789,19 +789,17 @@ describe("TranscriptContainer", () => {
 		expect(rows[2]).toBe("task running");
 	});
 
-	it("gives surplus rows to assistant text before a growing tool card (issue 9718)", () => {
+	it("reserves readable tool context before giving remaining rows to assistant text", () => {
 		const transcript = new TranscriptContainer();
 		const assistant = new Block(["A1", "A2", "A3", "A4"], false);
 		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
 		transcript.addChild(assistant);
 		transcript.addChild(tool);
-		// Capacity 5 cannot fit both blocks in full. Surplus (3 rows) goes to the
-		// assistant block first; the tool card collapses to its one-row minimum
-		// instead of clipping already-visible assistant text.
+		// A framed preview needs borders, its truncation indicator and content.
 		const out = transcript.renderViewport(80, 5, frame);
-		expect(out).toEqual(["A1", "A2", "A3", "A4", "T4"]);
-		expect(assistant.allocations.at(-1)).toBe(4);
-		expect(tool.allocations.at(-1)).toBe(1);
+		expect(out).toEqual(["A4", "T1", "T2", "T3", "T4"]);
+		expect(assistant.allocations.at(-1)).toBe(1);
+		expect(tool.allocations.at(-1)).toBe(4);
 	});
 
 	it("permits removing settled blocks until they are offered or committed", () => {

@@ -7,12 +7,20 @@
 - Closing inline panels now removes their space without hiding conversation rows, padding the editor to the bottom, or replaying committed history.
 - Live card contraction follows the current content height without adding filler to retain an earlier bottom anchor.
 - Bash and Eval can publish their immutable command stage while output remains live; completed tool cards and stable Read previews enter history without waiting for viewport pressure.
+- Image fallbacks now show a centered “Click To Open” box, complete local-link QR codes where space permits, and static theme-colored TV grain filling unused space, without adding caption rows.
 
 ### Fixed
 
+- Fixed session exit inserting a screen-sized blank gap before the final conversation rows and shell prompt.
+- Merged stacked elision markers in squeezed tool previews into a single accurate count instead of showing two expandable markers.
+- Made the OpenAI reset celebration a non-modal centered toast that leaves input untouched and dismisses itself.
+- Kept running Bash and Eval cards visibly closed when queued messages or other panels reduce their remaining viewport space.
 - Fixed command overlays shifting the conversation and restored the background jobs sheet's frame in text terminals.
 - Fixed grouped read images disappearing when conversion or tool results arrive after the assistant text has finished.
 - Closed Write/Edit previews now remain accessible in scrollback during long streams, while later execution results and errors remain visible.
+- Fixed completed response and thinking rows disappearing during long streams, including text after code blocks and large text updates.
+- Kept tool previews readable in small viewports instead of displaying empty or clipped frames.
+- Preserved diff colors and file context when compacting multi-file Edit previews.
 - Fixed losing committed rows when a real terminal resize arrives immediately after a resize-buffer exit.
 - Fixed Ask question headers exceeding the actual terminal budget and added an indicator for other hidden questions.
 - Preserved the three-pane advisor editor and transactional Project/Global saves alongside native picker controls.

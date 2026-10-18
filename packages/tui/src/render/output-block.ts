@@ -12,6 +12,7 @@ import { getSixelLineMask } from "./sixel";
 import type { State } from "./types";
 import type { RenderCache } from "./utils";
 import { getStateBgColor, Hasher, padToWidth } from "./utils";
+import { formatEarlierLines, formatExpandHint } from "./render-utils";
 
 /** Sections and presentation options for a bordered output block. */
 export interface OutputBlockOptions {
@@ -95,6 +96,95 @@ export function outputBlockContentWidth(
 /** Render a bordered output block with optional header and sections. */
 export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): string[] {
 	return renderOutputBlockStaged(options, theme).lines;
+}
+
+/** A bounded, framed context preview for renderers without their own row budget. */
+export function renderOutputBlockViewport(
+	header: string,
+	lines: readonly string[],
+	width: number,
+	maxRows: number,
+	theme: Theme,
+): readonly string[] | undefined {
+	if (maxRows < 3 || width < 5 || lines.some(line => TERMINAL.isImageLine(line))) return undefined;
+	const firstRow = Bun.stripANSI(lines[0] ?? "");
+	const first = firstRow.trimStart();
+	const framed = first.startsWith(theme.boxRound.topLeft) || first.startsWith(theme.boxRound.teeRight);
+	const indent = framed ? visibleWidth(firstRow) - visibleWidth(first) : 0;
+	const last = Bun.stripANSI(lines.at(-1) ?? "").trimEnd();
+	if (framed && !last.trimStart().startsWith(theme.boxRound.bottomLeft)) return undefined;
+	const frameWidth = framed ? Math.min(width - indent, visibleWidth(last) - indent) : width;
+	const contentWidth = outputBlockContentWidth(frameWidth, 0, 0);
+	const body: string[] = [];
+	let earlierHidden = 0;
+	let vagueElision = false;
+	for (const line of lines) {
+		const plain = Bun.stripANSI(line);
+		const trimmed = plain.trim();
+		if (!trimmed) continue;
+		let content = line;
+		if (framed) {
+			if (!trimmed.startsWith(theme.boxRound.vertical) || !trimmed.endsWith(theme.boxRound.vertical)) continue;
+			// Inspect plain content, but keep the renderer's ANSI row intact.
+			// Slicing its glyph columns can reorder inherited SGR colors.
+			content = trimmed.slice(theme.boxRound.vertical.length, -theme.boxRound.vertical.length);
+		}
+		const text = Bun.stripANSI(content).trim();
+		if (!text) continue;
+		// Strip only structural gutters, not arbitrary source text containing a marker.
+		let markerContent = text;
+		while (theme.tree.vertical && markerContent.startsWith(theme.tree.vertical)) {
+			markerContent = markerContent.slice(theme.tree.vertical.length).trimStart();
+		}
+		const elision = /^… \((\d+) earlier lines?\b/u.exec(markerContent);
+		if (elision) {
+			earlierHidden += Number(elision[1]);
+			continue;
+		}
+		// Legacy or count-free elision markers collapse into the single marker
+		// instead of stacking a second one below it.
+		if (markerContent.startsWith("… (earlier")) {
+			vagueElision = true;
+			continue;
+		}
+		body.push(framed ? line : truncateToWidth(content, contentWidth));
+	}
+	if (body.length === 0) return undefined;
+	const needsMarker = earlierHidden > 0 || vagueElision || body.length > maxRows - 2;
+	if (needsMarker && maxRows < 4) return undefined;
+	const visible = body.slice(-(maxRows - 2 - (needsMarker ? 1 : 0)));
+	const hidden = earlierHidden + body.length - visible.length;
+	const markerText = vagueElision
+		? `… (earlier lines hidden, showing ${visible.length})`
+		: formatEarlierLines({ hidden, shown: visible.length });
+	const marker = truncateToWidth(`${theme.fg("dim", markerText)} ${formatExpandHint(theme)}`, contentWidth);
+	if (framed) {
+		const sample = body.at(-1)!;
+		const firstBorder = sample.indexOf(theme.boxRound.vertical);
+		const lastBorder = sample.lastIndexOf(theme.boxRound.vertical);
+		const borderStyle = /(?:\x1b\[[0-9;:]*m)*$/.exec(sample.slice(0, lastBorder))?.[0] ?? "";
+		const markerRow =
+			sample.slice(0, firstBorder + theme.boxRound.vertical.length) +
+			"\x1b[39m" +
+			marker +
+			padding(Math.max(0, contentWidth - visibleWidth(marker))) +
+			borderStyle +
+			sample.slice(lastBorder) +
+			"\x1b[0m";
+		return [lines[0]!, ...(needsMarker ? [markerRow] : []), ...visible, lines.at(-1)!];
+	}
+	const rendered = renderOutputBlock(
+		{
+			header,
+			width: frameWidth,
+			applyBg: false,
+			contentPaddingLeft: 0,
+			contentPaddingRight: 0,
+			sections: [{ lines: needsMarker ? [marker, ...visible] : visible }],
+		},
+		theme,
+	);
+	return rendered;
 }
 
 /** Rendered rows plus how many leading rows belong to the top stage (the rows before the first live row). */

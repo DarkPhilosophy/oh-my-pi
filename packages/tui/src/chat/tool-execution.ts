@@ -48,6 +48,7 @@ import {
 	resolveImageOptions,
 } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
+import { renderOutputBlockViewport } from "../render/output-block";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../render/index";
 import { cachedPngConversion, convertImageToPngShared, imagePayloadKey } from "./image-loading";
 import { FenceFigure } from "./fence-figure";
@@ -1574,7 +1575,9 @@ export class ToolExecutionComponent extends Container {
 		}
 		let lines = super.render(width);
 		this.#measureStage(width);
-		if (this.#allocation < 3) {
+		// A published stage must remain a prefix until the transcript slices it
+		// off. Collapsing it here makes that slice discard the live suffix too.
+		if (this.#allocation < 4 && this.#stageWindow === undefined) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
 			// below that, so inline tools whose real content is 1-2 rows (wait
@@ -1602,6 +1605,11 @@ export class ToolExecutionComponent extends Container {
 		this.#liveWidthMax = { width, expanded: this.#expanded, value: Math.max(same ? keep.value : 0, drawn) };
 	}
 
+	renderTranscriptCompact(width: number, rows = 1, lines: readonly string[] = []): readonly string[] {
+		const compact = this.#renderCompact(width);
+		return renderOutputBlockViewport(compact[0]!, lines, width, rows, theme) ?? compact;
+	}
+
 	#renderCompact(width: number): readonly string[] {
 		const summary = this.#activitySummary();
 		const detail = summary.detail ? theme.fg("muted", ` · ${summary.detail.replace(/\s+/g, " ")}`) : "";
@@ -1618,12 +1626,9 @@ export class ToolExecutionComponent extends Container {
 			`${theme.fg("toolTitle", theme.bold(summary.label))}${detail}${elapsed}`,
 			Math.max(1, width - 4),
 		);
-		if (this.#allocation === 1) {
-			const glyph = this.#spinnerFrame === undefined ? "•" : (theme.spinnerFrames[this.#spinnerFrame] ?? "•");
-			const styledGlyph = theme.fg(this.#spinnerFrame === undefined ? "dim" : "muted", glyph);
-			return [truncateToWidth(`${styledGlyph} ${text}`, width)];
-		}
-		return [truncateToWidth(`${theme.fg("dim", "╭─")} ${text}`, width), theme.fg("dim", "╰")];
+		const glyph = this.#spinnerFrame === undefined ? "•" : (theme.spinnerFrames[this.#spinnerFrame] ?? "•");
+		const styledGlyph = theme.fg(this.#spinnerFrame === undefined ? "dim" : "muted", glyph);
+		return [truncateToWidth(`${styledGlyph} ${text}`, width)];
 	}
 
 	#activitySummary(): ToolActivitySummary {
@@ -2137,6 +2142,10 @@ export class ToolExecutionComponent extends Container {
 		} else if (isEditLikeToolName(this.#toolName)) {
 			context.editMode = this.#editMode;
 			context.previewSettled = this.#argsComplete && this.#previewStreamSettled;
+			Object.defineProperty(context, "previewRows", {
+				enumerable: true,
+				get: () => Math.max(1, this.#allocation - 2),
+			});
 			const previews = this.#editDiffPreview;
 			if (previews && previews.length > 0) {
 				const first = previews[0];

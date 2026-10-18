@@ -350,6 +350,115 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		}
 	});
 
+	it.each([
+		"plain",
+		"after-fence",
+		"thinking",
+		"burst",
+		"hard-wrap",
+		"newline",
+		"setext",
+		"tiny",
+		"with-tool",
+	] as const)("keeps every completed visible row accessible during a %s text stream", async kind => {
+		const terminal = new VirtualTerminal(80, kind === "tiny" ? 2 : 14);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			preferences: { quiet: true },
+			tuiOptions: { renderScheduler: scheduler },
+		});
+		const { controller, chatContainer } = createFixture(false, () => undefined, true, composer.ui);
+		composer.setRuntimeChildren([chatContainer, new Text("EDITOR", 0, 0)]);
+		let body = kind === "after-fence" ? "Introduction.\n\n```text\nalpha\nbeta\n```\n\n" : "";
+		const expected: string[] = [];
+		let liveTool: ToolExecutionComponent | undefined;
+		const message = () =>
+			assistantMessage(
+				kind === "thinking" ? [{ type: "thinking", thinking: body }] : [{ type: "text", text: body }],
+			);
+		const markers = () =>
+			Array.from(
+				terminal
+					.getScrollBuffer()
+					.map(row => row.trim())
+					.join("")
+					.matchAll(/ROW\d{3}/g),
+				match => match[0],
+			);
+		composer.start({ playWelcomeIntro: false });
+		try {
+			await scheduler.settle(terminal);
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			const steps = kind === "burst" ? 1 : 80;
+			for (let step = 0; step < steps; step++) {
+				const count = kind === "burst" ? 80 : 1;
+				let delta = "";
+				for (let item = 0; item < count; item++) {
+					const marker = `ROW${String(expected.length).padStart(3, "0")}`;
+					expected.push(marker);
+					delta +=
+						kind === "hard-wrap"
+							? marker + "A".repeat(94)
+							: `${marker} ordinary streamed words.${kind === "burst" ? "\n\n" : kind === "newline" || kind === "tiny" ? "\n" : " "}`;
+				}
+				if (kind === "setext" && step === 50) delta += "\n---\n\nFollowing section.\n\n";
+				body += delta;
+				const partial = message();
+				await controller.handleEvent({
+					type: "message_update",
+					message: partial,
+					assistantMessageEvent: {
+						type: kind === "thinking" ? "thinking_delta" : "text_delta",
+						contentIndex: 0,
+						delta,
+						partial,
+					},
+				});
+				if (kind === "with-tool" && step === 0) {
+					liveTool = new ToolExecutionComponent(
+						"edit",
+						{ path: "mod.ts" },
+						{},
+						{ mode: "replace" } as unknown as AgentTool,
+						composer.ui,
+						".",
+					);
+					liveTool.updateStreamPreview({
+						generation: 1,
+						streaming: true,
+						files: [
+							{
+								path: "mod.ts",
+								diff:
+									"@@ -1 +1,50 @@\n-old\n" +
+									Array.from({ length: 50 }, (_, index) => `+const value${index} = ${index};`).join("\n"),
+								firstChangedLine: 1,
+							},
+						],
+					});
+					chatContainer.addChild(liveTool);
+				}
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+				expect(markers()).toEqual(expected);
+				if (liveTool) expect(terminal.getViewport().join("\n")).toContain("const value49 = 49;");
+				if (step === 40) {
+					terminal.resize(65, 12);
+					await scheduler.advance(terminal, 1000);
+					expect(markers()).toEqual(expected);
+				}
+			}
+			await controller.handleEvent({ type: "message_end", message: message() });
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+			expect(markers()).toEqual(expected);
+		} finally {
+			composer.stop();
+			liveTool?.stopAnimation();
+		}
+	});
+
 	it("renders assistant text segments in order around two tool results from one mixed message", async () => {
 		const { controller, chatContainer } = createFixture();
 		const toolCallA: ToolCall = {
@@ -580,9 +689,10 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		}
 	});
 
-	it.each(["write", "edit"] as const)(
+	it.each(["write", "edit", "edit-multi"] as const)(
 		"keeps four closed %s previews accessible before execution starts",
-		async toolName => {
+		async kind => {
+			const toolName = kind === "write" ? "write" : "edit";
 			const terminal = new VirtualTerminal(120, 14);
 			const scheduler = new VirtualRenderScheduler();
 			const composer = new Composer({
@@ -618,6 +728,13 @@ describe("EventController mixed assistant text/tool rendering", () => {
 						(_, row) => `CLOSED_PREVIEW_${index}_${String(row).padStart(2, "0")}`,
 					);
 					const file = `preview-${index}.txt`;
+					const previewFiles =
+						kind === "edit-multi"
+							? [
+									{ path: `preview-${index}-a.txt`, rows: rows.slice(0, 20) },
+									{ path: `preview-${index}-b.txt`, rows: rows.slice(20) },
+								]
+							: [{ path: file, rows }];
 					const call: ToolCall = {
 						type: "toolCall",
 						id: `closed-${toolName}-${index}`,
@@ -625,7 +742,14 @@ describe("EventController mixed assistant text/tool rendering", () => {
 						arguments:
 							toolName === "write"
 								? { path: file, content: rows.join("\n") }
-								: { input: `[${file}#ABCD]\nPUT 1.=1:\n${rows.map(row => `+${row}`).join("\n")}` },
+								: {
+										input: previewFiles
+											.map(
+												preview =>
+													`[${preview.path}#ABCD]\nPUT 1.=1:\n${preview.rows.map(row => `+${row}`).join("\n")}`,
+											)
+											.join("\n"),
+									},
 					};
 					content.push(call);
 					const partial = assistantMessage([...content]);
@@ -641,13 +765,11 @@ describe("EventController mixed assistant text/tool rendering", () => {
 					});
 					if (toolName === "edit") {
 						const update = {
-							files: [
-								{
-									path: file,
-									diff: rows.map((row, line) => `+${line + 1} ${row}`).join("\n"),
-									firstChangedLine: 1,
-								},
-							],
+							files: previewFiles.map(preview => ({
+								path: preview.path,
+								diff: preview.rows.map((row, line) => `+${line + 1} ${row}`).join("\n"),
+								firstChangedLine: 1,
+							})),
 						};
 						await controller.handleEvent({
 							type: "tool_stream_update",
@@ -699,7 +821,19 @@ describe("EventController mixed assistant text/tool rendering", () => {
 						result: {
 							content: [{ type: "text", text: marker }],
 							...(toolName === "edit" && !isError
-								? { details: { diff: `+1 ${marker}`, firstChangedLine: 1 } }
+								? {
+										details:
+											kind === "edit-multi"
+												? {
+														diff: "",
+														perFileResults: ["a", "b"].map(part => ({
+															path: `preview-${index}-${part}.txt`,
+															diff: `+1 ${marker}_${part}`,
+															firstChangedLine: 1,
+														})),
+													}
+												: { diff: `+1 ${marker}`, firstChangedLine: 1 },
+									}
 								: {}),
 						},
 					});
@@ -707,6 +841,11 @@ describe("EventController mixed assistant text/tool rendering", () => {
 					const after = terminal.getScrollBuffer();
 					expect(after.slice(0, immutable.length)).toEqual(immutable);
 					if (isError || toolName === "edit") expect(after.join("\n")).toContain(marker);
+					if (kind === "edit-multi" && !isError) {
+						for (const part of ["a", "b"]) {
+							expect(after.join("\n").match(new RegExp(`${marker}_${part}`, "g"))).toHaveLength(1);
+						}
+					}
 					expect(ctx.pendingTools.has(call.id)).toBeFalse();
 				}
 			} finally {

@@ -204,28 +204,28 @@ describe("Codex reset fireworks", () => {
 		savedController.dispose();
 	});
 
-	it("holds a top-third modal until Escape and ignores overlapping celebrations", async () => {
+	it("shows a non-modal centered toast that leaves focus below and dismisses itself", async () => {
 		const fake = makeHost(24);
 		const controller = new CodexResetFireworksController(fake.host);
 		expect(controller.show({ kind: "unscheduled-weekly-reset" })).toBe(true);
 		expect(controller.show({ kind: "saved-reset-banked", added: 1, available: 1 })).toBe(false);
 		expect(fake.shown).toHaveLength(1);
-		expect(fake.focused).toEqual(fake.shown);
-		expect(fake.options[0]).toMatchObject({ anchor: "top-center", width: "100%", maxHeight: "33%", margin: 0 });
-		expect(fake.shown[0]?.render(80)).toHaveLength(7);
+		expect(fake.focused).toHaveLength(0);
+		const rows = fake.shown[0]!.render(80).map(stripVTControlCharacters);
+		expect(rows.length).toBeLessThan(24);
+		expect(rows[0]!.startsWith("╭")).toBe(true);
+		expect(rows.at(-1)!.startsWith("╰")).toBe(true);
 
 		vi.advanceTimersByTime(5_000);
-		expect(fake.requestRenderCount()).toBeGreaterThan(FRAME_COUNT_FOR_THREE_SECONDS);
-		expect(fake.hiddenCount()).toBe(0);
-
-		const component = fake.shown[0];
-		component?.handleInput?.("x");
-		expect(fake.hiddenCount()).toBe(0);
-		component?.handleInput?.("\x1b");
 		await flushMicrotasks();
 		expect(fake.hiddenCount()).toBe(1);
+
+		const second = controller.show({ kind: "unscheduled-weekly-reset" });
+		expect(second).toBe(true);
+		expect(fake.shown).toHaveLength(2);
+		fake.shown[1]?.handleInput?.("\x1b");
+		await flushMicrotasks();
+		expect(fake.hiddenCount()).toBe(2);
 		controller.dispose();
 	});
 });
-
-const FRAME_COUNT_FOR_THREE_SECONDS = Math.floor(3_000 / 85);

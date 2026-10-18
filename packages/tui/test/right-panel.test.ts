@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { type Component, type PanelLayoutResult, type TerminalFrameProvider, TUI } from "@oh-my-pi/pi-tui";
 import { RESERVED_IMAGE_ROW } from "../src/components/image";
 import { compositeRightPanel, compositeRightPanels } from "../src/right-panel";
+import { encodeKittyPlacementLine } from "../src/terminal-capabilities";
 import { VirtualTerminal } from "./virtual-terminal";
 
 // A 20-column panel: ┌──┐ / body / └──┘. Plain ASCII so visibleWidth === length.
@@ -162,6 +163,25 @@ describe("compositeRightPanel", () => {
 		expect(out.findIndex(line => line.endsWith(widget[0]))).toBe(0);
 		expect(out[6]).toBe(heading);
 		expect(out[7]).toBe("");
+	});
+
+	it("keeps panels outside every row of an image with a visible text underlay", () => {
+		const widget = panel(3);
+		const placement = encodeKittyPlacementLine({
+			imageId: 1,
+			placementId: 1,
+			columns: 70,
+			rows: 4,
+			screenRow: 3,
+			imageHeightPx: 40,
+			zIndex: 1,
+			underlay: "╰────╯",
+		});
+		const base = ["╭────╮", "│ ▧  │", "│    │", placement, ...Array<string>(10).fill("")];
+		const isImage = (line: string) => line.includes("\x1b_G");
+		const result = compositeRightPanel(base, widget, WIDTH, 40, isImage, isImage);
+		expect(result.slice(0, 4)).toEqual(base.slice(0, 4));
+		expect(result.findIndex(line => line.endsWith(widget[0]))).toBeGreaterThan(3);
 	});
 
 	it("backfills only renderer-reserved rows above an image, not plain blank spacers", () => {

@@ -451,7 +451,7 @@ describe("ReadToolGroupComponent", () => {
 		expect(Bun.stripANSI(component.render(120).join("\n"))).not.toContain("# Title");
 
 		component.updateArgs({ path: readme, raw: true }, "read-md");
-		expect(Bun.stripANSI(component.render(120).join("\n"))).toContain("Some **bold** text.");
+		expect(Bun.stripANSI(component.render(120).join("\n"))).toContain("Some bold text.");
 	});
 });
 

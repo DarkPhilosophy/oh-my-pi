@@ -17,6 +17,7 @@ export interface AnimationFrame {
 /** Lets an active block adapt its presentation to its allocated viewport rows. */
 export interface TranscriptPresentationTarget {
 	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
+	renderTranscriptCompact?(width: number, rows?: number, lines?: readonly string[]): readonly string[];
 }
 
 /** Presentation declaration captured permanently when a block is added. */
@@ -642,6 +643,15 @@ export class TranscriptContainer extends Container {
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
 		const allocation: number[] = new Array(shown.length).fill(1);
 		let surplus = capacity - shown.length;
+		// Reserve a readable tool preview before sharing surplus with prose:
+		// two borders, a truncation indicator, and at least one content row.
+		for (let index = shown.length - 1; index >= 0; index--) {
+			if (!isToolActivityComponent(shown[index]!.entry.component)) continue;
+			const extra = Math.min(blocks[index]!.length, 4) - 1;
+			if (extra > surplus) continue;
+			allocation[index] += extra;
+			surplus -= extra;
+		}
 		// Surplus rows favor ordinary transcript blocks over dynamic tool-activity
 		// cards (newest-first within each class), so a growing tool card collapses to
 		// its compact form instead of clipping already-visible assistant text (#9718).
@@ -654,7 +664,7 @@ export class TranscriptContainer extends Container {
 		}
 		for (const index of order) {
 			if (surplus <= 0) break;
-			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
+			const extra = Math.min(Math.max(0, blocks[index]!.length - allocation[index]!), surplus);
 			allocation[index] += extra;
 			surplus -= extra;
 		}
@@ -667,7 +677,20 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(candidate.entry, width).slice(
 				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
 			);
-			const visible = rendered.length <= allocated ? rendered : rendered.slice(rendered.length - allocated);
+			const compact =
+				rendered.length > allocated && isToolActivityComponent(candidate.entry.component)
+					? (candidate.entry.component as Component & TranscriptPresentationTarget).renderTranscriptCompact?.(
+							width,
+							allocated,
+							rendered,
+						)
+					: undefined;
+			const visible =
+				compact !== undefined
+					? compact
+					: rendered.length <= allocated
+						? rendered
+						: rendered.slice(rendered.length - allocated);
 			for (const line of visible) {
 				output.push(line);
 				owners.push(candidate.entry.component);
@@ -763,7 +786,7 @@ export class TranscriptContainer extends Container {
 		const room = Math.max(0, Math.trunc(capacity));
 		const live = this.#liveEntries();
 		if (live.length === 0) return undefined;
-		const ready = this.#offerReadyPrefix(width);
+		const ready = this.#offerReadyPrefix(width, room);
 		if (ready !== undefined) return ready;
 
 		// Only a render publishes a block's stable rows, so the head renders
@@ -891,8 +914,8 @@ export class TranscriptContainer extends Container {
 		return batch;
 	}
 
-	/** Publish explicitly ready parts without waiting for viewport pressure. */
-	#offerReadyPrefix(width: number): HistoryBatch | undefined {
+	/** Publish explicit stages eagerly; append-only prose advances only under viewport pressure. */
+	#offerReadyPrefix(width: number, capacity: number): HistoryBatch | undefined {
 		let cursor = this.#frontier;
 		let readyEnd = cursor;
 		while (cursor < this.#entries.length && this.#entries[cursor]!.state === "settled") {
@@ -904,14 +927,30 @@ export class TranscriptContainer extends Container {
 		const head = this.#entries[cursor];
 		let split: RowSplit | undefined;
 		let prefix: readonly string[] = EMPTY_ROWS;
-		if (head && head.mode === "mutable") {
+		if (head) {
 			const block = head.component as Component & FinalizableBlock;
 			if (block.getTranscriptReadyRowCount) {
 				const measured = this.#measuredRows(head, width);
-				const count = block.getTranscriptReadyRowCount(width);
-				const stable = measured.slice(0, Math.max(0, count));
 				const start = this.#emittedRowCount(head, width);
-				if (stable.length > start) {
+				const ready = block.getTranscriptReadyRowCount(width);
+				const available = Math.max(0, ready - start);
+				const pressure =
+					head.mode === "appendOnly"
+						? available > 0
+							? Math.max(0, this.liveRowCount(width, capacity + available) - capacity)
+							: 0
+						: Infinity;
+				const count = Math.min(ready, start + pressure);
+				const stable = measured.slice(0, Math.max(0, count));
+				// Preserve semantic-prefix admission when it can make progress.
+				// A physical seam is needed only for an oversized stable prefix or
+				// completed prose rows beyond the last closed Markdown block.
+				const semanticFits =
+					head.mode === "appendOnly" &&
+					head.split === undefined &&
+					head.emitted < head.stableRows.length &&
+					this.#stablePrefixRowCount(head, head.emitted + 1, width) - start <= pressure;
+				if (!semanticFits && stable.length > start) {
 					split = rowSplit(stable, stable.length, width);
 					prefix = stable.slice(start);
 					readyEnd = cursor;
@@ -1484,7 +1523,13 @@ export class TranscriptContainer extends Container {
 			const rendered = this.#renderEntry(candidate.entry, width).slice(
 				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
 			);
-			output.push(rendered[0] ?? "");
+			const compact =
+				rendered.length > 1
+					? (candidate.entry.component as Component & TranscriptPresentationTarget).renderTranscriptCompact?.(
+							width,
+						)
+					: undefined;
+			output.push(compact?.[0] ?? rendered[0] ?? "");
 			owners.push(candidate.entry.component);
 		}
 		const visibleOutput = output.slice(0, rows);

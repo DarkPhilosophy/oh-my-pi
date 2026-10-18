@@ -1,6 +1,9 @@
+import { replaceTabs, truncateToWidth } from "../utils";
 import { encodeSixelAsync } from "@oh-my-pi/pi-natives";
 import { getKittyGraphics } from "../kitty-graphics";
+import { ImagePlaceholder } from "./image-placeholder";
 import {
+	calculateImageFit,
 	encodeSixelNow,
 	getCellDimensions,
 	getImageDimensions,
@@ -659,6 +662,9 @@ export class Image implements Component {
 	#cachedCellHeightPx = 0;
 	#cachedKittyUnicodePlaceholders = false;
 	#cachedLinked = false;
+	#cachedUnderlay = false;
+	#imageLink?: string;
+	readonly #placeholder: ImagePlaceholder;
 	// Tallest graphic placement this image has rendered. The text fallback
 	// pads itself to this height so a budget demotion never shrinks the block
 	// (its rows may already be committed to native scrollback).
@@ -679,6 +685,7 @@ export class Image implements Component {
 		this.#mimeType = mimeType;
 		this.#theme = theme;
 		this.#options = options;
+		this.#placeholder = new ImagePlaceholder(options.imageKey);
 		this.#dimensions = dimensions || getImageDimensions(base64Data, mimeType) || { widthPx: 800, heightPx: 600 };
 		this.#budget = options.budget;
 		this.#imageId = options.budget ? options.budget.acquireId(options.imageKey) : undefined;
@@ -783,6 +790,14 @@ export class Image implements Component {
 		const imageId = this.#imageId;
 		const transmitsSeparately = imageProtocol === ImageProtocol.Kitty && imageId != null;
 		const linked = imageLinksEnabled();
+		const hasTarget =
+			this.#options.sourcePath !== undefined ||
+			(linked &&
+				(this.#imageLink ??= transcriptImageLink(
+					{ data: this.#base64Data, mimeType: this.#mimeType },
+					this.#options.sourcePath,
+				)) !== undefined);
+		const underlay = imageProtocol === ImageProtocol.Kitty && hasTarget;
 
 		if (
 			this.#cachedLines &&
@@ -794,6 +809,7 @@ export class Image implements Component {
 			this.#cachedKittyUnicodePlaceholders === kittyUnicodePlaceholders &&
 			// The text fallback embeds a link only under an enabled hyperlink policy.
 			this.#cachedLinked === linked &&
+			this.#cachedUnderlay === underlay &&
 			(!transmitsSeparately || this.#budget?.shouldTransmit(imageId) !== true) &&
 			// Cached rows reserved for a pending SIXEL encode must not reach scrollback.
 			!(scrollbackRenderDepth > 0 && this.#sixel !== undefined && this.#sixel.sequence === undefined)
@@ -816,6 +832,7 @@ export class Image implements Component {
 				imageId: this.#imageId,
 				includeTransmit: needsTransmit,
 				sixel: (widthPx, heightPx) => this.#sixelSequence(widthPx, heightPx),
+				kittyZIndex: underlay ? 1 : undefined,
 			});
 
 			if (result?.transmit && this.#imageId != null && this.#budget !== undefined) {
@@ -841,20 +858,32 @@ export class Image implements Component {
 						this.#dimensions.heightPx,
 					);
 				}
-				lines = [];
-				for (let i = 0; i < result.rows - 1; i++) {
-					lines.push(RESERVED_IMAGE_ROW);
-				}
+				lines = underlay
+					? this.#framedFallbackLines(
+							result.columns ??
+								calculateImageFit(
+									this.#dimensions,
+									{
+										maxWidthCells: maxWidth,
+										maxHeightCells: this.#options.maxHeightCells,
+									},
+									cellDimensions,
+								).columns,
+							result.rows,
+						)
+					: Array.from({ length: result.rows }, () => RESERVED_IMAGE_ROW);
 				const cursorRows = result.rows - 1;
 				const moveUp = cursorRows > 0 ? `\x1b[${cursorRows}A` : "";
 				const placement = moveUp + (result.sequence ?? "");
-				lines.push(cursorRows > 0 ? SAVE_CURSOR + placement + RESTORE_CURSOR : placement);
+				lines[cursorRows] =
+					(cursorRows > 0 ? SAVE_CURSOR + placement + RESTORE_CURSOR : placement) +
+					(underlay ? lines[cursorRows]! : "");
 			} else {
-				lines = this.#fallbackLines();
+				lines = this.#fallbackLines(width, maxWidth, hasTarget);
 			}
 			this.#renderedGraphicRows = Math.max(this.#renderedGraphicRows, lines.length);
 		} else {
-			lines = this.#fallbackLines();
+			lines = this.#fallbackLines(width, maxWidth, hasTarget);
 		}
 
 		this.#cachedLines = lines;
@@ -865,6 +894,7 @@ export class Image implements Component {
 		this.#cachedCellHeightPx = cellDimensions.heightPx;
 		this.#cachedKittyUnicodePlaceholders = kittyUnicodePlaceholders;
 		this.#cachedLinked = linked;
+		this.#cachedUnderlay = underlay;
 
 		return lines;
 	}
@@ -877,20 +907,40 @@ export class Image implements Component {
 	 * (stale band + recommit). Reserved rows stay non-plain so blank-edge
 	 * trimming cannot collapse the block either.
 	 */
-	#fallbackLines(): string[] {
+	#framedFallbackLines(columns: number, rows: number): string[] {
+		const target = imageLinksEnabled()
+			? (this.#imageLink ??= transcriptImageLink(
+					{ data: this.#base64Data, mimeType: this.#mimeType },
+					this.#options.sourcePath,
+				))
+			: undefined;
+		return this.#placeholder.render(columns, rows, target, this.#theme);
+	}
+
+	#fallbackLines(width: number, maxWidth: number, hasTarget: boolean): string[] {
+		if (hasTarget) {
+			const fit = calculateImageFit(
+				this.#dimensions,
+				{
+					maxWidthCells: maxWidth,
+					maxHeightCells: this.#options.maxHeightCells,
+				},
+				getCellDimensions(),
+			);
+			return this.#framedFallbackLines(fit.columns, Math.max(fit.rows, this.#renderedGraphicRows));
+		}
 		const fallback = this.#theme.fallbackColor(
 			linkedImageText(
-				imageFallback(this.#mimeType, this.#dimensions, this.#options.filename),
+				truncateToWidth(
+					replaceTabs(imageFallback(this.#mimeType, this.#dimensions, this.#options.filename)),
+					width,
+				),
 				{ data: this.#base64Data, mimeType: this.#mimeType },
 				this.#options.sourcePath,
 			),
 		);
-		if (this.#renderedGraphicRows <= 1) return [fallback];
-		const lines: string[] = [];
-		for (let i = 0; i < this.#renderedGraphicRows - 1; i++) {
-			lines.push(RESERVED_IMAGE_ROW);
-		}
-		lines.push(fallback);
+		const lines = Array.from({ length: Math.max(1, this.#renderedGraphicRows) }, () => RESERVED_IMAGE_ROW);
+		lines[lines.length - 1] = fallback;
 		return lines;
 	}
 }

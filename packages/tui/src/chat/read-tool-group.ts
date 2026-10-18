@@ -24,7 +24,8 @@ import {
 } from "../render/render-utils";
 import { fileHyperlink, renderCodeCell, renderMarkdownCell } from "../render";
 import { wrapTreeLine } from "../render/hanging-wrap";
-import { wrapTextWithAnsi } from "../utils";
+import { truncateToWidth, wrapTextWithAnsi } from "../utils";
+import { renderOutputBlockViewport } from "../render/output-block";
 import { canonicalizeMessage } from "./thinking-display";
 import { internalUrlSchemeSpec, splitUrlScheme } from "../tools/url-scheme-host";
 import type { ToolExecutionHandle } from "./tool-execution";
@@ -440,6 +441,12 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	setTranscriptAllocation(rows: number): void {
 		this.#allocation = Math.max(1, rows);
+	}
+
+	renderTranscriptCompact(width: number, rows = 1, lines: readonly string[] = []): readonly string[] {
+		const summary = this.#text.render(width);
+		const head = summary[0] ?? truncateToWidth(` ${theme.format.bullet} Read`, width);
+		return renderOutputBlockViewport(head, lines, width, rows, theme) ?? [head];
 	}
 
 	override render(width: number): readonly string[] {

@@ -1211,6 +1211,35 @@ export class AssistantMessageComponent extends Container {
 		return rows;
 	}
 
+	getTranscriptReadyRowCount(width: number): number {
+		const rendered = trimBlankEdges(this.render(width));
+		if (!this.#midStreamPublication || this.#transcriptBlockFinalized || this.#rewound) return 0;
+		const count = this.#stableSnapshots.length;
+		const settled = count > 0 ? this.renderTranscriptStableRows(count, width).length : 0;
+		if (!this.#publicationItems()) return settled;
+		const prefix: string[] = [];
+		for (const child of this.#contentContainer.children) {
+			if (child instanceof Markdown) {
+				const rows = child.render(width);
+				const item = this.#fastPathItems?.find(item => item.md === child);
+				const content = item && this.#lastMessage?.content[item.contentIndex];
+				const source =
+					content?.type === "text" ? content.text : content?.type === "thinking" ? content.thinking : "";
+				// Display trimming must not discard the source's completed-line signal.
+				const boundary = source.endsWith("\n") ? "line" : /\s$/.test(source) ? "word" : undefined;
+				const ready = child.transientRenderCache ? child.getLastRenderReadyRowCount(boundary) : rows.length;
+				prefix.push(...rows.slice(0, ready));
+				if (ready < rows.length) break;
+			} else if (child instanceof Spacer) {
+				prefix.push(...child.render(width));
+			} else {
+				break;
+			}
+		}
+		const ready = trimBlankEdges(prefix);
+		return isRowPrefix(ready, rendered) ? Math.max(settled, ready.length) : settled;
+	}
+
 	/**
 	 * Publish the block's finished prefix as stable transcript rows so a long
 	 * stream can retire into native scrollback mid-turn instead of being clipped
@@ -1247,6 +1276,12 @@ export class AssistantMessageComponent extends Container {
 		this.#recordStableRows(this.#stableSnapshots.length, width, currentRows);
 	}
 
+	#publicationItems(): readonly FastPathItem[] | undefined {
+		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient || this.#markerSlot.children.length > 0)
+			return undefined;
+		return this.#fastPathItems?.length ? this.#fastPathItems : undefined;
+	}
+
 	/**
 	 * Width-independent parts eligible for publication right now: the leading
 	 * run of finished blocks, ending inside the streaming block at Markdown's
@@ -1255,10 +1290,8 @@ export class AssistantMessageComponent extends Container {
 	 * hidden thinking, or no frozen prefix yet).
 	 */
 	#currentStableSnapshot(): readonly StablePart[] | undefined {
-		if (this.#transcriptBlockFinalized || !this.#lastUpdateTransient) return undefined;
-		if (this.#markerSlot.children.length > 0) return undefined;
-		const items = this.#fastPathItems;
-		if (!items || items.length === 0) return undefined;
+		const items = this.#publicationItems();
+		if (!items) return undefined;
 		const parts: StablePart[] = [];
 		let itemIndex = 0;
 		for (const child of this.#contentContainer.children) {

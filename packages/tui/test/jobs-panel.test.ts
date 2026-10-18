@@ -39,6 +39,10 @@ function texts(root: NativeNode): string {
 		.join("\n");
 }
 
+beforeAll(async () => {
+	await initTheme();
+});
+
 const NOW = Date.now();
 const JOBS = {
 	running: [

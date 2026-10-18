@@ -343,6 +343,20 @@ export class VirtualTerminal implements Terminal {
 		return this.#rowColumnsWithColor(row, CELL_FG);
 	}
 
+	/** Opaque foreground colors for checking that clipped previews preserve their theme. */
+	getViewportRowForegroundValues(row: number): number[] {
+		const words = this.#presentedRowCells(row);
+		if (!words) return [];
+		const values: number[] = [];
+		for (let col = 0; col * CELL_U32 < words.length; col++) values.push(words[col * CELL_U32 + CELL_FG] ?? 0);
+		return values;
+	}
+
+	getCellDim(row: number, col: number): boolean {
+		const words = this.#presentedRowCells(row);
+		return !!words && ((words[col * CELL_U32 + CELL_FLAGS] ?? 0) & CellFlags.DIM) !== 0;
+	}
+
 	/**
 	 * Columns in a viewport row whose cells carry underline.
 	 * Used with unreset-SGR regressions to ensure style attributes do not bleed

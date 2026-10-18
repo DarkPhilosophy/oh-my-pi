@@ -14,9 +14,12 @@ import type { NativeNode, NativeUiEvent } from "../native/node";
 import { col, node, span, text } from "../native/describe";
 import { actionBar, actionButton } from "../native/overlay";
 import { isNativeRendering } from "../native/state";
+import { renderOutputBlock } from "../render/output-block";
 
 const FRAME_INTERVAL_MS = 85;
 const FRAME_COUNT = 34;
+/** How long a celebration stays up before dismissing itself. */
+const DISPLAY_MS = 4_000;
 
 const FIREWORK_THEME_COLORS = {
 	cyan: "mdLink",
@@ -185,20 +188,17 @@ function drawBanner(
 	const esc = formatKeyHint("escape");
 	const subtitleText =
 		event.kind === "unscheduled-weekly-reset"
-			? `Weekly usage cleared early · ${esc} to return`
+			? `Weekly usage cleared early · ${esc} to dismiss`
 			: event.added === 1
-				? `New reset banked · ${event.available} available · ${esc} to return`
-				: `${event.added} resets banked · ${event.available} available · ${esc} to return`;
+				? `New reset banked · ${event.available} available · ${esc} to dismiss`
+				: `${event.added} resets banked · ${event.available} available · ${esc} to dismiss`;
 	const title = truncateToWidth(titleText, innerWidth, "");
 	const subtitle = truncateToWidth(subtitleText, innerWidth, "");
 	const titleOffset = Math.floor((innerWidth - visibleWidth(title)) / 2);
 	const subtitleOffset = Math.floor((innerWidth - visibleWidth(subtitle)) / 2);
 
-	drawText(canvas, panelLeft, top, `╭${"─".repeat(innerWidth)}╮`, "violet", 20);
 	drawText(canvas, panelLeft + 1 + titleOffset, top, title, "gold", 21);
-	drawText(canvas, panelLeft, top + 1, `│${" ".repeat(innerWidth)}│`, "violet", 20);
 	drawText(canvas, panelLeft + 1 + subtitleOffset, top + 1, subtitle, "cyan", 21);
-	drawText(canvas, panelLeft, top + 2, `╰${"─".repeat(innerWidth)}╯`, "violet", 20);
 }
 
 function drawStars(
@@ -313,7 +313,7 @@ function renderCanvas(canvas: Array<Array<CanvasCell | undefined>>): string[] {
 	});
 }
 
-/** Render one deterministic animation frame for the top-third overlay. */
+/** Render one deterministic animation frame inside the notification's frame. */
 function renderCodexResetFireworks(
 	width: number,
 	height: number,
@@ -336,6 +336,7 @@ function renderCodexResetFireworks(
 
 class CodexResetFireworksComponent implements Component {
 	#timer: NodeJS.Timeout | undefined;
+	#displayTimer: NodeJS.Timeout | undefined;
 	#done = Promise.withResolvers<void>();
 	#frame = 0;
 	#disposed = false;
@@ -356,6 +357,9 @@ class CodexResetFireworksComponent implements Component {
 			}, FRAME_INTERVAL_MS);
 		}
 		this.host.ui.requestRender();
+		// A toast, not a dialog: it dismisses itself instead of holding the
+		// screen until the user discovers Escape.
+		this.#displayTimer ??= setTimeout(() => this.#done.resolve(), DISPLAY_MS);
 		return this.#done.promise;
 	}
 
@@ -365,6 +369,10 @@ class CodexResetFireworksComponent implements Component {
 		if (this.#timer) {
 			clearInterval(this.#timer);
 			this.#timer = undefined;
+		}
+		if (this.#displayTimer) {
+			clearTimeout(this.#displayTimer);
+			this.#displayTimer = undefined;
 		}
 		this.#done.resolve();
 	}
@@ -378,8 +386,8 @@ class CodexResetFireworksComponent implements Component {
 		if (event.type === "action" && event.act === "close") this.#done.resolve();
 	}
 
-	/** A glass sheet at the pane's top edge. */
-	readonly nativeOverlay = { role: "omp.overlay.fireworks", anchor: "top", size: "md" } as const;
+	/** Match the standard centered sheet without taking ownership of the editor. */
+	readonly nativeOverlay = { role: "omp.overlay.fireworks", anchor: "center", size: "md", modal: false } as const;
 
 	invalidate(): void {
 		this.#native = undefined;
@@ -391,29 +399,37 @@ class CodexResetFireworksComponent implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const height = Math.max(1, Math.floor(this.host.ui.terminal.rows * 0.33));
-		return renderCodexResetFireworks(width, height, this.#frame, this.event);
+		const height = Math.max(3, Math.min(12, Math.floor(this.host.ui.terminal.rows * 0.7)));
+		return renderOutputBlock(
+			{
+				width,
+				sections: [
+					{ lines: renderCodexResetFireworks(Math.max(1, width - 4), height - 2, this.#frame, this.event) },
+				],
+			},
+			theme,
+		);
 	}
 }
 
-/** Owns the at-most-one modal celebration lifecycle for an interactive session. */
+/** Owns the at-most-one passive celebration lifecycle for an interactive session. */
 export class CodexResetFireworksController {
 	#active: ActiveFireworks | undefined;
 
 	constructor(private readonly host: CodexResetFireworksHost) {}
 
-	/** Present a celebration unless another one already owns the modal overlay. */
+	/** Present a bounded notification without stealing focus from another view. */
 	show(event: CodexResetFireworksEvent): boolean {
 		if (this.#active) return false;
 		const component = new CodexResetFireworksComponent(this.host, event);
 		const overlay = this.host.ui.showOverlay(component, {
-			anchor: "top-center",
-			width: "100%",
-			maxHeight: "33%",
-			margin: 0,
+			anchor: "center",
+			width: 76,
+			maxHeight: "70%",
+			margin: 1,
+			nonModal: true,
 		});
 		this.#active = { component, overlay };
-		this.host.ui.setFocus(component);
 		void component.run().then(() => this.#finish(component));
 		return true;
 	}

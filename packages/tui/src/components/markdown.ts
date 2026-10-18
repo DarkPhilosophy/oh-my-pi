@@ -2683,6 +2683,34 @@ export class Markdown implements Component {
 		return this.#transientRenderCache ? (this.#streamSettledText ?? "") : "";
 	}
 
+	/**
+	 * Completed display rows in the open prose tail. A physical wrap does not
+	 * need a source newline. Keep the last word and its wrapping seam mutable;
+	 * unfinished inline markup and non-paragraph tails retain their existing
+	 * block-level settlement rules.
+	 */
+	getLastRenderReadyRowCount(sourceBoundary?: "line" | "word"): number {
+		const tail = this.#lastTailCapture;
+		if (
+			!this.#transientRenderCache ||
+			!this.#lastScanCanStream ||
+			!tail ||
+			tail.open ||
+			!this.#cachedLines ||
+			!this.#cachedWidth
+		)
+			return 0;
+		const raw = this.#fastTail?.source === this.#text ? this.#fastTail.rowRaw : tail.rowRaw;
+		if (raw.includes("|")) return 0; // A following delimiter can still turn this into a table.
+		const word = raw.match(/\S+$/)?.[0] ?? "";
+		const contentWidth = Math.max(1, this.#cachedWidth - this.#paddingX * 2);
+		// A short unfinished word may move across the preceding soft-wrap seam.
+		// A word already wider than the terminal has fixed hard-wrapped rows.
+		const mutableRows =
+			sourceBoundary === "line" ? 0 : sourceBoundary === "word" || visibleWidth(word) > contentWidth ? 1 : 2;
+		return Math.max(0, this.#cachedLines.length - this.#paddingY - mutableRows);
+	}
+
 	get transientRenderCache(): boolean {
 		return this.#transientRenderCache;
 	}

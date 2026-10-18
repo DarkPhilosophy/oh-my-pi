@@ -525,6 +525,8 @@ function parseSizeValue(value: SizeValue | undefined, referenceSize: number): nu
  * Values can be absolute numbers or percentage strings (e.g., "50%").
  */
 export interface OverlayOptions {
+	/** Leave keyboard focus with the underlying view; only Escape is routed here for dismissal. */
+	nonModal?: boolean;
 	// === Sizing ===
 	/** Width in columns, or percentage of terminal width (e.g., "50%") */
 	width?: SizeValue;
@@ -1497,11 +1499,13 @@ export class TUI extends Container {
 		const entry = { component, options, preFocus: this.#focusedComponent, hidden: false, released: false };
 		this.overlayStack.push(entry);
 		// Only focus if overlay is actually visible
-		if (this.#isOverlayVisible(entry)) {
+		if (!options?.nonModal && this.#isOverlayVisible(entry)) {
 			this.setFocus(component);
 		}
-		this.terminal.hideCursor();
-		this.#recordHardwareCursorHidden();
+		if (!options?.nonModal) {
+			this.terminal.hideCursor();
+			this.#recordHardwareCursorHidden();
+		}
 		this.requestRender();
 
 		// Return handle for controlling this overlay
@@ -1532,7 +1536,7 @@ export class TUI extends Container {
 					}
 				} else {
 					// Restore focus to this overlay when showing (if it's actually visible)
-					if (this.#isOverlayVisible(entry)) {
+					if (!entry.options?.nonModal && this.#isOverlayVisible(entry)) {
 						this.setFocus(component);
 					}
 				}
@@ -1547,7 +1551,9 @@ export class TUI extends Container {
 		const overlay = this.overlayStack.pop();
 		if (!overlay) return;
 		// Find the topmost visible overlay holding keys, or fall back to preFocus
-		this.setFocus(this.#getKeyHolderOverlay()?.component ?? overlay.preFocus);
+		if (isOverlayFocusTarget(overlay.component, this.#focusedComponent)) {
+			this.setFocus(this.#getKeyHolderOverlay()?.component ?? overlay.preFocus);
+		}
 		if (this.overlayStack.length === 0) {
 			this.terminal.hideCursor();
 			this.#recordHardwareCursorHidden();
@@ -1647,9 +1653,12 @@ export class TUI extends Container {
 	}
 
 	/** Find the topmost visible overlay, if any */
-	#getTopmostVisibleOverlay(): (typeof this.overlayStack)[number] | undefined {
+	#getTopmostVisibleOverlay(includeNonModal = true): (typeof this.overlayStack)[number] | undefined {
 		for (let i = this.overlayStack.length - 1; i >= 0; i--) {
-			if (this.#isOverlayVisible(this.overlayStack[i])) {
+			if (
+				(includeNonModal || !this.overlayStack[i].options?.nonModal) &&
+				this.#isOverlayVisible(this.overlayStack[i])
+			) {
 				return this.overlayStack[i];
 			}
 		}
@@ -1660,7 +1669,7 @@ export class TUI extends Container {
 	#getKeyHolderOverlay(): (typeof this.overlayStack)[number] | undefined {
 		for (let i = this.overlayStack.length - 1; i >= 0; i--) {
 			const entry = this.overlayStack[i];
-			if (!entry.released && this.#isOverlayVisible(entry)) return entry;
+			if (!entry.options?.nonModal && !entry.released && this.#isOverlayVisible(entry)) return entry;
 		}
 		return undefined;
 	}
@@ -1681,7 +1690,9 @@ export class TUI extends Container {
 		const visible = this.overlayStack.filter(entry => this.#isOverlayVisible(entry));
 		const overlay = visible.findLast(entry => owners.some(owner => isOverlayFocusTarget(entry.component, owner)));
 		if (overlay) {
-			if (!isOverlayFocusTarget(overlay.component, this.#focusedComponent)) this.setFocus(overlay.component);
+			if (!overlay.options?.nonModal && !isOverlayFocusTarget(overlay.component, this.#focusedComponent)) {
+				this.setFocus(overlay.component);
+			}
 			return;
 		}
 		if (!field || field === this.#focusedComponent || !visible.every(entry => sheet(entry.component))) return;
@@ -3344,13 +3355,20 @@ export class TUI extends Container {
 			return;
 		}
 
+		const notification = this.#getTopmostVisibleOverlay();
+		if (notification?.options?.nonModal && notification.component.handleInput && matchesKey(data, "escape")) {
+			notification.component.handleInput(data);
+			this.requestRender();
+			return;
+		}
+
 		// If focused component is an overlay, verify it's still visible (visibility can change due to
 		// terminal resize or visible() callback). Runs before the capture preflight below, which must
 		// target the effective focus owner, not a hidden overlay.
 		const focusedOverlay = this.overlayStack.find(o => o.component === this.#focusedComponent);
 		if (focusedOverlay && !this.#isOverlayVisible(focusedOverlay)) {
 			// Focused overlay is no longer visible, redirect to topmost visible overlay
-			const topVisible = this.#getTopmostVisibleOverlay();
+			const topVisible = this.#getKeyHolderOverlay();
 			if (topVisible) {
 				this.setFocus(topVisible.component);
 			} else {
@@ -3840,8 +3858,16 @@ export class TUI extends Container {
 				rows: parsed.rows,
 				screenRow,
 				imageHeightPx: this.#imageBudget.getPlacementGeometry(parsed.imageId)?.heightPx ?? 0,
+				zIndex: parsed.zIndex,
+				underlay: parsed.underlay,
 			})
 		);
+	}
+
+	#underlayPlacementOwners(line: PreparedLine): Map<number, LiveImagePlacement> | undefined {
+		return line.isImage && parseKittyDirectPlacementLine(line.line)?.underlay !== undefined
+			? this.#screenImagePlacements
+			: undefined;
 	}
 
 	#terminalLine(line: PreparedLine): string {
@@ -4357,9 +4383,13 @@ export class TUI extends Container {
 					if (previousRow !== undefined) retainedHistory.unshift(previousRow);
 				}
 			}
-			replayViewportRows = retainedLiveViewport
-				? Math.min(retainedHistory.length, Math.max(0, height - viewport.length))
-				: Math.max(0, height - viewport.length);
+			// Shutdown has no live screen to fill. Padding here would permanently
+			// separate the retired transcript from the final rows and shell prompt.
+			replayViewportRows = flushing
+				? 0
+				: retainedLiveViewport
+					? Math.min(retainedHistory.length, Math.max(0, height - viewport.length))
+					: Math.max(0, height - viewport.length);
 			const prefix = replayViewportRows > 0 ? retainedHistory.slice(-replayViewportRows) : [];
 			if (!retainedLiveViewport) {
 				while (prefix.length < replayViewportRows) prefix.push("");
@@ -4602,6 +4632,7 @@ export class TUI extends Container {
 					width,
 					row,
 					this.#osc66SpacerGlyphWidth(this.#providerScreen, row),
+					{ imagePlacements: this.#underlayPlacementOwners(restored.rows[row - restoreTop]!) },
 				)}`;
 			}
 		}
@@ -4749,6 +4780,32 @@ export class TUI extends Container {
 			-height,
 		);
 		this.#providerScreenKnownTop = nextKnownTop;
+		// Underlay images normally cover their fallback cells. While a popup owns
+		// the screen, put those rasters below its cells and remove the fallback
+		// glyphs. Keep the original rows as backing so closing it restores both.
+		let overlayBackdrop: string[] | undefined;
+		if (overlayVisible || overlayCount > 0) {
+			for (const [row, placement] of this.#screenImagePlacements) {
+				const parsed = parseKittyDirectPlacementLine(placement.line);
+				if (!parsed || parsed.underlay === undefined || (parsed.zIndex ?? -1) < 0) continue;
+				overlayBackdrop ??= Array.from({ length: height }, (_, index) => this.#providerScreen[index] ?? "");
+				for (let imageRow = Math.max(0, row - parsed.rows + 1); imageRow <= Math.min(row, height - 1); imageRow++) {
+					overlayBackdrop[imageRow] = "";
+					buffer += `\x1b[${imageRow + 1};1H${LINE_TERMINATOR}${ERASE_LINE}`;
+				}
+				buffer +=
+					`\x1b[${row + 1};1H` +
+					encodeKittyDeletePlacement(placement.imageId, placement.placementId) +
+					encodeKittyPlacementLine({
+						imageId: placement.imageId,
+						placementId: placement.placementId,
+						columns: parsed.columns,
+						rows: parsed.rows,
+						screenRow: row,
+						imageHeightPx: this.#imageBudget.getPlacementGeometry(placement.imageId)?.heightPx ?? 0,
+					});
+			}
+		}
 		if (overlayCount > 0) {
 			const covered: string[] = [];
 			// `painted` holds what actually reached the screen: the composited row when anchored, so the
@@ -4764,22 +4821,39 @@ export class TUI extends Container {
 				// it as a full row would leave a stub with the rest of the row cleared.
 				const splice = anchored;
 				const paintedLine = splice
-					? compositeLineAt(under, overlayRows[index]!, overlayStartCol, overlayWidth, width)
+					? compositeLineAt(
+							overlayBackdrop?.[row] ?? under,
+							overlayRows[index]!,
+							overlayStartCol,
+							overlayWidth,
+							width,
+						)
 					: overlayRows[index]!;
 				painted.push(paintedLine);
 				if (
 					diffable &&
 					!restoredScaledBacking &&
 					this.#providerWindow.length === rows &&
+					overlayBackdrop === undefined &&
 					previousOverlay?.painted[row - previousOverlay.top] === paintedLine
 				)
 					continue;
 				const paintedRow = splice
 					? this.#prepareLine(paintedLine, width, getWidthConfigEpoch(), TERMINAL.imageProtocol)
 					: overlay.rows[index]!;
-				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(paintedRow, width, row)}`;
+				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(paintedRow, width, row, -1, { imagePlacements: this.#underlayPlacementOwners(paintedRow) })}`;
 			}
 			this.#cursorOverlayBacking = { top: overlayTop, rows: covered, painted };
+		}
+		if (overlayBackdrop && !overlayVisible) {
+			const painted = overlayBackdrop.slice();
+			const popup = this.#cursorOverlayBacking;
+			if (popup) painted.splice(popup.top, popup.painted.length, ...popup.painted);
+			this.#cursorOverlayBacking = {
+				top: 0,
+				rows: Array.from({ length: height }, (_, row) => this.#providerScreen[row] ?? ""),
+				painted,
+			};
 		}
 		let paintedLines = prepared.lines;
 		if (overlayVisible) {
@@ -4787,7 +4861,7 @@ export class TUI extends Container {
 			// transcript window. Reuse the backed-overlay restoration path so
 			// opening, repainting or closing a modal cannot retire chat rows.
 			const backing = Array.from({ length: height }, (_, row) => this.#providerScreen[row] ?? "");
-			const composited = this.#compositeOverlaysIntoWindow(backing, width, height);
+			const composited = this.#compositeOverlaysIntoWindow(overlayBackdrop ?? backing, width, height);
 			const modalMarkers: { row: number; col: number }[] = [];
 			const modal = this.#prepareLinesArray(composited, width, undefined, height, modalMarkers);
 			paintedLines = modal.lines;
@@ -4797,7 +4871,7 @@ export class TUI extends Container {
 				if (modal.lines[row] === backing[row]) continue;
 				first = Math.min(first, row);
 				last = row;
-				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(modal.rows[row]!, width, row)}`;
+				buffer += `\x1b[${row + 1};1H${this.#lineRewriteSequence(modal.rows[row]!, width, row, -1, { imagePlacements: this.#underlayPlacementOwners(modal.rows[row]!) })}`;
 			}
 			if (last >= first) {
 				this.#cursorOverlayBacking = {
@@ -4806,7 +4880,7 @@ export class TUI extends Container {
 					painted: modal.lines.slice(first, last + 1),
 				};
 			}
-			const top = this.#getTopmostVisibleOverlay();
+			const top = this.#getKeyHolderOverlay();
 			if (top && isOverlayFocusTarget(top.component, this.#focusedComponent)) {
 				target = this.#targetHardwareCursorState(modalMarkers[0] ?? null, height);
 			}
@@ -4848,8 +4922,7 @@ export class TUI extends Container {
 			this.#resizeAltExitFused = false;
 			setAltScreenActive(false);
 		}
-		if (target) this.#recordHardwareCursorState(target);
-		else this.#recordHardwareCursorHidden();
+		this.#recordHardwareCursorState(target ?? { row: Math.min(mutableTop, height - 1), col: 0, visible: false });
 		this.#providerWindow = mutablePreparedLines;
 		this.#providerPreparedRows = mutablePreparedRows;
 		this.#providerViewportTop = mutableTop;
@@ -4933,7 +5006,7 @@ export class TUI extends Container {
 		// Fullscreen alt-screen short-circuit. While the topmost visible overlay
 		// requests it, borrow the terminal's alternate buffer and paint only the
 		// modal there; the normal screen and all accounting stay untouched.
-		const topOverlay = this.#getTopmostVisibleOverlay();
+		const topOverlay = this.#getTopmostVisibleOverlay(false);
 		const wantAlt = topOverlay?.options?.fullscreen === true;
 		const wantMouse: MouseTrackingState =
 			topOverlay === undefined
@@ -5575,7 +5648,7 @@ export class TUI extends Container {
 		} while (this.#imageBudget.endPass());
 		const markers: { row: number; col: number }[] = [];
 		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height, markers);
-		const topOverlay = this.#getTopmostVisibleOverlay();
+		const topOverlay = this.#getKeyHolderOverlay();
 		const focused = this.#focusedComponent;
 		const acceptsTerminalCursor =
 			topOverlay !== undefined &&

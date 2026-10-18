@@ -1,10 +1,11 @@
 import { afterEach, expect, it } from "bun:test";
-import { Text } from "@oh-my-pi/pi-tui";
+import { Container, Text } from "@oh-my-pi/pi-tui";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { VirtualTerminal } from "./virtual-terminal";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { QueuedMessageBox } from "@oh-my-pi/pi-tui/queued-message-box";
 
 class FinalizingCard {
 	finalized = false;
@@ -38,6 +39,114 @@ class ReshapingCard {
 
 let composer: Composer | undefined;
 afterEach(() => composer?.stop());
+
+it("closes a long transcript without padding its final rows away from the shell", async () => {
+	const terminal = new VirtualTerminal(120, 40);
+	composer = new Composer({ preferences: { quiet: true }, terminal });
+	const transcript = new TranscriptContainer();
+	const rows = Array.from({ length: 90 }, (_, index) => `EXIT_LINE_${index}`);
+	transcript.addChild(new Text(rows.join("\n"), 0, 0));
+	composer.setRuntimeChildren([transcript, new Text("EXIT_CHROME", 0, 0)]);
+	composer.start({ playWelcomeIntro: false });
+	await terminal.waitForRender();
+	composer.ui.requestRender();
+	await terminal.waitForRender();
+	const before = terminal.getScrollBuffer().flatMap(row => row.match(/EXIT_LINE_\d+/g) ?? []);
+	expect(before).toEqual(rows);
+	composer.stop();
+	terminal.write("SHELL");
+	const buffer = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+	expect(buffer.flatMap(row => row.match(/EXIT_LINE_\d+/g) ?? [])).toEqual(rows);
+	const tail = buffer.slice(buffer.indexOf("EXIT_LINE_89"), buffer.indexOf("SHELL") + 1);
+	expect(tail).toEqual(["EXIT_LINE_89", "", "EXIT_CHROME", "SHELL"]);
+});
+
+it("keeps the live Bash footer after a queued steer squeezes its published command", async () => {
+	const terminal = new VirtualTerminal(120, 40);
+	composer = new Composer({ preferences: { quiet: true }, terminal });
+	const transcript = new TranscriptContainer();
+	const queue = new Container();
+	const todo = new Text(["TODO", ...Array.from({ length: 7 }, (_, i) => `TASK_${i}`)].join("\n"), 0, 0);
+	transcript.addChild(new Text(Array.from({ length: 10 }, (_, i) => `BEFORE_STEER_${i}`).join("\n"), 0, 0));
+	const bash = new ToolExecutionComponent(
+		"bash",
+		{ command: `python3 ${"nested/".repeat(25)}STEER_BASH_COMMAND` },
+		{},
+		undefined,
+		composer.ui,
+	);
+	bash.setArgsComplete();
+	bash.setExecutionStarted();
+	const glob = new ToolExecutionComponent("glob", { pattern: "fixtures/**/*.rs" }, {}, undefined, composer.ui);
+	glob.setArgsComplete();
+	glob.setExecutionStarted();
+	glob.updateResult(
+		{ content: [{ type: "text", text: Array.from({ length: 25 }, (_, i) => `GLOB_ROW_${i}`).join("\n") }] },
+		false,
+	);
+	const pending = new ReadToolGroupComponent({ showContentPreview: true });
+	pending.updateArgs({ path: "next.rs" }, "next");
+	transcript.addChild(bash);
+	transcript.addChild(glob);
+	transcript.addChild(pending);
+	composer.setRuntimeChildren([transcript, queue, todo, composer.editor]);
+	composer.start({ playWelcomeIntro: false });
+	await terminal.waitForRender();
+	composer.ui.requestRender();
+	await terminal.waitForRender();
+	try {
+		queue.addChild(
+			new QueuedMessageBox(
+				"Steer",
+				Array.from({ length: 14 }, (_, i) => `QUEUED_STEER_${i}`),
+				{
+					collapseLines: 30,
+					expanded: true,
+					footerText: "Alt+Up to edit",
+				},
+			),
+		);
+		composer.ui.requestRender();
+		await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("QUEUED_STEER_13")));
+		const buffer = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+		const bashStart = buffer.findIndex(row => row.includes("Bash"));
+		const globStart = buffer.findIndex(row => /glob/i.test(row));
+		const bashRows = buffer.slice(bashStart, globStart);
+		expect(bashRows.some(row => row.includes("Running"))).toBe(true);
+		expect(bashRows.some(row => row.startsWith("╰"))).toBe(true);
+		expect(buffer.flatMap(row => row.match(/BEFORE_STEER_\d+/g) ?? [])).toEqual(
+			Array.from({ length: 10 }, (_, i) => `BEFORE_STEER_${i}`),
+		);
+		expect(buffer.join("\n").match(/STEER_BASH_COMMAND/g)).toHaveLength(1);
+		expect(bash.isTranscriptBlockFinalized()).toBe(false);
+		queue.clear();
+		bash.updateResult({ content: [{ type: "text", text: "BASH_AFTER_STEER_RESULT" }] }, false);
+		pending.updateResult({ content: [{ type: "text", text: "READ_AFTER_STEER_RESULT" }] }, false, "next");
+		pending.finalize();
+		transcript.addChild(new Text("DELIVERED_STEER_MESSAGE", 0, 0));
+		composer.ui.requestRender();
+		await terminal.waitForRender(() => terminal.getViewport().some(row => row.includes("DELIVERED_STEER_MESSAGE")));
+		const tape = terminal
+			.getScrollBuffer()
+			.map(row => Bun.stripANSI(row))
+			.join("\n");
+		expect(tape).not.toContain("QUEUED_STEER_");
+		expect([...(tape.match(/BEFORE_STEER_\d+/g) ?? [])]).toEqual(
+			Array.from({ length: 10 }, (_, i) => `BEFORE_STEER_${i}`),
+		);
+		for (const marker of [
+			"STEER_BASH_COMMAND",
+			"BASH_AFTER_STEER_RESULT",
+			"READ_AFTER_STEER_RESULT",
+			"DELIVERED_STEER_MESSAGE",
+		]) {
+			expect(tape.split(marker).length - 1).toBe(1);
+		}
+	} finally {
+		bash.seal();
+		pending.finalize();
+	}
+});
 
 it("publishes only the offscreen portion of a finalized card and keeps its visible tail live", async () => {
 	const terminal = new VirtualTerminal(60, 14);

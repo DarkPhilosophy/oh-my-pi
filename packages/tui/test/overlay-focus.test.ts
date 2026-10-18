@@ -108,6 +108,38 @@ class CapturingRecorder extends FocusRecorder {
 	}
 }
 
+it("keeps typing with the underlying owner while a passive overlay receives only Escape", () => {
+	const terminal = new MinimalTerminal();
+	const tui = new TUI(terminal);
+	const editor = new FocusRecorder("editor");
+	const notification = new FocusRecorder("notification");
+	tui.addChild(editor);
+	tui.setFocus(editor);
+	tui.start();
+	try {
+		const overlay = tui.showOverlay(notification, { nonModal: true });
+		terminal.sendInput("first");
+		expect(editor.inputs).toEqual(["first"]);
+		expect(notification.inputs).toEqual([]);
+		terminal.sendInput("\x1b");
+		expect(notification.inputs).toEqual(["\x1b"]);
+		overlay.setHidden(true);
+		overlay.setHidden(false);
+		terminal.sendInput("second");
+		expect(editor.inputs).toEqual(["first", "second"]);
+		const menu = new FocusRecorder("menu");
+		const modal = tui.showOverlay(menu);
+		terminal.sendInput("menu-key");
+		expect(menu.inputs).toEqual(["menu-key"]);
+		modal.hide();
+		terminal.sendInput("third");
+		expect(editor.inputs).toEqual(["first", "second", "third"]);
+		overlay.hide();
+	} finally {
+		tui.stop();
+	}
+});
+
 describe("TUI overlay focus", () => {
 	it("delivers keys to the displaced editor beneath a paint-only overlay", () => {
 		const terminal = new MinimalTerminal();

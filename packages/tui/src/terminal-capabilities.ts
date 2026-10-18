@@ -910,6 +910,8 @@ export interface ImageRenderOptions {
 	 * Without a provider, renderImage encodes synchronously.
 	 */
 	sixel?: (widthPx: number, heightPx: number) => string | null | undefined;
+	/** Explicit Kitty layer; uses direct placement so a raster can cover cell text. */
+	kittyZIndex?: number;
 }
 
 // Default cell dimensions - updated by TUI when terminal responds to query
@@ -992,6 +994,8 @@ export function encodeKittyPlacement(options: {
 	placementId?: number;
 	columns?: number;
 	rows?: number;
+	/** Placement layer. The default lets opaque popup cells cover the graphic. */
+	zIndex?: number;
 }): string {
 	const params: string[] = ["a=p", "q=2", "C=1", `i=${options.imageId}`];
 	if (options.placementId) params.push(`p=${options.placementId}`);
@@ -999,23 +1003,25 @@ export function encodeKittyPlacement(options: {
 	if (options.rows) params.push(`r=${options.rows}`);
 	// Kitty draws this layer after the default background and before explicit
 	// cell backgrounds, so opaque popup cells can cover it without deleting it.
-	params.push("z=-2147483648");
+	params.push(`z=${options.zIndex ?? -2147483648}`);
 	return wrapTmuxPassthroughIfNeeded(`\x1b_G${params.join(",")}\x1b\\`);
 }
 
 /**
  * Exact shape of the direct-placement line {@link Image} emits as its block's
- * last row: optional `ESC 7` + `CUU(rows-1)` prefix, the {@link encodeKittyPlacement}
- * APC, optional `ESC 8` suffix. The parser unwraps tmux passthrough first.
+ * last row: an optional save/cursor lift, APC, restore, then an optional
+ * text underlay. The parser unwraps tmux passthrough first.
  */
 const KITTY_DIRECT_PLACEMENT_LINE =
-	/^(?:\x1b7(?:\x1b\[(\d+)A)?)?\x1b_Ga=p,q=2,C=1,i=(\d+)(?:,p=(\d+))?(?:,c=(\d+))?(?:,r=(\d+))?(?:,z=-2147483648)?\x1b\\(?:\x1b8)?$/;
+	/^(?:\x1b7\x1b\[(\d+)A)?\x1b_Ga=p,q=2,C=1,i=(\d+)(?:,p=(\d+))?(?:,c=(\d+))?(?:,r=(\d+))?(?:,z=(-?\d+))?\x1b\\(?:\x1b8)?(.*)$/;
 
 export interface ParsedKittyPlacementLine {
 	imageId: number;
 	placementId: number | undefined;
 	columns: number;
 	rows: number;
+	zIndex?: number;
+	underlay?: string;
 }
 
 /**
@@ -1040,6 +1046,8 @@ export function parseKittyDirectPlacementLine(line: string): ParsedKittyPlacemen
 		placementId: m[3] !== undefined ? Number(m[3]) : undefined,
 		columns,
 		rows,
+		...(m[6] !== undefined && Number(m[6]) !== -2147483648 ? { zIndex: Number(m[6]) } : {}),
+		...(m[7] ? { underlay: m[7] } : {}),
 	};
 }
 
@@ -1076,6 +1084,8 @@ export function encodeKittyPlacementLine(options: {
 	screenRow: number;
 	/** Source image height in pixels, for the clipped source rectangle. */
 	imageHeightPx: number;
+	zIndex?: number;
+	underlay?: string;
 }): string {
 	// Without a source pixel height the slice cannot be expressed — emit the
 	// component's own full form (status quo) rather than squashing the whole
@@ -1089,10 +1099,10 @@ export function encodeKittyPlacementLine(options: {
 		const srcY = Math.floor((options.imageHeightPx * hiddenRows) / options.rows);
 		params.push(`y=${srcY}`, `h=${Math.max(1, options.imageHeightPx - srcY)}`);
 	}
-	params.push("z=-2147483648");
+	params.push(`z=${options.zIndex ?? -2147483648}`);
 	const apc = wrapTmuxPassthroughIfNeeded(`\x1b_G${params.join(",")}\x1b\\`);
 	const cuu = visibleRows - 1;
-	return cuu > 0 ? `\x1b7\x1b[${cuu}A${apc}\x1b8` : apc;
+	return (cuu > 0 ? `\x1b7\x1b[${cuu}A${apc}\x1b8` : apc) + (options.underlay ?? "");
 }
 
 /**
@@ -1161,7 +1171,7 @@ export function calculateImageRows(
 	return Math.max(1, rows);
 }
 
-function calculateImageFit(
+export function calculateImageFit(
 	imageDimensions: ImageDimensions,
 	options: ImageRenderOptions,
 	cellDims: CellDimensions,
@@ -1348,7 +1358,7 @@ export function renderImage(
 	base64Data: string,
 	imageDimensions: ImageDimensions,
 	options: ImageRenderOptions = {},
-): { sequence?: string; lines?: string[]; rows: number; transmit?: string } | null {
+): { sequence?: string; lines?: string[]; rows: number; columns?: number; transmit?: string } | null {
 	if (!TERMINAL.imageProtocol) {
 		return null;
 	}
@@ -1370,7 +1380,11 @@ export function renderImage(
 			// horizontal slicing, reflow and overlaps) instead of a cursor-positioned
 			// `a=p` placement. Falls back to direct placement when disabled or when the
 			// grid exceeds the diacritic table's addressable cell range.
-			if (graphics.unicodePlaceholders && kittyPlaceholdersFit(fit.columns, fit.rows)) {
+			if (
+				graphics.unicodePlaceholders &&
+				options.kittyZIndex === undefined &&
+				kittyPlaceholdersFit(fit.columns, fit.rows)
+			) {
 				const lines = renderKittyPlaceholderLines({
 					imageId: options.imageId,
 					placementId,
@@ -1385,15 +1399,16 @@ export function renderImage(
 				placementId,
 				columns: fit.columns,
 				rows: fit.rows,
+				zIndex: options.kittyZIndex,
 			});
-			return { sequence, rows: fit.rows, transmit };
+			return { sequence, rows: fit.rows, columns: fit.columns, transmit };
 		}
 		// No stable id (e.g. no budget): self-contained transmit-and-display.
 		const sequence = encodeKitty(base64Data, {
 			columns: fit.columns,
 			rows: fit.rows,
 		});
-		return { sequence, rows: fit.rows };
+		return { sequence, rows: fit.rows, columns: fit.columns };
 	}
 
 	if (TERMINAL.imageProtocol === ImageProtocol.Sixel) {
