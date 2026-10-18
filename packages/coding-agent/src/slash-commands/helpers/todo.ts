@@ -2,6 +2,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	applyOpsToPhases,
 	getLatestTodoPhasesFromEntries,
+	isAllTodoTarget,
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
@@ -204,7 +205,7 @@ async function handleTodoMutationCommand(
 ): Promise<SlashCommandResult> {
 	const current = currentPhases(runtime);
 	const trimmedArg = restArgs.trim();
-	if (!trimmedArg) {
+	if (!trimmedArg || isAllTodoTarget(trimmedArg)) {
 		if (verb === "rm") {
 			commitTodos(runtime, []);
 			await runtime.output("Cleared all todos.");

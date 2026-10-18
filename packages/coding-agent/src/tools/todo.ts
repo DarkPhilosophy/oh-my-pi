@@ -1,4 +1,5 @@
 import {
+	isClosedTodo,
 	type TodoStatus,
 	type TodoOperation,
 	type TodoItem,
@@ -152,6 +153,16 @@ export function nextActionableTask(phases: readonly TodoPhase[]): TodoItem | und
 		}
 	}
 	return firstPending;
+}
+
+/**
+ * Whether a `/todo` verb argument is the keyword `all` (any case): the whole
+ * list, never a fuzzy match. Without it a literal `all` fell through to fuzzy
+ * matching, silently edited the one task whose text happened to contain it, and
+ * still reported success.
+ */
+export function isAllTodoTarget(arg: string): boolean {
+	return arg.trim().toLowerCase() === "all";
 }
 
 export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
@@ -352,12 +363,16 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 		return phases;
 	}
 
+	// Starting more work retires completed phases from the current plan, not
+	// from its historical snapshots. Never remove progress within an open phase.
+	const remaining = phases.filter(phase => phase.tasks.some(task => !isClosedTodo(task)));
+
 	// Validate the whole batch before mutating so a failing op reports every
 	// duplicate and leaves nothing half-applied.
 	const seen = new Set<string>();
 	let hasDuplicate = false;
 	for (const content of entry.items) {
-		if (seen.has(content) || findTaskByContent(phases, content)) {
+		if (seen.has(content) || findTaskByContent(remaining, content)) {
 			errors.push(`Task "${content}" already exists`);
 			hasDuplicate = true;
 		}
@@ -365,16 +380,16 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	}
 	if (hasDuplicate) return phases;
 
-	let phase = findPhaseByName(phases, entry.phase);
+	let phase = findPhaseByName(remaining, entry.phase);
 	if (!phase) {
 		phase = { name: entry.phase, tasks: [] };
-		phases.push(phase);
+		remaining.push(phase);
 	}
 
 	for (const content of entry.items) {
 		phase.tasks.push({ content, status: "pending" });
 	}
-	return phases;
+	return remaining;
 }
 
 function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
@@ -387,13 +402,11 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 	if (entry.phase) {
 		const phase = resolvePhaseOrError(phases, entry.phase, errors);
 		if (!phase) return phases;
-		phase.tasks = [];
-		return phases;
+		// Remove the phase itself: a phase shell with no tasks is invisible to the
+		// renderers but persists in state, so it kept the list non-empty forever.
+		return phases.filter(candidate => candidate !== phase);
 	}
-	for (const phase of phases) {
-		phase.tasks = [];
-	}
-	return phases;
+	return [];
 }
 
 function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {

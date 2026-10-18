@@ -192,4 +192,71 @@ describe("TodoCommandController", () => {
 
 		expect(reminderTextFrom(ctx)).not.toMatch(/Do NOT/i);
 	});
+
+	describe("explicit all target", () => {
+		// A task or phase whose text contains "all" is the trap: `all` must mean
+		// the whole list, never a fuzzy match that silently edits one task while
+		// reporting success.
+		function manyPhases(): TodoPhase[] {
+			return Array.from({ length: 4 }, (_, i) => ({
+				name: `Install all ${i + 1}`,
+				tasks: [{ content: `Wire all ${i + 1}`, status: i < 3 ? ("completed" as const) : ("pending" as const) }],
+			}));
+		}
+
+		function committed(ctx: InteractiveModeContext): TodoPhase[] {
+			const set = ctx.session.setTodoPhases as unknown as Mock<(phases: TodoPhase[]) => void>;
+			return set.mock.calls.at(-1)![0];
+		}
+
+		it("clears the whole list for /todo rm all even when tasks contain the word all", async () => {
+			tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-todo-rm-all-keyword-"));
+			const ctx = createContext(tempRoot, manyPhases());
+			await new TodoCommandController(ctx).handleTodoCommand("rm all");
+			expect(committed(ctx)).toEqual([]);
+			expect(ctx.showStatus).toHaveBeenCalledWith("Cleared all todos.");
+			expect(reminderTextFrom(ctx)).toMatch(/Do NOT recreate/i);
+		});
+
+		it("treats /todo rm ALL case-insensitively with surrounding whitespace", async () => {
+			tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-todo-rm-all-case-"));
+			const ctx = createContext(tempRoot, manyPhases());
+			await new TodoCommandController(ctx).handleTodoCommand("rm   ALL  ");
+			expect(committed(ctx)).toEqual([]);
+		});
+
+		it("completes every task for /todo done all instead of one fuzzy match", async () => {
+			tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-todo-done-all-"));
+			const ctx = createContext(tempRoot, manyPhases());
+			await new TodoCommandController(ctx).handleTodoCommand("done all");
+			expect(
+				committed(ctx)
+					.flatMap(phase => phase.tasks)
+					.map(task => task.status),
+			).toEqual(["completed", "completed", "completed", "completed"]);
+			expect(ctx.showStatus).toHaveBeenCalledWith("Marked all tasks completed.");
+		});
+
+		it("abandons every task for /todo drop all", async () => {
+			tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-todo-drop-all-"));
+			const ctx = createContext(tempRoot, manyPhases());
+			await new TodoCommandController(ctx).handleTodoCommand("drop all");
+			expect(
+				committed(ctx)
+					.flatMap(phase => phase.tasks)
+					.every(task => task.status === "abandoned"),
+			).toBe(true);
+		});
+
+		it("still targets a single task when all is only part of a longer name", async () => {
+			tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-tui-todo-rm-partial-all-"));
+			const ctx = createContext(tempRoot, manyPhases());
+			await new TodoCommandController(ctx).handleTodoCommand("rm Wire all 4");
+			expect(
+				committed(ctx)
+					.flatMap(phase => phase.tasks)
+					.map(task => task.content),
+			).toEqual(["Wire all 1", "Wire all 2", "Wire all 3"]);
+		});
+	});
 });

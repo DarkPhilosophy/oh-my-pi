@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
 	getLatestTodoPhasesFromEntries,
+	isAllTodoTarget,
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
@@ -332,7 +333,7 @@ export class TodoCommandController {
 		const op = target === "completed" ? "done" : "drop";
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
-		if (!trimmed) {
+		if (!trimmed || isAllTodoTarget(trimmed)) {
 			// no-arg: apply to all
 			const { phases, errors } = applyOpsToPhases(current, [{ op }]);
 			if (errors.length > 0) {
@@ -374,7 +375,7 @@ export class TodoCommandController {
 	#remove(rest: string): void {
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
-		if (!trimmed) {
+		if (!trimmed || isAllTodoTarget(trimmed)) {
 			this.#commit([], "/todo rm (all)", { removed: true });
 			this.ctx.showStatus("Cleared all todos.");
 			return;

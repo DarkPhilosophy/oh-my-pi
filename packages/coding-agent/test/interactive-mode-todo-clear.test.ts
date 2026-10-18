@@ -15,6 +15,7 @@ import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 import { cfgTasksTodoClearDelay } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { getLatestTodoPhasesFromEntries, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
@@ -136,6 +137,47 @@ describe("InteractiveMode todo HUD persistence", () => {
 		// viewport hides both, so the counter is the only signal they existed.
 		expect(rendered).toContain("2/3");
 		expect(rendered).toContain("current task");
+	});
+
+	it("does not revive completed phases when agent append changes a dismissed plan snapshot", async () => {
+		vi.useFakeTimers();
+		setTodoClearDelay(0);
+		const finished: TodoPhase[] = [
+			{ name: "Finished request", tasks: [{ content: "Old task", status: "completed" }] },
+		];
+		session.sessionManager.appendCustomEntry("user_todo_edit", { phases: finished });
+		session.setTodoPhases(finished);
+		mode.setTodos(finished);
+		vi.advanceTimersByTime(0);
+		await session.settleInFlightMessagePersistence();
+		await session.sessionManager.flush();
+		expect(renderTodos(mode)).toBe("");
+		const tool = new TodoTool({
+			cwd: tempDir.path(),
+			hasUI: false,
+			settings: session.settings,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			getTodoPhases: () => session.getTodoPhases(),
+			setTodoPhases: phases => session.setTodoPhases(phases),
+		});
+		const result = await tool.execute("next-request", { op: "append", phase: "New request", items: ["New task"] });
+		session.sessionManager.appendMessage({
+			role: "toolResult",
+			toolName: "todo",
+			toolCallId: "next-request",
+			content: result.content,
+			details: result.details,
+			isError: false,
+			timestamp: Date.now(),
+		});
+		await session.sessionManager.flush();
+		await mode.reloadTodos(session);
+		expect(renderTodos(mode)).toContain("New task");
+		expect(renderTodos(mode)).not.toContain("Finished request");
+		expect(session.getTodoPhases().map(phase => phase.name)).toEqual(["New request"]);
+		expect(getLatestTodoPhasesFromEntries(session.sessionManager.getBranch())).toEqual(session.getTodoPhases());
+		expect(finished).toEqual([{ name: "Finished request", tasks: [{ content: "Old task", status: "completed" }] }]);
 	});
 
 	it("reloads the visible HUD from the explicitly attached session", async () => {

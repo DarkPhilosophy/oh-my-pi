@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Completed TODO phases no longer return or accumulate when the agent appends new work; unfinished phase progress is preserved.
+- Fixed agent TODO removal leaving empty phases and `/todo rm all`, `done all`, and `drop all` targeting a fuzzy name match instead of the entire list.
 - Stopped creating Advisor messages when filtering leaves no advice to deliver, while preserving delivery of surviving notes.
 - Command reports and the live jobs sheet now open as overlays without taking space from the conversation or entering its history.
 - Fixed closed Write/Edit previews disappearing during multi-call streams before execution begins.

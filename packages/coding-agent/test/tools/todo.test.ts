@@ -103,6 +103,65 @@ describe("TodoTool auto-start behavior", () => {
 	});
 });
 
+describe("agent-managed TODO lifecycle", () => {
+	it("does not resurrect completed phases when the agent repeatedly starts more work", async () => {
+		const session = createSession();
+		const tool = new TodoTool(session);
+		for (let i = 0; i < 100; i++) {
+			const phase = `Request ${i}`;
+			const result = await tool.execute(`append-${i}`, { op: "append", phase, items: [`Work ${i}`] });
+			expect(result.isError).not.toBe(true);
+			expect(result.details?.phases.map(item => item.name)).toEqual([phase]);
+			await tool.execute(`done-${i}`, { op: "done", phase });
+		}
+		expect(session.getTodoPhases?.()).toEqual([
+			{ name: "Request 99", tasks: [{ content: "Work 99", status: "completed" }] },
+		]);
+	});
+
+	it("retires only fully closed phases and keeps unfinished phase progress and blockers", async () => {
+		const unfinished: TodoPhase[] = [
+			{
+				name: "Active",
+				tasks: [
+					{ content: "Already tested", status: "completed" },
+					{ content: "Current implementation", status: "in_progress" },
+				],
+			},
+			{ name: "Waiting", tasks: [{ content: "Await approval", status: "blocked", blocker: "User decision" }] },
+		];
+		const session = createSession([
+			{ name: "Old", tasks: [{ content: "Old work", status: "completed" }] },
+			{ name: "Cancelled", tasks: [{ content: "Cancelled work", status: "abandoned" }] },
+			...unfinished,
+		]);
+		const result = await new TodoTool(session).execute("append", {
+			op: "append",
+			phase: "Next",
+			items: ["New work"],
+		});
+		expect(result.details?.phases).toEqual([
+			...unfinished,
+			{ name: "Next", tasks: [{ content: "New work", status: "pending" }] },
+		]);
+	});
+
+	it("allows a fresh completed-work name without discarding state on an invalid append", async () => {
+		const session = createSession([
+			{ name: "Previous", tasks: [{ content: "Run checks", status: "completed" }] },
+			{ name: "Open", tasks: [{ content: "Keep working", status: "in_progress" }] },
+		]);
+		const tool = new TodoTool(session);
+		const before = structuredClone(session.getTodoPhases?.());
+		const invalid = await tool.execute("invalid", { op: "append", phase: "Next", items: ["Keep working"] });
+		expect(invalid.isError).toBe(true);
+		expect(session.getTodoPhases?.()).toEqual(before);
+		const valid = await tool.execute("valid", { op: "append", phase: "Next", items: ["Run checks"] });
+		expect(valid.isError).not.toBe(true);
+		expect(valid.details?.phases.map(phase => phase.name)).toEqual(["Open", "Next"]);
+	});
+});
+
 describe("nextActionableTask", () => {
 	it("returns the in-progress task before the first pending task across phases", () => {
 		const task = nextActionableTask([
@@ -391,10 +450,55 @@ describe("TodoTool operations", () => {
 		});
 
 		const result = await tool.execute("call-2", { op: "rm" });
-		expect(result.details?.phases[0]?.tasks).toEqual([]);
+		expect(result.details?.phases).toEqual([]);
 		const summary = result.content.find(part => part.type === "text");
 		if (summary?.type !== "text") throw new Error("Expected text summary");
 		expect(summary.text).toContain("Todo list cleared.");
+	});
+
+	it("leaves no empty phase behind when rm clears the whole list", async () => {
+		const session = createSession();
+		const tool = new TodoTool(session);
+		await tool.execute("call-1", {
+			op: "init",
+			list: [
+				{ phase: "One", items: ["First"] },
+				{ phase: "Two", items: ["Second"] },
+			],
+		});
+
+		const result = await tool.execute("call-2", { op: "rm" });
+		expect(result.details?.phases).toEqual([]);
+		expect(session.getTodoPhases?.()).toEqual([]);
+	});
+
+	it("removes a whole phase, not just its tasks, when rm targets a phase", async () => {
+		const session = createSession();
+		const tool = new TodoTool(session);
+		await tool.execute("call-1", {
+			op: "init",
+			list: [
+				{ phase: "Old", items: ["Finished"] },
+				{ phase: "Active", items: ["Working"] },
+			],
+		});
+		await tool.execute("call-2", { op: "done", phase: "Old" });
+
+		const result = await tool.execute("call-3", { op: "rm", phase: "Old" });
+		expect(result.details?.phases.map(phase => phase.name)).toEqual(["Active"]);
+		expect(session.getTodoPhases?.()?.map(phase => phase.name)).toEqual(["Active"]);
+	});
+
+	it("keeps a phase when rm removes only one of its tasks", async () => {
+		const tool = new TodoTool(createSession());
+		await tool.execute("call-1", {
+			op: "init",
+			list: [{ phase: "Work", items: ["First", "Second"] }],
+		});
+
+		const result = await tool.execute("call-2", { op: "rm", task: "First" });
+		expect(result.details?.phases.map(phase => phase.name)).toEqual(["Work"]);
+		expect(result.details?.phases[0]?.tasks.map(task => task.content)).toEqual(["Second"]);
 	});
 
 	it("drops all tasks in a phase", async () => {
