@@ -67,7 +67,7 @@ function makeTab(name: string, browser: FirefoxRelayBrowserHandle, worker: Worke
 		info: { url: "about:blank", title: name, viewport: { width: 1280, height: 720 }, targetId: `${name}-target` },
 		pending: new Map(),
 		kindTag: "firefox-relay",
-		activateForScreenshot: false,
+		ownsPage: false,
 	} as WorkerTabSession;
 }
 describe("Firefox shared worker selection recovery", () => {

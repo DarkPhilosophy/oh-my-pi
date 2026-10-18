@@ -397,7 +397,7 @@ modelRoles:
   web: web/duckduckgo
   speech: local/kokoro
   dictation: local/parakeet-tdt-0.6b-v3
-  judge: typesafe/jev-latest
+  judge: typesafe/jev-1.14.0
 
 retry:
   fallbackChains:
@@ -644,6 +644,7 @@ computer:
 | `computer.display`   | string  | `all`   | Controls the `desktop` target only: composite all active displays, or use one numeric display ID.                                                                                                                                                            |
 | `computer.maxWidth`  | number  | `3840`  | Maximum composite screenshot width in pixels. Image transports that cannot preserve original detail, including GitHub Copilot Responses and xAI OAuth, cap the effective width at `1280`; Claude-family models use the same cap as a compatibility fallback. |
 | `computer.maxHeight` | number  | `2400`  | Maximum composite screenshot height in pixels. Those coordinate-safe transports cap the effective height at `896`; other models retain the configured limit.                                                                                                 |
+| `computer.backgroundFallback` | enum | `takeover` | When a window input call's background route is unavailable: `takeover` reruns that one call in takeover, returns focus to the user's app (on macOS even if they kept typing; X11 and Windows run it as plain takeover), and says so in the result; `refuse` fails the call with `BackgroundUnavailable` and takes nothing over. Under `takeover`, a call that passes `takeover` itself is never rerun. Under `refuse`, the model's own `takeover: true`, `raise()`, activating `apps.open`, `control.acquire`, desktop-root input, off macOS `el.focus()`, and on macOS calls that open a menu (right-click, Control-click, `AXShowMenu`, a `menu` option; a press, or a left click, hold or drag, on a popup button or menu button, `setValue` on a popup button) are refused before anything is sent. |
 
 Computer settings and the active model's coordinate-safe image limits are read for every call; runtime changes and successfully reloaded file edits apply to the next call. Direct `computer` helpers and code passed to `computer.run(fnOrCode, options)` select a target through the desktop root or `window(...)`. Switching targets invalidates the prior coordinate frame, so capture the new target before pointer input. Before enabling input, configure `tools.approvalMode` or `tools.approval.computer` and grant platform permissions. See [Window-scoped computer use](computer-use.md).
 
@@ -881,6 +882,8 @@ tui:
 | `display.pinnedAgents`        | enum    | `collapsed`      | Pinned live-agent jump list above the editor: `off` hides it, `collapsed` shows a few rows with an expander, `full` lists all. |
 | `display.subagentLivePreview` | boolean | `false`          | Show each pinned subagent's current (or most recent) tool call beneath its jump-list row. |
 | `tui.resizeScrollback`        | enum    | `rebuild`        | How a settled width resize refreshes transcript rows kept in terminal scrollback: `append` replays the transcript at the new width below retained history, `rebuild` erases pane scrollback then replays one current-width copy, `preserve` repaints only the viewport. |
+
+Transcript rows displaced by a growing HUD or dialog reach scrollback immediately. This behavior is always enabled; unlike upstream's optional `tui.completeScrollback`, shrinking chrome contracts in place without leaving a blank band above the input.
 
 Inline model picker interactions do not rebuild scrollback. After a resize, popup backing that remains addressable is restored in place. If covered rows have left the viewport or reflow has changed their physical extent, recovery rebuilds the application's complete history. This exceptional recovery also applies in `preserve`/`append` mode and can remove pre-existing shell or pane scrollback that the application does not own.
 

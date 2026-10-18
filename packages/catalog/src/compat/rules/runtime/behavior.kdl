@@ -485,9 +485,10 @@ behavior {
 	role-defaults "dictation" {
 		model "local/parakeet-tdt-0.6b-v3"
 	}
+	// Pinned: TypeSafe's `jev-latest` alias trails the newest release (it answers as jev-1.13.0).
 	role-defaults "judge" {
-		model "typesafe/jev-latest"
-		model "openrouter/~typesafe/jev-latest"
+		model "typesafe/jev-1.14.0"
+		model "openrouter/typesafe/jev-1.14"
 		model "@tiny"
 		model "@smol"
 		model "@default"

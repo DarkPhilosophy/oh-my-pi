@@ -5456,7 +5456,27 @@ export class Markdown implements Component {
 				const text = this.#renderInlineTokens(cell.tokens || [], styleContext);
 				return this.#wrapCellText(text, columnWidths[i]);
 			});
-			const rowLineCount = Math.max(...rowCellLines.map(c => c.length));
+			let rowLineCount = Math.max(...rowCellLines.map(c => c.length));
+			// The open cell is laid out in widths measured without it, so it can
+			// wrap past the lines its row's finished cells need. Those extra lines
+			// come and go as the cell grows and the column widens, moving every row
+			// below the table each frame; hold the row at its finished cells' height
+			// until the cell closes and counts toward the widths. While lines are
+			// held back, only the last kept line makes room for a `…`: it is
+			// re-wrapped one column narrower, since the wrapper closes the line's
+			// links and styles where truncation would cut them off, and dropped when
+			// even that overflows (a wide glyph in a two-cell column).
+			if (rowIndex === lastRow && rowCellLines[openCell]) {
+				const settledLineCount = Math.max(1, ...rowCellLines.filter((_, i) => i !== openCell).map(c => c.length));
+				if (rowCellLines[openCell].length > settledLineCount) {
+					const width = columnWidths[openCell];
+					const kept = rowCellLines[openCell].slice(0, settledLineCount);
+					const last = width > 1 ? (this.#wrapCellText(kept[settledLineCount - 1], width - 1)[0] ?? "") : "";
+					kept[settledLineCount - 1] = `${visibleWidth(last) < width ? last : ""}…`;
+					rowCellLines[openCell] = kept;
+				}
+				rowLineCount = settledLineCount;
+			}
 
 			for (let lineIdx = 0; lineIdx < rowLineCount; lineIdx++) {
 				const rowParts = rowCellLines.map((cellLines, colIdx) => {

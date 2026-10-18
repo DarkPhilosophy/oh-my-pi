@@ -864,9 +864,9 @@ export class Image implements Component {
 				// height. First (rows-1) lines are empty (TUI clears them); the last
 				// saves the final-row cursor, moves up to the image origin, emits the
 				// image sequence, then restores the final-row cursor. When the block
-				// straddles the viewport top, the renderer rewrites this line to the
-				// visible slice (encodeKittyPlacementLine) from the geometry
-				// registered below.
+				// straddles the viewport top, the renderer crops the source raster
+				// for SIXEL or rewrites the Kitty placement's visible source slice
+				// from the geometry registered below.
 				if (this.#imageId != null && this.#budget !== undefined) {
 					this.#budget.registerPlacementGeometry(
 						this.#imageId,

@@ -191,7 +191,7 @@ async function initializeBiDiWorker(pages: ControlledBiDiPage[]): Promise<{ tran
 		payload: {
 			mode: "attach",
 			protocol: "webDriverBiDi",
-			targetId: pages[0]?.id ?? "",
+			page: { kind: "borrowed", targetId: pages[0]?.id ?? "" },
 			browserWSEndpoint: "ws://127.0.0.1:1/session",
 			safeDir: getPuppeteerDir(),
 			uploadDir: newUploadStagingDir(),
@@ -376,7 +376,7 @@ it("does not acknowledge inline close until a late browser connection has discon
 			payload: {
 				mode: "attach",
 				protocol: "webDriverBiDi",
-				targetId: "",
+				page: { kind: "borrowed", targetId: "" },
 				browserWSEndpoint: "ws://127.0.0.1:1/session",
 				safeDir: getPuppeteerDir(),
 				uploadDir: newUploadStagingDir(),
@@ -420,7 +420,7 @@ it("bounds supervisor termination while retaining cleanup of a late connection",
 			payload: {
 				mode: "attach",
 				protocol: "webDriverBiDi",
-				targetId: "",
+				page: { kind: "borrowed", targetId: "" },
 				browserWSEndpoint: "ws://127.0.0.1:1/session",
 				safeDir: getPuppeteerDir(),
 				uploadDir: newUploadStagingDir(),

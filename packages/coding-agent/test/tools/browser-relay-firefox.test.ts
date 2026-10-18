@@ -40,7 +40,7 @@ function createFirefoxTab(name: string, browser: FirefoxRelayBrowserHandle, work
 		browser,
 		worker,
 		backend: "worker",
-		activateForScreenshot: false,
+		ownsPage: false,
 		state: "alive",
 		kindTag: "firefox-relay",
 		pending: new Map(),

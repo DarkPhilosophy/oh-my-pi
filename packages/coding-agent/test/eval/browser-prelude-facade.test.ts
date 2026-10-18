@@ -179,6 +179,36 @@ describe("browser JavaScript facade", () => {
 			{ action: "close", name: "docs" },
 		]);
 	});
+
+	it("refuses run args it would drop before anything runs, and still runs empty or null args", async () => {
+		const calls: unknown[] = [];
+		const context = createContext({
+			__omp_log__: () => {},
+			__omp_prelude__: async (_name: string, parameters: unknown) => {
+				calls.push(parameters);
+				return responseFor(parameters);
+			},
+		});
+		runInContext(createBrowserPrelude(makeSession()).javascript, context);
+
+		await expect(
+			runInContext(
+				'browser.tab("docs").run(async (_scope, url) => url, { args: { url: "https://example.test" } })',
+				context,
+			),
+		).rejects.toThrow("tab.run() args must be an array of the function's arguments after its scope");
+		await expect(runInContext('browser.tab("docs").run("return 1;", { args: [1] })', context)).rejects.toThrow(
+			"tab.run() passes args only to a function; a code string receives none",
+		);
+		expect(calls).toEqual([]);
+
+		expect(await runInContext('browser.tab("docs").run("return 1;", { args: [] })', context)).toEqual({ ok: true });
+		expect(await runInContext('browser.tab("docs").run(async () => 1, { args: null })', context)).toBe(8);
+		expect(calls).toEqual([
+			{ name: "docs", code: "return 1;", action: "run" },
+			{ name: "docs", fn: "async () => 1", args: [], action: "run" },
+		]);
+	});
 });
 
 describe("browser facade in real Eval runtimes", () => {

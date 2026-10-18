@@ -1594,7 +1594,7 @@ Provider-specific overrides in `packages/catalog/src/compat/rules/providers/open
 
 ### Catalog model handling
 - **Provider entry (`openrouter`)**: `packages/catalog/src/compat/rules/providers/openrouter.kdl` declares default model `openai/gpt-5.5`. Environment keys: `OPENROUTER_API_KEY`.
-- **Authored seeds**: `~typesafe/jev-latest`, `openai/whisper-1`, `openai/whisper-large-v3`, `openai/gpt-4o-transcribe`, `microsoft/mai-transcribe-1.5`, `microsoft/mai-transcribe-2`, `cohere/rerank-v3.5`, `openai/text-embedding-3-small`, `qwen/qwen3-embedding-8b`, `google/veo-3.1`, `minimax/hailuo-3`, `alibaba/wan-2.7`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows.
+- **Authored seeds**: `~typesafe/jev-latest`, `typesafe/jev-1.14`, `openai/whisper-1`, `openai/whisper-large-v3`, `openai/gpt-4o-transcribe`, `microsoft/mai-transcribe-1.5`, `microsoft/mai-transcribe-2`, `cohere/rerank-v3.5`, `openai/text-embedding-3-small`, `qwen/qwen3-embedding-8b`, `google/veo-3.1`, `minimax/hailuo-3`, `alibaba/wan-2.7`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows.
 - **Dynamic Discovery & Filter**: `openrouterModelManagerOptions` in `packages/catalog/src/provider-models/openai-compat.ts` queries `https://openrouter.ai/api/v1/models` using `fetchOpenAICompatibleModels` with `api: "openrouter"`. Cache entries are partitioned under `resolveModelCacheProviderId("openrouter")`. Discovered models are filtered to entries specifying `supported_parameters.includes("tools")`.
 - **Spec Mapping**: `openrouterModelManagerOptions` maps `modality` (`text`/`image`), pricing per million tokens (`prompt`, `completion`, `input_cache_read`, `input_cache_write`), `context_length`, `top_provider.max_completion_tokens`, and reasoning effort ladders via `mapOpenRouterThinking`.
 
@@ -2307,8 +2307,8 @@ Provider-specific overrides in `packages/catalog/src/compat/rules/providers/zhip
 - Login kind `api-key` is declared in `packages/catalog/src/compat/rules/auth/typesafe.kdl`. Environment keys: `TYPESAFE_API_KEY`. Validation uses `models-endpoint`.
 
 ### Catalog model handling
-- **Provider entry (`typesafe`)**: `packages/catalog/src/compat/rules/providers/typesafe.kdl` declares default model `jev-latest`. Environment keys: `TYPESAFE_API_KEY`.
-- **Authored seeds**: `jev-latest`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows.
+- **Provider entry (`typesafe`)**: `packages/catalog/src/compat/rules/providers/typesafe.kdl` declares default model `jev-1.14.0`. Environment keys: `TYPESAFE_API_KEY`.
+- **Authored seeds**: `jev-1.14.0`, `jev-latest`; bundle policy `always`. Limits, capabilities, and prices are authored alongside these rows. Live discovery lists only aliases, so seeded ids it omits are kept beside the discovered rows.
 - Runtime manager: `typesafeModelManagerOptions` in `packages/catalog/src/provider-models/special.ts`.
 
 ## Cloudflare Workers AI (`cloudflare-workers-ai`)

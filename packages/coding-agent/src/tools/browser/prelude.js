@@ -225,11 +225,20 @@
 				throw new TypeError("tab.run() expects a function or code string");
 			}
 			const opts = validateOptions("tab.run", options);
+			const args = opts.args ?? [];
+			if (typeof fnOrCode === "string" && (!Array.isArray(args) || args.length > 0)) {
+				throw new TypeError("tab.run() passes args only to a function; a code string receives none");
+			}
+			if (!Array.isArray(args)) {
+				throw new TypeError(
+					"tab.run() args must be an array of the function's arguments after its scope: tab.run(async ({ page }, url) => …, { args: [url] })",
+				);
+			}
 			const parameters = { name };
 			if (opts.timeout !== undefined) parameters.timeout = opts.timeout;
 			if (typeof fnOrCode === "function") {
 				parameters.fn = serializeFunction("tab.run()", fnOrCode);
-				parameters.args = encodeArgs("tab helper argument", Array.isArray(opts.args) ? opts.args : []);
+				parameters.args = encodeArgs("tab helper argument", args);
 			} else {
 				parameters.code = fnOrCode;
 			}
