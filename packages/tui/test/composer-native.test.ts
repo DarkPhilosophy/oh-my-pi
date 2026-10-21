@@ -9,7 +9,7 @@ import { type ComposerNativeState, CustomEditor } from "@oh-my-pi/pi-tui/prompt/
 import { QueuedMessagesBand } from "@oh-my-pi/pi-tui/prompt/queued-messages";
 import { createStartupStatusLine } from "@oh-my-pi/pi-tui/status-line/startup";
 import { getEditorTheme, getSelectListTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
-import { TspHarness } from "./native/tsp-harness";
+import { tspEvent, TspHarness } from "./native/tsp-harness";
 import { VirtualTerminal } from "./virtual-terminal";
 
 const context = (kinds: readonly TspKind[] | "all"): DescribeContext => ({
@@ -51,6 +51,39 @@ afterEach(() => {
 });
 
 describe("native composer", () => {
+	it("acknowledges native Undo even when its final text matches the previous frame", () => {
+		const editor = composer({ running: false });
+		const input = () => nodes(editor.describe(cx)).find(n => n.k === "editor")!;
+		expect(input().p).toMatchObject({ text: "", undoAck: 0 });
+		editor.handleNativeEvent({ type: "edit", key: "input", from: 0, to: 0, text: "ș😀", cursor: 3, len: 0 });
+		editor.handleNativeEvent({ type: "undo", key: "input" });
+		expect(input().p).toMatchObject({ text: "", cursor: 0, undoAck: 1 });
+		editor.handleNativeEvent({ type: "undo", key: "input" });
+		expect(input().p).toMatchObject({ text: "", cursor: 0, undoAck: 2 });
+	});
+
+	it("publishes Undo completion over the wire for coalesced and no-op changes", async () => {
+		const editor = composer({ running: false });
+		const h = await TspHarness.start(tui => {
+			tui.addChild(editor);
+			tui.setFocus(editor);
+		}, { features: ["edit", "undo"] });
+		try {
+			const field = h.find(n => n.k === "editor")!;
+			const sf = h.terminal.surface!;
+			// Deliver both complete APC events before the scheduled render.
+			h.terminal.send(tspEvent({ ev: "edit", sf, id: field.id, from: 0, to: 0, text: "draft", cursor: 5, len: 0 }));
+			h.terminal.send(tspEvent({ ev: "undo", sf, id: field.id }));
+			h.flush();
+			expect(h.byId(field.id)?.p).toMatchObject({ text: "", cursor: 0, undoAck: 1 });
+			h.event({ ev: "undo", sf, id: field.id });
+			expect(h.byId(field.id)?.p).toMatchObject({ text: "", cursor: 0, undoAck: 2 });
+			expect(h.errors).toEqual([]);
+		} finally {
+			h.stop();
+		}
+	});
+
 	it("tints the composer by shell mode and marks `!!` as not sent to the model", () => {
 		const bash = composer({ running: false, shell: { kind: "bash", excluded: true } }).describe(cx);
 		expect(bash.p).toMatchObject({ role: "omp.editor.bash" });
@@ -459,6 +492,18 @@ describe("native working row", () => {
 });
 
 describe("native queued messages", () => {
+	it("preserves queued line breaks, empty lines and indentation through describe and edit", () => {
+		const original = "prima\r\n  a doua\n\nultima\n";
+		const groups = [{ label: "Steering", messages: [original] }];
+		let edited: readonly string[] = [];
+		const band = new QueuedMessagesBand(groups, "alt+up", () => { edited = groups[0]!.messages; });
+		const pill = byRole(band.describe(), "omp.queue.item")!;
+		const message = nodes(pill).find(child => child.k === "text")!;
+		expect(message.p).toMatchObject({ text: "prima\n  a doua\n\nultima\n", wrap: "word" });
+		expect(message.p).not.toHaveProperty("truncate");
+		band.handleNativeEvent({ type: "action", key: "Steering/0/edit", act: "queue.edit", mods: [] });
+		expect(edited).toEqual([original]);
+	});
 	it("counts the queue in the first pill only and edits through the dequeue path", () => {
 		const onEdit = vi.fn();
 		const band = new QueuedMessagesBand(

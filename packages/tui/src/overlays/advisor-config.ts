@@ -646,24 +646,26 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	/**
-	 * The native settings page (`prefs`) when the terminal draws it: one page per advisor and one
-	 * for each scope's shared instructions, the advisor's fields as typed rows, the file actions,
-	 * and the classic editors (model, tools, instructions) over the page. Any other terminal keeps
-	 * the three-pane frame, drawn from `render()`.
+	 * The native settings page (`prefs`) when the terminal draws it. Each scope's nav group lists its
+	 * advisors, `+ Add advisor`, `Shared instructions` and `Save & apply`. The Add and Save commands act on the
+	 * scope's whole WATCHDOG.yml and are intercepted as `<scope>:add` / `<scope>:save` page events rather
+	 * than opened as pages. An advisor page holds that advisor's fields as typed rows; the classic editors
+	 * (model, tools, instructions) open over the page. Any other terminal keeps the three-pane frame,
+	 * drawn from `render()`.
 	 */
 	describe(cx: DescribeContext): NativeNode | null {
 		return cx.supports("prefs") ? this.#describePrefs() : null;
 	}
 
-	/** The page the roster selection shows: `<scope>:advisor:<n>`, else that scope's `<scope>:shared`. */
+	/** Keep the native highlight on the exact roster row, including commands awaiting Enter. */
 	#pageKey(): string {
 		const scope = this.#focus === "editor" ? this.#lastRosterFocus : this.#focus;
 		const value = this.#scopes[scope].list.getSelectedItem()?.value ?? "";
-		return /^advisor:\d+$/.test(value) ? `${scope}:${value}` : `${scope}:shared`;
+		return /^(?:advisor:\d+|add|shared|save)$/.test(value) ? `${scope}:${value}` : `${scope}:shared`;
 	}
 
 	#parsePage(key: string): { scope: AdvisorConfigScope; index: number } | undefined {
-		const match = /^(project|user):(?:advisor:(\d+)|shared)$/.exec(key);
+		const match = /^(project|user):(?:advisor:(\d+)|shared|add|save)$/.exec(key);
 		if (!match) return undefined;
 		return { scope: match[1] === "user" ? "user" : "project", index: match[2] === undefined ? -1 : Number(match[2]) };
 	}
@@ -708,10 +710,25 @@ export class AdvisorConfigOverlayComponent implements Component {
 				});
 			}
 			pages.push({
+				id: `${scope}:add`,
+				label: "+ Add advisor",
+				icon: "plus",
+				group,
+				...(disabled === undefined ? {} : { disabled }),
+			});
+			pages.push({
 				id: `${scope}:shared`,
 				label: "Shared instructions",
 				icon: "doc",
 				group,
+				...(disabled === undefined ? {} : { disabled }),
+			});
+			pages.push({
+				id: `${scope}:save`,
+				label: "Save & apply",
+				icon: "check",
+				group,
+				...(scopeState.dirty ? { changed: 1 } : {}),
 				...(disabled === undefined ? {} : { disabled }),
 			});
 		}
@@ -722,21 +739,19 @@ export class AdvisorConfigOverlayComponent implements Component {
 			lead = state.loading
 				? "Loading this file…"
 				: "Unable to load this file; it stays read-only until it loads successfully.";
+		} else if (pageKey.endsWith(":add") || pageKey.endsWith(":save")) {
+			lead = pageKey.endsWith(":add")
+				? `Press Enter to add an advisor to ${this.#scopeLabel(page.scope)}.`
+				: `Press Enter to save and apply ${this.#scopeLabel(page.scope)}.`;
 		} else {
 			lead = advisor
 				? "An advisor watches the session and leaves notes; set its model, tools and instructions here."
-				: `Instructions every advisor in ${this.#scopeLabel(page.scope)} gets before its own.`;
+				: state.doc.advisors.length === 0
+					? `No advisors in ${this.#scopeLabel(page.scope)} yet; the advisor role default (${this.#defaultModelLabel ?? "none"}) applies. Use "+ Add advisor" to configure one. Instructions every advisor here gets before its own go below.`
+					: `Instructions every advisor in ${this.#scopeLabel(page.scope)} gets before its own.`;
 			if (state.doc.warnings?.length) {
-				sections.push({
-					id: "warnings",
-					title: "Config problems",
-					rows: sanitizeDisplayWarnings(state.doc.warnings).map((warning, i) => ({
-						id: `warning:${i}`,
-						label: "Dropped while loading",
-						warning,
-						control: { k: "action", label: "Save to rewrite", act: "save" },
-					})),
-				});
+				// Dropped entries stay visible on every page of the scope; Save & apply (nav) rewrites the file.
+				lead = `${lead} Dropped while loading, Save & apply rewrites the file without them: ${sanitizeDisplayWarnings(state.doc.warnings).join("; ")}`;
 			}
 			if (advisor) {
 				const model = advisor.model?.trim();
@@ -853,25 +868,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 					],
 				});
 			}
-			sections.push({
-				id: "file",
-				title: `WATCHDOG.yml · ${this.#scopeLabel(page.scope)}`,
-				rows: [
-					{
-						id: "save",
-						label: "Save & apply",
-						hint: "Write this file and reload the live advisors without a restart.",
-						warning: state.dirty ? "Unsaved changes" : undefined,
-						control: { k: "action", label: "Save", act: "save" },
-					},
-					{
-						id: "add",
-						label: "Add advisor",
-						hint: "Create a new advisor entry, then set its model, tools and instructions.",
-						control: { k: "action", label: "Add", act: "add" },
-					},
-				],
-			});
 		}
 
 		// A classic picker or editor (model, tools, instructions) sits over the page while it is open.
@@ -883,7 +879,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 			lead,
 			sections,
 			focus:
-				this.#mode === "fields" && this.#editor instanceof SelectList
+				this.#focus === "editor" && this.#mode === "fields" && this.#editor instanceof SelectList
 					? (this.#editor.getSelectedItem()?.value ?? null)
 					: null,
 			editing: null,
@@ -894,7 +890,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		let children: NativeChild[] = [];
 		if (editor?.k === "picker") {
 			this.#editorSheet.node = editor;
-			children = [this.#editorSheet];
+			children = [col([this.#editorSheet], { role: "omp.prefs.editor" })];
 		} else if (editor) {
 			children = [editor];
 		}
@@ -1040,20 +1036,43 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const page = this.#parsePage(this.#pageKey());
 		if (!page) return;
 		switch (event.type) {
+			case "select":
+			case "activate": {
+				if (page.index < 0 || this.#mode !== "fields" || !(this.#editor instanceof SelectList)) return;
+				const state = this.#scopes[page.scope];
+				if (state.loading || state.failed || !this.#editor.pickerView().items.some(item => item.value === event.item)) return;
+				this.#editor.setSelectedValue(event.item);
+				this.#fieldCursor = event.item;
+				this.#focusEditor();
+				if (event.type === "activate") this.#onFieldSelect(page.scope, page.index, event.item);
+				return;
+			}
 			case "action": {
 				if (event.act === "page" && event.value) {
+					// `<scope>:add` / `<scope>:save` are nav entries that act on that scope's whole file, not pages to open.
+					const command = /^(project|user):(add|save)$/.exec(event.value);
+					if (command) {
+						const scope = command[1] === "user" ? "user" : "project";
+						const target = this.#scopes[scope];
+						// A new advisor's form must open in the scope it was added to, not the page the click came from;
+						// a scope that is still loading or failed is read-only, so refusing it must not move focus.
+						if (command[2] === "add" && !target.loading && !target.failed) {
+							this.#applyPendingTools?.();
+							this.#applyPendingTools = undefined;
+							this.#focus = scope;
+							this.#lastRosterFocus = scope;
+						}
+						void this.#onRosterSelect(scope, command[2]).catch(err => {
+							this.#cb.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
+						});
+						return;
+					}
 					this.#openPage(event.value);
 					return;
 				}
 				if (event.act === "close") {
 					if (event.value !== undefined) this.handleInput("\x1b");
 					else this.#cb.close();
-					return;
-				}
-				if (event.act === "save" || event.act === "add") {
-					void this.#onRosterSelect(page.scope, event.act).catch(err => {
-						this.#cb.notify(`Advisor config: ${err instanceof Error ? err.message : String(err)}`);
-					});
 					return;
 				}
 				const field = event.value;
@@ -1075,7 +1094,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 				const advisor = state.doc.advisors[page.index];
 				if (!advisor || !this.#applyNativeChange(advisor, event.item, event.value)) return;
 				this.#markDirty(page.scope);
-				if (this.#mode === "fields") this.#showFields();
+				if (this.#mode === "fields") {
+					this.#fieldCursor = event.item;
+					this.#focusEditor();
+					this.#showFields();
+				}
 				this.#cb.requestRender();
 				return;
 			}
@@ -1171,7 +1194,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 				return;
 			}
 			// The two rosters read as one ring, project above global. ↓ past a roster's end and ↑ above
-			// its top cross into the neighbouring roster, keeping that roster's own cursor; at the ends
+			// its top cross to the neighbouring roster's adjacent row; at the ends
 			// of the ring the move wraps across (↑ from the project's top lands on the global roster's
 			// last row, ↓ from the global's bottom on the project's first) rather than inside one roster.
 			const list = this.#scopes[this.#focus].list;
@@ -1185,10 +1208,8 @@ export class AdvisorConfigOverlayComponent implements Component {
 				// Wrapping across the ring's ends into a roster whose file is still loading would drop the
 				// cursor onto placeholder rows that cannot be acted on, so that case keeps the roster's own wrap.
 				if (crossing || !targetState.loading) {
-					if (!crossing) {
-						targetState.list.setSelectedIndex(down ? 0 : targetState.list.getItemCount() - 1);
-						targetState.cursor = targetState.list.getSelectedItem()?.value;
-					}
+					targetState.list.setSelectedIndex(down ? 0 : targetState.list.getItemCount() - 1);
+					targetState.cursor = targetState.list.getSelectedItem()?.value;
 					this.#focus = target;
 					this.#showFields();
 					return;
@@ -1485,6 +1506,9 @@ export class AdvisorConfigOverlayComponent implements Component {
 			},
 			{ value: "name", label: "Name", description: displayText(advisor.name) },
 			{ value: "model", label: "Model", description: modelDescription },
+			...(advisor.model?.trim()
+				? [{ value: "resetModel", label: "Reset model to advisor-role default" }]
+				: []),
 			{ value: "reviewMode", label: "Review mode", description: reviewMode },
 			{ value: "reviewInterval", label: "Review interval", description: String(reviewInterval) },
 			{
@@ -1493,7 +1517,6 @@ export class AdvisorConfigOverlayComponent implements Component {
 				description: advisor.syncBacklog ?? `${this.#deps.syncBacklog ?? "off"} (inherited)`,
 			},
 		];
-		if (advisor.model?.trim()) items.push({ value: "resetModel", label: "Reset model to advisor-role default" });
 		items.push(
 			{ value: "tools", label: "Tools", description: formatAdvisorTools(advisor.tools, "no tools") },
 			{ value: "instructions", label: "Instructions", description: previewLine(advisor.instructions) },
@@ -1519,6 +1542,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 	}
 
 	#onFieldSelect(scope: AdvisorConfigScope, index: number, field: string): void {
+		this.#fieldCursor = field;
 		const doc = this.#scopes[scope].doc;
 		switch (field) {
 			case "toggleEnabled": {

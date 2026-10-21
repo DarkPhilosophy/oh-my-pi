@@ -665,6 +665,7 @@ export class Editor implements Component, Focusable {
 	#nativeGeneration = 0;
 	#nativeDecor?: { text: string; generation: number; decor: readonly TspEditorDecoration[] | undefined };
 	#nativeEditor?: { props: TspEditorProps; node: NativeNode };
+	#nativeUndoAck = 0;
 	#nativeOverlay?: { list: SelectList; caret: string; node: NativeNode };
 	#nativeRoot?: { role: string; tone: TspTone | undefined; children: readonly NativeChild[]; node: NativeNode };
 
@@ -1889,6 +1890,7 @@ export class Editor implements Component, Focusable {
 		const props: TspEditorProps = {
 			text,
 			cursor,
+			undoAck: this.#nativeUndoAck,
 			sendable: this.nativeSendable,
 			anchor: anchor ?? undefined,
 			decor: decor.decor,
@@ -3253,7 +3255,12 @@ export class Editor implements Component, Focusable {
 	/** Terminal-side selection edits and undo on the `editor` node (see {@link applyHostEdit}). */
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type === "edit") this.applyHostEdit(event);
-		else if (event.type === "undo") this.#applyUndo();
+		else if (event.type === "undo") {
+			this.#applyUndo();
+			// A no-op (or edit+Undo coalesced into one render) still needs a
+			// changed description before the host can safely resume typing.
+			this.#nativeUndoAck++;
+		}
 	}
 
 	/**

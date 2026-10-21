@@ -2958,6 +2958,7 @@ export class ModelHubComponent implements Component {
 		// Same gate as the mouse router: nothing is interactive while an assignment applies.
 		if (this.#assignmentPending) return;
 		const target = event.key.slice(event.key.lastIndexOf("/") + 1);
+		if (this.#strip && target !== "strip") return;
 		if (event.type === "action") {
 			const entry = this.#activeEntry();
 			if (target !== "login" || event.act !== "login") return;
@@ -3298,9 +3299,12 @@ export class ModelHubComponent implements Component {
 			layout: "rows",
 			preview: "side",
 			// The Roles rows' letter commands own printable keys until a query
-			// is live, so the sheet offers no search field to type into.
-			query: rolesView && this.#browser.query.length === 0 ? null : this.#browser.query,
-			cursor: this.#browser.cursor,
+			// is live, so the sheet offers no search field to type into. An open
+			// strip owns every key too (see #handleStripInput), so the field is
+			// hidden with it; the stored query and caret return when it closes.
+			...(strip || (rolesView && this.#browser.query.length === 0)
+				? { query: null }
+				: { query: this.#browser.query, cursor: this.#browser.cursor }),
 			placeholder: "Search models…",
 			scopes: this.#pickerScopes(),
 			scope: entry.id,
@@ -3936,9 +3940,11 @@ export class ModelHubComponent implements Component {
 		}
 		switch (act) {
 			case "scope":
+				if (this.#strip) return;
 				this.#clickSidebarEntry(this.#entries.find(candidate => candidate.id === value));
 				return;
 			case "tab":
+				if (this.#strip) return;
 				if (rolesView) {
 					const tab = ROLE_TABS.find(candidate => candidate === value);
 					if (!tab) return;
@@ -3977,6 +3983,7 @@ export class ModelHubComponent implements Component {
 				if (this.#strip) this.#closeStrip();
 				return;
 			case "clear":
+				if (this.#strip) return;
 				if (this.#browser.query.length > 0) this.#browser.handleCancel();
 				return;
 			case "assign": {

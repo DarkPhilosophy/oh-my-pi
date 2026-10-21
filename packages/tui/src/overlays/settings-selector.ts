@@ -67,7 +67,7 @@ import type { KeyName } from "../key-hint-format";
 
 /** The native page id of the plugins tab. */
 const PLUGINS_PAGE = "plugins";
-/** Role of the status-line preview child: the page places it after the status-line section. */
+/** Role of the Appearance-only status preview; the native presenter pins it below the entire settings sheet. */
 const PREFS_STATUS_ROLE = "omp.prefs.preview.status";
 /** Role of a sub-editor child without a native control: the page shows it in a card over itself. */
 const PREFS_EDITOR_ROLE = "omp.prefs.editor";

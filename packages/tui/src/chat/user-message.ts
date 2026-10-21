@@ -265,7 +265,8 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 			children.push(row(thumbs, { gap: "sm", wrap: true, align: "start", role: "omp.user.images" }));
 		}
 		const marks = this.#synthetic ? [] : tokenMarks(this.#text, this.#tokens, this.#imageLinks);
-		children.push(md(this.#text, marks.length > 0 ? { marks } : undefined));
+		// Preserve typed line breaks without changing markdown source, copy text or marks.
+		children.push(md(this.#text, { ...(marks.length > 0 ? { marks } : {}), ...(this.#synthetic ? {} : { breaks: "hard" as const }) }));
 		const badges: NativeChild[] = [];
 		if (this.#liveSteered) {
 			badges.push(

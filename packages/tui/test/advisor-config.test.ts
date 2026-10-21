@@ -664,6 +664,96 @@ describe("advisor config native page", () => {
 		return tree.p;
 	}
 
+	it("hands keyboard navigation to a clicked field and returns it to the roster with Left", async () => {
+		const { overlay, saves } = await open();
+		expect(props(overlay).focus).toBeNull();
+		overlay.handleNativeEvent({ type: "select", key: "", item: "syncBacklog" });
+		expect(props(overlay).focus).toBe("syncBacklog");
+		overlay.handleInput("\x1b[B");
+		expect(props(overlay).focus).toBe("tools");
+		overlay.handleInput("\x1b[A");
+		expect(props(overlay).focus).toBe("syncBacklog");
+		overlay.handleInput("\x1b[D");
+		expect(props(overlay).focus).toBeNull();
+		expect(props(overlay).page).toBe("project:advisor:0");
+		overlay.handleInput("\x1b[B");
+		expect(props(overlay).page).toBe("project:add");
+		expect(saves).toEqual([]);
+	});
+
+	it("opens native choice editors and preserves the selected field after committing", async () => {
+		const { overlay } = await open();
+		overlay.handleNativeEvent({ type: "select", key: "", item: "syncBacklog" });
+		overlay.handleNativeEvent(change("syncBacklog", "off"));
+		expect(props(overlay).focus).toBe("syncBacklog");
+		overlay.handleNativeEvent({ type: "select", key: "", item: "syncBacklog=off" });
+		expect(props(overlay).focus).toBe("syncBacklog");
+		overlay.handleNativeEvent({ type: "activate", key: "", item: "syncBacklog" });
+		picker(overlay).sheet.handleNativeEvent({ type: "activate", key: "", item: "off" });
+		expect(row(props(overlay), "syncBacklog").control).toMatchObject({ value: "off" });
+		expect(props(overlay).focus).toBe("syncBacklog");
+		overlay.handleInput("\x1b[B");
+		expect(props(overlay).focus).toBe("tools");
+		overlay.handleNativeEvent({ type: "activate", key: "", item: "reviewMode" });
+		picker(overlay).sheet.handleNativeEvent({ type: "activate", key: "", item: "turn" });
+		expect(row(props(overlay), "reviewMode").control).toMatchObject({ value: "turn" });
+		expect(props(overlay).focus).toBe("reviewMode");
+	});
+
+	it("returns keyboard focus to an action row clicked from another field", async () => {
+		const { overlay } = await open();
+		overlay.handleNativeEvent({ type: "select", key: "", item: "tools" });
+		overlay.handleNativeEvent(action("edit", "model"));
+		picker(overlay);
+		overlay.handleInput("\x1b");
+		expect(props(overlay).focus).toBe("model");
+		overlay.handleInput("\x1b[B");
+		expect(props(overlay).focus).toBe("resetModel");
+	});
+
+	it("navigates fields in displayed order with and without an explicit model", async () => {
+		const { overlay, saves } = await open();
+		for (const explicitModel of [true, false]) {
+			if (!explicitModel) overlay.handleNativeEvent(action("reset", "resetModel"));
+			overlay.handleInput("\x1b[C");
+			const rows = props(overlay).sections.flatMap(section => section.rows.map(row => row.id));
+			expect(rows.includes("resetModel")).toBe(explicitModel);
+			for (const id of rows) {
+				expect(props(overlay).focus).toBe(id);
+				overlay.handleInput("\x1b[B");
+			}
+			for (const id of [...rows].reverse()) {
+				overlay.handleInput("\x1b[A");
+				expect(props(overlay).focus).toBe(id);
+			}
+			overlay.handleInput("\x1b[D");
+		}
+		expect(saves).toEqual([]);
+	});
+
+	it("moves the native selection one visible row per arrow, including scope commands", async () => {
+		const { overlay, saves } = await open({ advisors: [{ name: "Global watcher" }] });
+		const pages = props(overlay).pages.map(page => page.id);
+		expect(props(overlay).page).toBe(pages[0]);
+		for (let i = 1; i <= pages.length; i++) {
+			overlay.handleInput("\x1b[B");
+			expect(props(overlay).page).toBe(pages[i % pages.length]);
+		}
+		for (let i = 1; i <= pages.length; i++) {
+			overlay.handleInput("\x1b[A");
+			expect(props(overlay).page).toBe(pages[(pages.length - i) % pages.length]);
+		}
+		expect(saves).toEqual([]);
+		overlay.handleInput("\x1b[B"); // Add is selected, not executed.
+		overlay.handleNativeEvent(action("page", "user:advisor:0"));
+		expect(props(overlay).page).toBe("user:advisor:0");
+		overlay.handleInput("\x1b[D");
+		overlay.handleInput("\x1b[B"); // Global Add.
+		overlay.handleInput("\r");
+		expect(props(overlay).page).toBe("user:advisor:1");
+		expect(saves).toEqual([]);
+	});
+
 	function row(page: TspPrefsProps, id: string): TspPrefsRow {
 		for (const section of page.sections) {
 			const found = section.rows.find(candidate => candidate.id === id);
@@ -673,7 +763,11 @@ describe("advisor config native page", () => {
 	}
 
 	function picker(overlay: AdvisorConfigOverlayComponent) {
-		const editor = overlay.describe(cx)?.c?.[0];
+		const slot = overlay.describe(cx)?.c?.[0];
+		if (!slot || typeof slot !== "object" || !("k" in slot) || slot.k !== "col" || slot.p?.role !== "omp.prefs.editor") {
+			throw new Error("expected the picker in the native preferences editor region");
+		}
+		const editor = slot.c?.[0];
 		if (
 			!editor ||
 			typeof editor !== "object" ||
@@ -700,7 +794,7 @@ describe("advisor config native page", () => {
 		expect(selected.props.current).toContain("bash");
 		selected.sheet.handleNativeEvent(action("apply"));
 		expect(overlay.describe(cx)?.c ?? []).toHaveLength(0);
-		overlay.handleNativeEvent(action("save"));
+		overlay.handleNativeEvent(action("page", "user:save"));
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(saves).toEqual([
@@ -736,7 +830,7 @@ describe("advisor config native page", () => {
 		const thinking = picker(overlay);
 		expect(thinking.props.items?.map(item => item.id)).toContain("high");
 		thinking.sheet.handleNativeEvent({ type: "activate", key: "", item: "high" });
-		overlay.handleNativeEvent(action("save"));
+		overlay.handleNativeEvent(action("page", "project:save"));
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(saves[0]?.scope).toBe("project");
@@ -761,7 +855,7 @@ describe("advisor config native page", () => {
 		overlay.handleInput("9");
 		overlay.handleNativeEvent(action("field-cancel"));
 		expect(row(props(overlay), "reviewInterval").control).toMatchObject({ value: 5 });
-		overlay.handleNativeEvent(action("save"));
+		overlay.handleNativeEvent(action("page", "project:save"));
 		await Promise.resolve();
 		await Promise.resolve();
 		expect(saves[0]?.doc.advisors[0]?.reviewInterval).toBe(5);
@@ -785,9 +879,13 @@ describe("advisor config native page", () => {
 
 		expect(page.pages.map(entry => [entry.id, entry.group])).toEqual([
 			["project:advisor:0", "Project · project"],
+			["project:add", "Project · project"],
 			["project:shared", "Project · project"],
+			["project:save", "Project · project"],
 			["user:advisor:0", "Global"],
+			["user:add", "Global"],
 			["user:shared", "Global"],
+			["user:save", "Global"],
 		]);
 		expect(page.page).toBe("project:advisor:0");
 		expect(row(page, "toggleEnabled").control).toEqual({ k: "switch", on: true });
@@ -821,7 +919,7 @@ describe("advisor config native page", () => {
 		overlay.handleNativeEvent(change("name", "  Renamed  "));
 
 		expect(props(overlay).title).toBe("Advisors · unsaved");
-		overlay.handleNativeEvent(action("save"));
+		overlay.handleNativeEvent(action("page", "project:save"));
 		await Promise.resolve();
 		await Promise.resolve();
 
@@ -872,7 +970,8 @@ describe("advisor config native page", () => {
 		overlay.handleNativeEvent(action("page", "user:advisor:0"));
 		expect(props(overlay).page).toBe("user:advisor:0");
 		expect(props(overlay).sections.some(section => section.title === "Global watcher")).toBe(true);
-		expect(props(overlay).sections.find(section => section.id === "file")?.title).toBe("WATCHDOG.yml · Global");
+		// File commands live in the nav, never as a section of the advisor's own form.
+		expect(props(overlay).sections.map(section => section.id)).toEqual(["advisor"]);
 
 		overlay.handleNativeEvent(action("page", "user:shared"));
 		expect(props(overlay).page).toBe("user:shared");
@@ -896,14 +995,13 @@ describe("advisor config native page", () => {
 		expect(page.title).toBe("Advisors · unsaved");
 	});
 
-	// The page key names the focused roster's selected row, so it doubles as a probe of where ↑/↓ landed:
-	// `<scope>:advisor:0` is a roster's first row, `<scope>:shared` any of its trailing rows (add/shared/save).
+	// Native page identity follows the exact visible roster row, including commands.
 	it("walks the project and global rosters as one ring, wrapping across at both ends", async () => {
 		const { overlay } = await open({ advisors: [{ name: "Global watcher" }] });
 		expect(props(overlay).page).toBe("project:advisor:0");
 
-		overlay.handleInput("\x1b[A"); // above the project roster's first row → the global roster's last row
-		expect(props(overlay).page).toBe("user:shared");
+		overlay.handleInput("\x1b[A"); // above the project roster's first row → the global roster's last row (save)
+		expect(props(overlay).page).toBe("user:save");
 
 		overlay.handleInput("\x1b[B"); // below the global roster's last row → the project roster's first row
 		expect(props(overlay).page).toBe("project:advisor:0");
@@ -912,13 +1010,13 @@ describe("advisor config native page", () => {
 	it("still crosses between the rosters in the middle of the ring", async () => {
 		const { overlay } = await open({ advisors: [{ name: "Global watcher" }] });
 		for (let i = 0; i < 3; i++) overlay.handleInput("\x1b[B"); // add → shared → save
-		expect(props(overlay).page).toBe("project:shared");
+		expect(props(overlay).page).toBe("project:save");
 
 		overlay.handleInput("\x1b[B"); // past the project roster's end → the global roster's first row
 		expect(props(overlay).page).toBe("user:advisor:0");
 
-		overlay.handleInput("\x1b[A"); // above the global roster's first row → back where the project cursor was
-		expect(props(overlay).page).toBe("project:shared");
+		overlay.handleInput("\x1b[A"); // above Global's first row → Project's adjacent last row
+		expect(props(overlay).page).toBe("project:save");
 	});
 
 	it("does not wrap into a global roster that has not loaded yet", async () => {
@@ -926,6 +1024,232 @@ describe("advisor config native page", () => {
 		const { overlay } = await open({ advisors: [] }, load.promise);
 		overlay.handleInput("\x1b[A");
 		expect(props(overlay).page.startsWith("project:")).toBe(true);
+	});
+
+	describe("scope commands (+ Add advisor, Save & apply)", () => {
+		const actions = (page: TspPrefsProps): string[] =>
+			page.sections.flatMap(section =>
+				section.rows.flatMap(entry => (entry.control.k === "action" ? [entry.control.act] : [])),
+			);
+		const flush = async (): Promise<void> => {
+			for (let i = 0; i < 4; i++) await Promise.resolve();
+		};
+
+		/** Overlay opened on `initialScope`, with the other scope loading through `loadOther`; saves are recorded in isolation. */
+		async function openScopes(
+			initialScope: "project" | "user",
+			initialDoc: WatchdogConfigDoc,
+			loadOther: () => Promise<WatchdogConfigDoc>,
+		): Promise<Harness> {
+			const saves: Harness["saves"] = [];
+			const notices: string[] = [];
+			const overlay = new AdvisorConfigOverlayComponent({} as TUI, nativeDeps, initialScope, initialDoc, {
+				loadDoc: loadOther,
+				save: async (scope, doc) => {
+					saves.push({ scope, doc: structuredClone(doc) });
+				},
+				close: () => {},
+				requestRender: () => {},
+				notify: message => notices.push(message),
+			});
+			await flush();
+			return { overlay, saves, notices };
+		}
+
+		it("lists advisors, + Add advisor, Shared instructions and Save & apply in each scope's group", async () => {
+			const { overlay } = await open({ advisors: [{ name: "Global watcher" }] });
+			expect(props(overlay).pages.map(entry => [entry.id, entry.label, entry.group])).toEqual([
+				["project:advisor:0", "Reviewer", "Project · project"],
+				["project:add", "+ Add advisor", "Project · project"],
+				["project:shared", "Shared instructions", "Project · project"],
+				["project:save", "Save & apply", "Project · project"],
+				["user:advisor:0", "Global watcher", "Global"],
+				["user:add", "+ Add advisor", "Global"],
+				["user:shared", "Shared instructions", "Global"],
+				["user:save", "Save & apply", "Global"],
+			]);
+		});
+
+		it("never renders add or save as a setting: advisor forms, shared pages and warned files stay clean", async () => {
+			const { overlay } = await open({
+				advisors: [{ name: "Global watcher" }],
+				warnings: ["Dropped advisor 'broken'"],
+			});
+			const projectForm = props(overlay);
+			expect(projectForm.page).toBe("project:advisor:0");
+			expect(projectForm.sections.map(section => section.id)).toEqual(["advisor"]);
+			expect(actions(projectForm)).not.toContain("add");
+			expect(actions(projectForm)).not.toContain("save");
+
+			overlay.handleNativeEvent(action("page", "user:advisor:0"));
+			const globalForm = props(overlay);
+			expect(globalForm.page).toBe("user:advisor:0");
+			expect(globalForm.sections.map(section => section.id)).toEqual(["advisor"]);
+			expect(actions(globalForm)).not.toContain("add");
+			expect(actions(globalForm)).not.toContain("save");
+			// The warned file's dropped entries stay visible as text; the nav's Save & apply rewrites the file.
+			expect(globalForm.lead).toContain("Dropped advisor 'broken'");
+
+			overlay.handleNativeEvent(action("page", "user:shared"));
+			const shared = props(overlay);
+			expect(shared.page).toBe("user:shared");
+			expect(shared.sections.map(section => section.id)).toEqual(["shared"]);
+			expect(actions(shared)).toEqual(["edit"]);
+			expect(shared.lead).toContain("Dropped advisor 'broken'");
+		});
+
+		it("is usable with zero advisors: the scope lands on its shared page and nav Add/Save are present", async () => {
+			const { overlay } = await openScopes("project", { advisors: [] }, async () => ({ advisors: [] }));
+
+			const project = props(overlay);
+			expect(project.page).toBe("project:shared");
+			expect(project.pages.map(entry => entry.id)).toContain(project.page);
+			expect(project.lead).toContain("No advisors in Project · project yet");
+			expect(project.lead).toContain("+ Add advisor");
+			expect(project.pages.map(entry => entry.id).filter(id => id.startsWith("project:"))).toEqual([
+				"project:add",
+				"project:shared",
+				"project:save",
+			]);
+			expect(actions(project)).toEqual(["edit"]);
+
+			overlay.handleNativeEvent(action("page", "user:shared"));
+			const user = props(overlay);
+			expect(user.page).toBe("user:shared");
+			expect(user.lead).toContain("No advisors in Global yet");
+			expect(user.pages.map(entry => entry.id).filter(id => id.startsWith("user:"))).toEqual([
+				"user:add",
+				"user:shared",
+				"user:save",
+			]);
+		});
+
+		it("adds from a scope's nav entry with zero advisors and lands on the new advisor's form", async () => {
+			const { overlay, saves } = await openScopes("project", { advisors: [] }, async () => ({ advisors: [] }));
+
+			overlay.handleNativeEvent(action("page", "user:add"));
+			await flush();
+
+			const page = props(overlay);
+			expect(page.page).toBe("user:advisor:0");
+			expect(page.pages.filter(entry => entry.id.startsWith("user:advisor:")).map(entry => entry.label)).toEqual([
+				"Advisor 1",
+			]);
+			// The other scope is untouched; nothing is written until Save & apply.
+			expect(page.pages.some(entry => entry.id.startsWith("project:advisor:"))).toBe(false);
+			expect(saves).toEqual([]);
+			expect(page.title).toBe("Advisors · unsaved");
+			expect(page.sections.map(section => section.id)).toEqual(["advisor"]);
+			expect(actions(page)).not.toContain("add");
+			expect(actions(page)).not.toContain("save");
+			expect(row(page, "name").control).toEqual({ k: "text", value: "Advisor 1" });
+		});
+
+		it("adds from the other scope's nav entry while an advisor form is open, and edits land on the new advisor", async () => {
+			const { overlay, saves } = await open({ advisors: [] });
+			expect(props(overlay).page).toBe("project:advisor:0");
+
+			overlay.handleNativeEvent(action("page", "user:add"));
+			await flush();
+			const added = props(overlay);
+			expect(added.page).toBe("user:advisor:0");
+			expect(added.sections.find(section => section.id === "advisor")?.title).toBe("Advisor 1");
+
+			overlay.handleNativeEvent(change("name", "Global reviewer"));
+			overlay.handleNativeEvent(action("page", "user:save"));
+			await flush();
+			expect(saves).toEqual([{ scope: "user", doc: { advisors: [{ name: "Global reviewer" }] } }]);
+
+			// And back the other way: from the global advisor's form, add under Project.
+			overlay.handleNativeEvent(action("page", "project:add"));
+			await flush();
+			const projectAdded = props(overlay);
+			expect(projectAdded.page).toBe("project:advisor:1");
+			expect(row(projectAdded, "name").control).toEqual({ k: "text", value: "Advisor 2" });
+			overlay.handleNativeEvent(change("name", "Project extra"));
+			overlay.handleNativeEvent(action("page", "project:save"));
+			await flush();
+			expect(saves).toHaveLength(2);
+			expect(saves[1]?.scope).toBe("project");
+			expect(saves[1]?.doc.advisors.map(entry => entry.name)).toEqual(["Reviewer", "Project extra"]);
+			// The earlier global save is unchanged.
+			expect(saves[0]?.doc.advisors.map(entry => entry.name)).toEqual(["Global reviewer"]);
+		});
+
+		it("saves only the nav entry's scope through the callback and clears its unsaved mark", async () => {
+			const { overlay, saves, notices } = await open({ advisors: [] });
+			overlay.handleNativeEvent(action("page", "user:add"));
+			await flush();
+			expect(props(overlay).pages.find(entry => entry.id === "user:save")?.changed).toBe(1);
+			expect(props(overlay).pages.find(entry => entry.id === "project:save")?.changed).toBeUndefined();
+
+			// The visible page is the project's advisor form, so a save aimed at the global scope must not follow it.
+			overlay.handleNativeEvent(action("page", "project:advisor:0"));
+			overlay.handleNativeEvent(action("page", "user:save"));
+			await flush();
+
+			expect(saves).toEqual([{ scope: "user", doc: { advisors: [{ name: "Advisor 1" }] } }]);
+			expect(notices).toContain("Saved Global advisors");
+			expect(props(overlay).pages.find(entry => entry.id === "user:save")?.changed).toBeUndefined();
+			expect(props(overlay).title).toBe("Advisors");
+		});
+
+		it("ignores bare add/save row actions: only the scoped nav commands mutate or write", async () => {
+			const { overlay, saves } = await open({ advisors: [] });
+			overlay.handleNativeEvent(action("add"));
+			overlay.handleNativeEvent(action("save"));
+			await flush();
+			expect(saves).toEqual([]);
+			expect(props(overlay).title).toBe("Advisors");
+			expect(props(overlay).pages.filter(entry => entry.id.startsWith("project:advisor:"))).toHaveLength(1);
+		});
+
+		it("keeps a loading scope read-only: its nav entries are disabled and neither add nor save does anything", async () => {
+			const load = Promise.withResolvers<WatchdogConfigDoc>();
+			const { overlay, saves } = await open({ advisors: [] }, load.promise);
+			const loading = ["user:add", "user:shared", "user:save"];
+			for (const id of loading) {
+				expect(props(overlay).pages.find(entry => entry.id === id)?.disabled).toBe("Loading…");
+			}
+
+			overlay.handleNativeEvent(action("page", "user:add"));
+			overlay.handleNativeEvent(action("page", "user:save"));
+			await flush();
+			expect(saves).toEqual([]);
+			expect(props(overlay).page).toBe("project:advisor:0");
+			expect(props(overlay).title).toBe("Advisors");
+
+			load.resolve({ advisors: [] });
+			await flush();
+			for (const id of loading) {
+				expect(props(overlay).pages.find(entry => entry.id === id)?.disabled).toBeUndefined();
+			}
+		});
+
+		it("keeps a failed scope read-only: its nav entries are disabled and nothing is added or written", async () => {
+			const { overlay, saves } = await openScopes("user", { advisors: [] }, async () => {
+				throw new Error("unreadable");
+			});
+			for (const id of ["project:add", "project:shared", "project:save"]) {
+				expect(props(overlay).pages.find(entry => entry.id === id)?.disabled).toBe("Unable to load configuration");
+			}
+
+			overlay.handleNativeEvent(action("page", "project:add"));
+			overlay.handleNativeEvent(action("page", "project:save"));
+			await flush();
+			expect(saves).toEqual([]);
+			expect(props(overlay).pages.some(entry => entry.id === "project:advisor:0")).toBe(false);
+			expect(props(overlay).title).toBe("Advisors");
+			expect(props(overlay).page).toBe("user:shared");
+
+			// The ring still reaches the failed roster; its page is the inert shared page.
+			overlay.handleInput("\x1b[A");
+			const page = props(overlay);
+			expect(page.page).toBe("project:shared");
+			expect(page.pages.map(entry => entry.id)).toContain(page.page);
+			expect(page.sections).toEqual([]);
+			expect(page.lead).toContain("read-only");
+		});
 	});
 });
 

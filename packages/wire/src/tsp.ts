@@ -209,6 +209,8 @@ export interface TspMarkdownProps {
 	stream?: boolean;
 	/** Literal runs drawn as these spans wherever they occur in prose (a sent prompt's chip tokens). */
 	marks?: readonly TspSpan[];
+	/** Present prose newlines as line breaks without altering source text, copy text or marks. */
+	breaks?: "hard";
 }
 export interface TspCodeProps {
 	text?: string;
@@ -366,6 +368,9 @@ export interface TspEditorDecoration {
 }
 export interface TspEditorProps {
 	text?: string;
+	/** Completed native Undo count, including no-ops. Hosts may hold later input
+	 * until this advances; older producers omit it and older hosts ignore it. */
+	undoAck?: number;
 	/** Caret as a UTF-16 offset into `text`. */
 	cursor?: number;
 	/** Selection anchor, or null for none. */

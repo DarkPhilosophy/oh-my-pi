@@ -53,9 +53,8 @@ export class QueuedMessagesBand extends Container {
 					node(
 						"text",
 						{
-							text: replaceTabs(message).replace(/\s*\r?\n\s*/g, " ↵ "),
-							wrap: "none",
-							truncate: "end",
+							text: replaceTabs(message).replace(/\r\n?/g, "\n"),
+							wrap: "word",
 							grow: 1,
 						},
 						undefined,
