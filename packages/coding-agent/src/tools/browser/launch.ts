@@ -22,6 +22,7 @@ import type {
 	NetworkConditions,
 	Page,
 	default as Puppeteer,
+	TimeoutError,
 	Target,
 } from "puppeteer-core";
 import stealthTamperingScript from "../puppeteer/00_stealth_tampering.txt" with { type: "text" };
@@ -109,12 +110,32 @@ const USER_AGENT_TARGET_TYPES = new Set(["page", "webview", "background_page"]);
 let puppeteerCwdFailed = false;
 let puppeteerCwdFailure: unknown;
 let jsHandleConstructor: typeof JSHandle | undefined;
+let timeoutErrorConstructor: typeof TimeoutError | undefined;
 let knownDevices: Readonly<Record<string, Device>> | undefined;
 let predefinedNetworkConditions: Readonly<Record<string, NetworkConditions>> | undefined;
 
 /** Identify handles using the lazily loaded Puppeteer instance without triggering an early import. */
 export function isPuppeteerHandle(value: unknown): value is JSHandle {
 	return jsHandleConstructor !== undefined && value instanceof jsHandleConstructor;
+}
+
+/**
+ * Recognize Puppeteer's `TimeoutError` by class identity: release builds minify class names,
+ * so its `name` reads like `Og` there and never equals "TimeoutError".
+ */
+export function isPuppeteerTimeout(error: unknown): boolean {
+	return timeoutErrorConstructor !== undefined && error instanceof timeoutErrorConstructor;
+}
+
+/**
+ * Build Puppeteer's `TimeoutError` for a deadline omp enforces in place of one of Puppeteer's waits.
+ * Its `name` stays "TimeoutError" in release builds: back/forward/reload pass this error to the agent's cell as is.
+ */
+export function puppeteerTimeoutError(message: string): Error {
+	if (!timeoutErrorConstructor) throw new Error("Puppeteer is not loaded");
+	const error = new timeoutErrorConstructor(message);
+	error.name = "TimeoutError";
+	return error;
 }
 async function importPuppeteerWithSafeCwd(safeDir: string): Promise<typeof Puppeteer> {
 	const cwdDescriptor = Object.getOwnPropertyDescriptor(process, "cwd");
@@ -140,6 +161,7 @@ async function importPuppeteerWithSafeCwd(safeDir: string): Promise<typeof Puppe
 			const module = await import("puppeteer-core");
 			loaded = module.default;
 			jsHandleConstructor = module.JSHandle;
+			timeoutErrorConstructor = module.TimeoutError;
 			knownDevices = module.KnownDevices;
 			predefinedNetworkConditions = module.PredefinedNetworkConditions;
 		} catch (error) {

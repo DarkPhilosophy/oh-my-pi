@@ -256,7 +256,7 @@ export const findToolRenderer = {
 			},
 			uiTheme,
 		);
-		return new Text(text, 1, 0);
+		return new Text(text, 0, 0);
 	},
 
 	renderResult(
@@ -269,7 +269,7 @@ export const findToolRenderer = {
 		const text = result.content?.find(c => c.type === "text")?.text ?? "";
 
 		if (result.isError) {
-			return new Text(formatErrorMessage(text || "Unknown error", uiTheme), 1, 0);
+			return new Text(formatErrorMessage(text || "Unknown error", uiTheme), 0, 0);
 		}
 
 		// Streaming progress: the tool reports the phase it is in.
@@ -285,7 +285,7 @@ export const findToolRenderer = {
 				},
 				uiTheme,
 			);
-			return new Text(header, 1, 0);
+			return new Text(header, 0, 0);
 		}
 
 		const { hits, stats, threshold } = details;
@@ -317,7 +317,7 @@ export const findToolRenderer = {
 					: "No relevant passages found";
 			const lines = [header, formatEmptyMessage(empty, uiTheme)];
 			for (const failure of stats.failures) lines.push(uiTheme.fg("warning", failure));
-			return new Text(lines.join("\n"), 1, 0);
+			return new Text(lines.join("\n"), 0, 0);
 		}
 
 		const header = renderStatusLine(
@@ -359,7 +359,6 @@ export const findToolRenderer = {
 				}
 				return [header, ...hitLines, ...extra].map(line => truncateToWidth(line, width, Ellipsis.Omit));
 			},
-			{ paddingX: 1 },
 		);
 	},
 	describeCall(args: FindRenderArgs): NativeToolView {

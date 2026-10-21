@@ -1,8 +1,10 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { PipeStreams } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
 import { AgentRegistry } from "../registry/agent-registry";
+import type { JobWidgetInputs, JobWidgetRegistry } from "../job-widgets/types";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -112,6 +114,8 @@ export interface AsyncJob {
 	agentId?: string;
 	/** The process the job runs, when it spawns one. */
 	process?: AsyncJobProcess;
+	/** What the job's live widget reads; set by bash and task jobs. */
+	widgetInputs?: JobWidgetInputs;
 	/**
 	 * Job is registered but parked behind a caller-managed gate (e.g. a task
 	 * batch semaphore). Queued jobs do not count toward the running-job limit
@@ -147,6 +151,8 @@ export interface AsyncJobProcess {
 	readonly cwd: string;
 	/** Live pids the command spawned, in spawn order; empty before it starts and after it ends. */
 	pids(): readonly number[];
+	/** Copies of the bytes crossing the command's pipes, kept with the job row (`proc://<id>/streams`). */
+	readonly streams?: PipeStreams;
 }
 
 /** Delivery callback for a settled job's result text. */
@@ -237,6 +243,8 @@ export interface AsyncJobRegisterOptions {
 	foreground?: boolean;
 	/** The process the job runs; see {@link AsyncJob.process}. */
 	process?: AsyncJobProcess;
+	/** See {@link AsyncJob.widgetInputs}. */
+	widgetInputs?: JobWidgetInputs;
 }
 
 /**
@@ -287,6 +295,8 @@ export class AsyncJobManager {
 	#deliveryLoop: Promise<void> | undefined;
 	#deliveryQueueChanged = Promise.withResolvers<void>();
 	#disposed = false;
+	/** Live widgets of this root's jobs; set by the root session when widgets are available. */
+	widgets: JobWidgetRegistry | undefined;
 
 	#filterJobs(jobs: Iterable<AsyncJob>, filter?: AsyncJobFilter): AsyncJob[] {
 		if (!filter) return Array.from(jobs);
@@ -381,6 +391,7 @@ export class AsyncJobManager {
 			ownerId: options?.ownerId,
 			agentId: options?.agentId,
 			process: options?.process,
+			widgetInputs: options?.widgetInputs,
 			queued: options?.queued === true,
 			...(options?.foreground ? { foreground: true } : {}),
 		};
@@ -831,6 +842,8 @@ export class AsyncJobManager {
 		this.#consumedJobResults.clear();
 		this.#releasedForegroundJobs.clear();
 		this.#deliverySinks.clear();
+		this.widgets?.dispose();
+		this.widgets = undefined;
 		return jobsSettled && drained;
 	}
 
@@ -1004,6 +1017,7 @@ export class AsyncJobManager {
 		this.#consumedJobResults.delete(jobId);
 		const job = this.#jobs.get(jobId);
 		if (job) this.#runRetainedArtifactsCleanup(job);
+		this.widgets?.forget(jobId);
 		return this.#jobs.delete(jobId);
 	}
 

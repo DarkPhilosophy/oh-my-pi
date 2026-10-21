@@ -861,7 +861,8 @@ fn find_window(app: &AXUIElement, win: &DesktopWindow) -> CoreResult<CFRetained<
 ///
 /// A sheet or popover reporting `expected` ends the walk at once: a window id
 /// names one window, so no later candidate can compete with it. Only menus,
-/// which match by frame, need the whole walk to prove uniqueness.
+/// which match by frame, need the whole walk to prove uniqueness. The walk
+/// stops with `Cancelled` once the current operation is cancelled.
 fn attached_window(
 	app: &AXUIElement,
 	expected: u32,
@@ -877,6 +878,7 @@ fn attached_window(
 	let mut visited = 0usize;
 	let mut truncated = false;
 	while let Some((element, depth)) = queue.pop_front() {
+		control::check()?;
 		visited += 1;
 		if visited > MAX_ATTACHED_SEARCH_NODES {
 			truncated = true;

@@ -1,8 +1,13 @@
 import { describe, expect, it } from "bun:test";
-import { cropSixelTop } from "../src/sixel";
+import { cropSixelTop, ensureSixelRasterWidth } from "../src/sixel";
 
 /** Small independent interpreter: keep colors per pixel, never shift SIXEL bands. */
-function decode(sequence: string): { width: number; height: number; pixels: (string | null)[][] } {
+function decode(sequence: string): {
+	width: number;
+	height: number;
+	firstBandWidth: number;
+	pixels: (string | null)[][];
+} {
 	const header = /^\x1bP[0-9;]*q/.exec(sequence);
 	const raster = /"\d+;\d+;(\d+);(\d+)/.exec(sequence);
 	if (!header || !raster || !sequence.endsWith("\x1b\\")) throw new Error("Invalid SIXEL fixture");
@@ -13,6 +18,7 @@ function decode(sequence: string): { width: number; height: number; pixels: (str
 	let color = 0;
 	let x = 0;
 	let y = 0;
+	let firstBandWidth = 0;
 	let offset = header[0].length;
 	const numbers = (): number[] => {
 		const start = offset;
@@ -22,6 +28,7 @@ function decode(sequence: string): { width: number; height: number; pixels: (str
 	const paint = (character: string, repeat: number): void => {
 		const mask = character.charCodeAt(0) - 63;
 		if (mask < 0 || mask > 63) throw new Error("Invalid SIXEL pixel");
+		if (y === 0) firstBandWidth = Math.max(firstBandWidth, x + repeat);
 		for (let column = 0; column < repeat; column++, x++) {
 			for (let bit = 0; bit < 6; bit++) {
 				if (!(mask & (1 << bit)) || y + bit >= height || x >= width) continue;
@@ -50,7 +57,7 @@ function decode(sequence: string): { width: number; height: number; pixels: (str
 			y += 6;
 		} else paint(command, 1);
 	}
-	return { width, height, pixels };
+	return { width, height, firstBandWidth, pixels };
 }
 
 const RED = "100,0,0";
@@ -61,6 +68,24 @@ const IMAGE = '\x1bP0;1;0q"1;1;5;18#1;2;100;0;0#2;2;0;100;0#3;2;0;0;100#1!2V?$#2
 describe("cropSixelTop", () => {
 	it("leaves a zero-pixel crop byte-for-byte unchanged", () => {
 		expect(cropSixelTop(IMAGE, 0)).toBe(IMAGE);
+	});
+
+	it("keeps transparent leading bands visible to Zellij without painting their pixels", () => {
+		const source = '\x1bP9;1;0q"1;1;5;18#1;2;100;0;0--#1!5~\x1b\\';
+		const original = decode(source);
+		expect(original.firstBandWidth).toBe(0);
+		const result = decode(ensureSixelRasterWidth(source));
+		expect(result.firstBandWidth).toBe(5);
+		expect(result.pixels).toEqual(original.pixels);
+		expect(result.pixels[12]).toEqual(Array<string>(5).fill(RED));
+	});
+
+	it("retains image width when cropping exposes a transparent first band", () => {
+		const source = '\x1bP9;1;0q"1;1;5;18#1;2;100;0;0#1!5~--#1!5~\x1b\\';
+		const result = decode(cropSixelTop(source, 6));
+		expect(result.firstBandWidth).toBe(5);
+		expect(result.pixels).toEqual(decode(source).pixels.slice(6));
+		expect(result.pixels[6]).toEqual(Array<string>(5).fill(RED));
 	});
 
 	for (const pixels of [2, 6, 7, 17]) {

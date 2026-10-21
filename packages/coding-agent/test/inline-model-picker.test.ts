@@ -155,22 +155,25 @@ it.each(["box", "pi", "claude"])(
 		composer.ui.setFocus(editor);
 		await terminal.waitForRender();
 		const showError = vi.fn();
+		const session = {
+			modelRegistry: {
+				getAll: () => [],
+				getAvailable: () => [],
+				getError: () => undefined,
+				refreshIfStale: async () => false,
+			},
+			scopedModels: [],
+			getContextUsage: () => undefined,
+			getRoleModelCycle: () => undefined,
+		};
 		const controller = new SelectorController({
 			ui: composer.ui,
 			editor,
 			editorContainer: slot,
 			settings: Settings.isolated({ "display.inlineModelPicker": true }),
-			session: {
-				modelRegistry: {
-					getAll: () => [],
-					getAvailable: () => [],
-					getError: () => undefined,
-					refreshIfStale: async () => false,
-				},
-				scopedModels: [],
-				getContextUsage: () => undefined,
-				getRoleModelCycle: () => undefined,
-			},
+			session,
+			// The picker reads the session the user is viewing; here that is the main session.
+			viewSession: session,
 			keybindings: { getKeys: () => [], getDisplayString: () => "" },
 			showError,
 		} as unknown as InteractiveModeContext);

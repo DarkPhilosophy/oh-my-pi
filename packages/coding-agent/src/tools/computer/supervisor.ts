@@ -16,6 +16,7 @@ import {
 	type ComputerSessionSnapshot,
 	type ComputerWorkerInbound,
 	type ComputerWorkerOutbound,
+	type ControlVerdict,
 	ESCAPE_AFTER_CALL_MESSAGE,
 	ESCAPE_REFUSED_MESSAGE,
 	ESCAPE_STOPPED_MESSAGE,
@@ -386,19 +387,36 @@ export class ComputerSupervisor implements ComputerController {
 		else pending.signal?.addEventListener("abort", onAbort, { once: true });
 		try {
 			const context = pending.context ?? this.#session.getToolContext?.();
-			let approved = false;
-			if (context?.ui && context.hasUI !== false && !controller.signal.aborted) {
-				approved =
-					(await untilAborted(controller.signal, () =>
-						context.ui!.confirm(
-							"Allow foreground computer control?",
-							`${message.reason}\n\nFor this task only. Use the host interrupt to stop and revoke control. This does not authorize external side effects.`,
-							{ signal: controller.signal },
-						),
-					)) === true;
+			let verdict: ControlVerdict;
+			if (!context?.ui || context.hasUI === false) {
+				verdict = "no-ui";
+			} else if (message.timeoutMs <= 0) {
+				// The run has no time left to wait in; a prompt would close before anyone could answer it.
+				verdict = "unanswered";
+			} else {
+				// The prompt closes before the run's deadline, so the script hears that nobody answered. The deadline
+				// aborts the dialog rather than riding its `timeout` option: a timed-out TUI confirm picks its
+				// highlighted option, which is Yes.
+				const deadline = AbortSignal.timeout(message.timeoutMs);
+				const signal = AbortSignal.any([controller.signal, deadline]);
+				let approved = false;
+				try {
+					approved =
+						!signal.aborted &&
+						(await untilAborted(signal, () =>
+							context.ui!.confirm(
+								"Allow foreground computer control?",
+								`${message.reason}\n\nFor this task only. Use the host interrupt to stop and revoke control. This does not authorize external side effects.`,
+								{ signal },
+							),
+						)) === true;
+				} catch (error) {
+					if (!deadline.aborted || controller.signal.aborted) throw error;
+				}
+				verdict = approved ? "approved" : deadline.aborted ? "unanswered" : "denied";
 			}
-			if (controller.signal.aborted || this.#pending.get(message.runId) !== pending) approved = false;
-			this.#safeSend({ type: "tool-reply", id: message.id, reply: { ok: true, value: approved } });
+			if (controller.signal.aborted || this.#pending.get(message.runId) !== pending) verdict = "denied";
+			this.#safeSend({ type: "tool-reply", id: message.id, reply: { ok: true, value: verdict } });
 		} catch (error) {
 			this.#safeSend({
 				type: "tool-reply",

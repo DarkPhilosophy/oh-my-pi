@@ -1788,9 +1788,8 @@ describe("vibe session registry", () => {
 		}
 		expect((await SessionManager.peekSessionInit(explicitRef.sessionFile))?.init?.task).toBe(INITIAL_VIBE_TASK);
 		expect((await SessionManager.peekSessionInit(modeExitRef.sessionFile))?.init?.task).toBe(INITIAL_VIBE_TASK);
-		await expect(AgentLifecycleManager.global().ensureLive("explicitly-killed")).rejects.toThrow(
-			"aborted and cannot be revived",
-		);
+		// Upstream reopens killed refs only through a registered reviver; without one it stays dead.
+		await expect(AgentLifecycleManager.global().ensureLive("explicitly-killed")).rejects.toThrow("cannot be revived");
 		await expect(
 			resumedRegistry.send(resumedSession, { session: "explicitly-killed", message: FOLLOW_UP_VIBE_TASK }),
 		).rejects.toThrow('Unknown vibe session "explicitly-killed"');

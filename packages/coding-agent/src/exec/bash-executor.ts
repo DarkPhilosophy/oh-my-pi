@@ -7,6 +7,7 @@ import { ExponentialYield } from "@oh-my-pi/pi-agent-core/utils/yield";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
 	type MinimizerOptions,
+	type PipeStreams,
 	PtySession,
 	Shell,
 	type ShellFilesystem,
@@ -66,6 +67,11 @@ export interface BashExecutorOptions {
 	 * `cwd` included). External shells and processes never see it.
 	 */
 	filesystem?: ShellFilesystem;
+	/**
+	 * Receives a copy of every byte crossing the command's pipes in the
+	 * embedded shell (`proc://<id>/streams`). The user-shell paths ignore it.
+	 */
+	streams?: PipeStreams;
 	/**
 	 * Invoked once the embedded shell starts the command, with a probe of the
 	 * live pids it spawned (empty once the run ends). Not called on the
@@ -743,6 +749,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 				timeoutMs: nativeTimeoutMs,
 				signal: runAbortController.signal,
 				filesystem: options?.filesystem,
+				streams: options?.streams,
 			},
 			(err, chunk) => {
 				if (!err) {

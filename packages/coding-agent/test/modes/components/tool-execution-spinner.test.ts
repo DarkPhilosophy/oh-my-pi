@@ -143,6 +143,35 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
+	it("advances a running bash call's elapsed footer and stops repainting once sealed", () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const requestComponentRender = vi.fn();
+		const component = new ToolExecutionComponent(
+			"bash",
+			{ command: "sleep 600" },
+			{},
+			undefined,
+			{ requestRender, requestComponentRender } as unknown as TUI,
+			process.cwd(),
+		);
+
+		try {
+			component.setArgsComplete();
+			component.setExecutionStarted();
+			vi.advanceTimersByTime(3_000);
+			// The separator spinner already repaints; the footer must still read the advancing clock.
+			expect(requestComponentRender).toHaveBeenCalledWith(component);
+			expect(stripVTControlCharacters(component.render(80).join("\n"))).toContain("elapsed 3.0s");
+			component.seal();
+			requestComponentRender.mockClear();
+			vi.advanceTimersByTime(3_000);
+			expect(requestComponentRender).not.toHaveBeenCalled();
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
 	it("does not tick detached async bash result snapshots", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();

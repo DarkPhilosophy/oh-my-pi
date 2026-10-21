@@ -34,8 +34,8 @@ import { createSessionDefaults } from "../helpers/session-defaults";
  * 2. If the agent still refuses to yield (grace exhausted → hard abort), a
  *    kept-alive agent stays adopted (`idle`), so `irc` can message/resume it
  *    with the same RPC lifecycle/progress frames as the original run.
- * 3. Caller-signal aborts remain terminal, and the irc bus names the aborted
- *    agent precisely instead of claiming it is unknown.
+ * 3. Caller-signal aborts only stop the run: the agent stays resumable via
+ *    `irc`.
  */
 
 interface MockSessionHandle {
@@ -107,6 +107,7 @@ function createMockSession(
 			ircWakeTurnObserver = observer;
 		},
 		trackIrcReply: () => {},
+		isParentIrcSteer: () => false,
 		deliverIrcMessage: async msg => {
 			const record: CustomMessage = {
 				role: "custom",
@@ -660,7 +661,7 @@ describe("runSubprocess soft request budget", () => {
 		expect(settled).toEqual(["completed"]);
 	});
 
-	it("a caller-signal abort stays terminal and irc names the aborted agent precisely", async () => {
+	it("a caller-signal abort keeps the kept-alive agent resumable via irc", async () => {
 		const id = "CancelledScout";
 		const controller = new AbortController();
 		const handle = createMockSession(({ promptIndex, emit, pushMessage }) => {
@@ -676,13 +677,12 @@ describe("runSubprocess soft request budget", () => {
 		const result = await runSubprocess({ ...baseOptions(id), signal: controller.signal });
 
 		expect(result.aborted).toBe(true);
-		expect(AgentRegistry.global().get(id)?.status).toBe("aborted");
-		expect(handle.disposeCalls()).toBeGreaterThanOrEqual(1);
+		expect(AgentRegistry.global().get(id)?.status).toBe("idle");
+		expect(AgentLifecycleManager.global().has(id)).toBe(true);
+		expect(handle.disposeCalls()).toBe(0);
 
 		const receipt = await new IrcBus().send({ from: "Main", to: id, body: "resume" });
-		expect(receipt.outcome).toBe("failed");
-		expect(receipt.error).toMatch(/hard-aborted/);
-		expect(receipt.error).toMatch(new RegExp(`history://${id}`));
+		expect(receipt.outcome).toBe("woken");
 	});
 });
 

@@ -15,7 +15,7 @@ use std::{
 
 use anyhow::{Error, Result};
 use brush_core::{
-	ExecutionControlFlow, ExecutionExitCode, ExecutionParameters, ExecutionResult,
+	ExecutionControlFlow, ExecutionExitCode, ExecutionParameters, ExecutionResult, PipeTap,
 	ProcessGroupPolicy, ProfileLoadBehavior, RcLoadBehavior, Shell as BrushShell, ShellValue,
 	ShellVariable, SourceInfo, SpawnObserver,
 	env::EnvironmentScope,
@@ -38,6 +38,7 @@ use crate::{
 	minimizer,
 	output_decode::OutputDecoder,
 	process,
+	taps::PipeTaps,
 };
 
 struct ShellSessionCore {
@@ -123,6 +124,8 @@ struct ShellRunConfig {
 	minimizer:  Option<minimizer::MinimizerConfig>,
 	/// Replaces the session filesystem for this run only.
 	filesystem: Option<Fs>,
+	/// Mirrors the run's pipeline pipes.
+	pipe_taps:  Option<Arc<PipeTaps>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -133,6 +136,8 @@ pub struct ShellRunOptions {
 	pub timeout_ms: Option<u32>,
 	/// Filesystem for this run only; the session filesystem when `None`.
 	pub filesystem: Option<Fs>,
+	/// Receives a copy of every byte crossing the run's pipeline pipes.
+	pub pipe_taps:  Option<Arc<PipeTaps>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -242,6 +247,7 @@ impl Shell {
 			env:        options.env,
 			minimizer:  self.config.minimizer.clone(),
 			filesystem: options.filesystem,
+			pipe_taps:  options.pipe_taps,
 		};
 		run_shell_session(
 			self.session.clone(),
@@ -323,6 +329,7 @@ pub async fn execute_shell(
 		env: options.env,
 		minimizer,
 		filesystem: None,
+		pipe_taps: None,
 	};
 	run_shell_oneshot(config, run_config, on_chunk, cancel_token).await
 }
@@ -361,6 +368,7 @@ pub async fn execute_shell_streams(
 		env:        options.env,
 		minimizer:  None,
 		filesystem: None,
+		pipe_taps:  None,
 	};
 	run_shell_oneshot_streams(config, run_config, streams, cancel_token).await
 }
@@ -1107,6 +1115,16 @@ async fn run_shell_command_in_filesystem(
 	})
 }
 
+/// The session's execution parameters for one run's command, carrying the
+/// run's pipe taps.
+fn command_params(session: &ShellSessionCore, options: &ShellRunConfig) -> ExecutionParameters {
+	let mut params = session.shell.default_exec_params();
+	if let Some(taps) = &options.pipe_taps {
+		params.set_pipe_tap(Arc::clone(taps) as Arc<dyn PipeTap>);
+	}
+	params
+}
+
 async fn run_shell_command_single(
 	session: &mut ShellSessionCore,
 	options: &ShellRunConfig,
@@ -1117,7 +1135,7 @@ async fn run_shell_command_single(
 ) -> Result<(ExecutionResult, Option<MinimizerResult>)> {
 	debug_assert!(!matches!(minimizer_mode, minimizer::engine::MinimizerMode::SegmentedChain));
 
-	let params = session.shell.default_exec_params();
+	let params = command_params(session, options);
 	let capture_mode = match minimizer_mode {
 		minimizer::engine::MinimizerMode::WholeCommand => {
 			let Some(config) = options.minimizer.as_ref() else {
@@ -1241,7 +1259,7 @@ async fn run_shell_command_segmented_chain(
 		.await;
 	};
 
-	let params = session.shell.default_exec_params();
+	let params = command_params(session, options);
 	let mut aggregate = Some(ChainCapture::new());
 	let mut previous_succeeded = true;
 	let mut last_result = None;
@@ -7772,5 +7790,112 @@ replace = [{ pattern = "^.+$", replacement = "PWD" }]
 		assert!(!result.cancelled);
 		assert!(!result.timed_out);
 		assert_eq!(received, TOTAL_BYTES, "streamed bytes were dropped under backpressure");
+	}
+
+	/// Runs `command` on a fresh shell with pipe taps, collecting its output.
+	fn run_tapped(
+		command: &str,
+		cancel: CancelToken,
+	) -> (Arc<PipeTaps>, tokio::task::JoinHandle<Result<ShellRunResult>>, flume::Receiver<String>)
+	{
+		let taps = Arc::new(PipeTaps::new());
+		let (tx, rx) = flume::unbounded::<String>();
+		let options = ShellRunOptions {
+			command: command.into(),
+			pipe_taps: Some(Arc::clone(&taps)),
+			..Default::default()
+		};
+		let run = tokio::spawn(async move { Shell::new(None).run(options, Some(tx), cancel).await });
+		(taps, run, rx)
+	}
+
+	/// Everything a finished run printed.
+	async fn collect_output(rx: &flume::Receiver<String>) -> String {
+		let mut output = String::new();
+		while let Ok(chunk) = rx.recv_async().await {
+			output.push_str(&chunk);
+		}
+		output
+	}
+
+	/// The point of the tap: while `tail` holds its input back, the bytes the
+	/// producer already wrote are readable as stream 1.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn pipe_tap_exposes_input_a_later_stage_holds_back() {
+		let _guard = shell_test_lock().lock().await;
+		let mut cancel = CancelToken::default();
+		let abort = cancel.emplace_abort_token();
+		let (taps, run, rx) = run_tapped("{ printf 'a\\nb\\nc\\n'; sleep 30; } | tail -n 1", cancel);
+
+		let seen = time::timeout(Duration::from_secs(10), async {
+			loop {
+				if let Some(read) = taps.read(1, None)
+					&& read.data == b"a\nb\nc\n"
+				{
+					return read;
+				}
+				time::sleep(Duration::from_millis(20)).await;
+			}
+		})
+		.await
+		.expect("producer output never reached stream 1");
+		assert!(seen.open);
+		assert!(rx.try_recv().is_err(), "tail printed before its input ended");
+		let [stream] = taps.list().try_into().expect("one pipe");
+		assert!(stream.producer.contains("printf"), "producer text: {}", stream.producer);
+		assert!(stream.consumer.contains("tail"), "consumer text: {}", stream.consumer);
+
+		abort.abort(AbortReason::Signal);
+		let result = time::timeout(Duration::from_secs(10), run)
+			.await
+			.expect("run did not stop after abort")
+			.expect("run task panicked")
+			.expect("run");
+		assert!(result.cancelled);
+		assert!(!taps.read(1, None).expect("stream 1").open);
+	}
+
+	/// A consumer that exits early still ends the pipeline at once through a
+	/// tapped pipe: the relay lets go of the producer's end when `head`
+	/// leaves, so `tail -f` (idle, no further writes) sees its pipe widowed.
+	#[cfg(unix)]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn pipe_tap_widows_the_producer_when_the_consumer_exits() {
+		let _guard = shell_test_lock().lock().await;
+		let log = tempfile::NamedTempFile::new().expect("log file");
+		std::fs::write(log.path(), "first\nsecond\n").expect("write log");
+		let command = format!("tail -f {} | head -n 1", quote_arg(&log.path().to_string_lossy()));
+		let (_taps, run, rx) = run_tapped(&command, CancelToken::default());
+
+		let result = time::timeout(Duration::from_secs(10), run)
+			.await
+			.expect("tail -f kept following after head exited")
+			.expect("run task panicked")
+			.expect("run");
+		assert_eq!(result.exit_code, Some(0));
+		assert_eq!(collect_output(&rx).await, "first\n");
+	}
+
+	/// Every byte reaches the consumer unchanged, and the stream counts all of
+	/// them while retaining only its newest megabyte.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn pipe_tap_forwards_every_byte_and_counts_them() {
+		let _guard = shell_test_lock().lock().await;
+		const LAST: usize = 200_000;
+		let (taps, run, rx) = run_tapped(&format!("seq 1 {LAST} | wc -l"), CancelToken::default());
+
+		let result = time::timeout(Duration::from_secs(30), run)
+			.await
+			.expect("run did not finish")
+			.expect("run task panicked")
+			.expect("run");
+		assert_eq!(result.exit_code, Some(0));
+		assert_eq!(collect_output(&rx).await.trim(), LAST.to_string());
+		let written: usize = (1..=LAST).map(|n| n.to_string().len() + 1).sum();
+		let read = taps.read(1, None).expect("stream 1");
+		assert_eq!(read.end, written as u64);
+		assert_eq!(read.data.len(), written.min(1 << 20));
+		assert!(read.data.ends_with(format!("\n{LAST}\n").as_bytes()));
+		assert!(!read.open);
 	}
 }

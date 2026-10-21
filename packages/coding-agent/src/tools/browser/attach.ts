@@ -8,6 +8,7 @@ import type { Socket } from "bun";
 import type { Browser, Page, Target } from "puppeteer-core";
 import { throwIfAborted } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { isPuppeteerTimeout } from "./launch";
 
 const ATTACH_TARGET_SKIP_PATTERN =
 	/request[\s_-]?handler|devtools|background[\s_-]?(?:page|host)|service[\s_-]?worker/i;
@@ -719,7 +720,7 @@ export async function pickElectronTarget(browser: Browser, options: PickTargetOp
 						);
 					} catch (error) {
 						throwIfAborted(options.signal);
-						if (error instanceof Error && error.name === "TimeoutError") {
+						if (isPuppeteerTimeout(error)) {
 							throw new ToolError(
 								"Selected tab did not become available before omp could attach; retry, or reopen it if it closed",
 							);
@@ -751,7 +752,7 @@ export async function pickElectronTarget(browser: Browser, options: PickTargetOp
 			);
 		} catch (error) {
 			throwIfAborted(options.signal);
-			if (error instanceof Error && error.name === "TimeoutError") {
+			if (isPuppeteerTimeout(error)) {
 				throw new ToolError("No page targets available on the attached browser");
 			}
 			throw error;

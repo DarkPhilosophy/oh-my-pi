@@ -46,6 +46,7 @@ import {
 	type ComputerSessionSnapshot,
 	type ComputerWorkerInbound,
 	type ComputerWorkerTransport,
+	type ControlVerdict,
 	ESCAPE_AFTER_CALL_MESSAGE,
 	ESCAPE_STOPPED_MESSAGE,
 	type RunErrorPayload,
@@ -129,6 +130,12 @@ export type NativeDesktopSessionFactory = (
 type WindowFilter = { id?: string | number; app?: string; title?: string };
 /** Window listings are session-transcript payload; `window()` lookups search the whole native list. */
 const MAX_LISTED_WINDOWS = 48;
+/**
+ * Run time a `control.acquire` confirmation leaves unspent, so an unanswered prompt closes while the script can
+ * still act on `{ active: false, reason: "unanswered" }` instead of the run timing out around it. A run shorter
+ * than four times this keeps a quarter of its timeout instead.
+ */
+const CONTROL_ANSWER_RESERVE_MS = 5_000;
 type InputOptions = { takeover?: boolean };
 type ScreenshotOptions = { silent?: boolean };
 type ScreenshotResult = Pick<
@@ -163,7 +170,7 @@ interface ComputerRunContext {
 	readOnly: boolean;
 	snapshot: ComputerSessionSnapshot;
 	output: RunOutput;
-	confirmControl(reason: string): Promise<boolean>;
+	confirmControl(reason: string): Promise<ControlVerdict>;
 	screenshots: ComputerScreenshot[];
 }
 
@@ -1395,7 +1402,8 @@ export class ComputerWorkerCore {
 			snapshot: message.session,
 			output,
 			screenshots,
-			confirmControl: reason => this.#confirmControl(active, reason),
+			confirmControl: reason =>
+				this.#confirmControl(active, reason, deadline - Math.min(CONTROL_ANSWER_RESERVE_MS, message.timeoutMs / 4)),
 		};
 		let returnValue: unknown;
 		let failure: { error: unknown } | undefined;
@@ -1623,13 +1631,15 @@ export class ComputerWorkerCore {
 		return await promise;
 	}
 
-	async #confirmControl(active: ActiveRun, reason: string): Promise<boolean> {
+	async #confirmControl(active: ActiveRun, reason: string, answerDeadline: number): Promise<ControlVerdict> {
 		throwIfAborted(active.signal);
 		const id = `computer-control-${active.id}-${crypto.randomUUID()}`;
 		const pending = Promise.withResolvers<unknown>();
 		active.pendingTools.set(id, pending);
-		this.#transport.send({ type: "control-request", id, runId: active.id, reason });
-		return (await pending.promise) === true;
+		const timeoutMs = Math.max(0, Math.floor(answerDeadline - performance.now()));
+		this.#transport.send({ type: "control-request", id, runId: active.id, reason, timeoutMs });
+		const verdict = await pending.promise;
+		return verdict === "approved" || verdict === "no-ui" || verdict === "unanswered" ? verdict : "denied";
 	}
 
 	#deliverToolReply(id: string, reply: ToolReply): void {
@@ -1739,7 +1749,9 @@ export class ComputerWorkerCore {
 				},
 			},
 			control: {
-				acquire: async (options: { reason: string }): Promise<{ active: boolean }> => {
+				acquire: async (options: {
+					reason: string;
+				}): Promise<{ active: boolean; reason?: Exclude<ControlVerdict, "approved"> }> => {
 					const context = getContext();
 					guardRun(context, "control.acquire");
 					refuseForeground(
@@ -1752,9 +1764,9 @@ export class ComputerWorkerCore {
 					if (typeof options.reason !== "string" || !options.reason.trim())
 						throw new ToolError("control.acquire requires a non-empty reason");
 					if (session.controlState().active) return { active: true };
-					const approved = await context.confirmControl(options.reason);
+					const verdict = await context.confirmControl(options.reason);
 					throwIfAborted(context.signal);
-					if (!approved) return { active: false };
+					if (verdict !== "approved") return { active: false, reason: verdict };
 					return await nativeCall(context.signal, () => session.acquireControl());
 				},
 				release: async (): Promise<void> => {

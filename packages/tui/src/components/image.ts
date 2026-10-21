@@ -2,6 +2,7 @@ import { replaceTabs, truncateToWidth } from "../utils";
 import { encodeSixelAsync } from "@oh-my-pi/pi-natives";
 import { getKittyGraphics } from "../kitty-graphics";
 import { ImagePlaceholder } from "./image-placeholder";
+import { ensureSixelRasterWidth } from "../sixel";
 import {
 	calculateImageFit,
 	encodeSixelNow,
@@ -745,7 +746,7 @@ export class Image implements Component {
 		const request: SixelEncode = { widthPx, heightPx, backgroundRgb };
 		this.#sixel = request;
 		const settle = (sequence: string | null): void => {
-			request.sequence = sequence;
+			request.sequence = sequence === null ? null : ensureSixelRasterWidth(sequence);
 			if (this.#sixel !== request || getTerminalBackgroundColor() !== backgroundRgb) return;
 			this.invalidate();
 			if (this.#options.requestRender) this.#options.requestRender();

@@ -18,6 +18,8 @@ import { formatEarlierLines, formatExpandHint } from "./render-utils";
 export interface OutputBlockOptions {
 	header?: string;
 	headerMeta?: string;
+	/** Facts drawn inside the bottom border (`╰── Wall 0.16s · Timeout 300s ──╯`). */
+	footerMeta?: string;
 	state?: State;
 	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
 	width: number;
@@ -67,7 +69,7 @@ export function isFramedBlockComponent(component: Component): boolean {
 
 type BlockRow = { live: boolean } & (
 	| { kind: "bar"; leftChar: string; rightChar: string; label?: string; meta?: string }
-	| { kind: "bottom"; leftChar: string; rightChar: string }
+	| { kind: "bottom"; leftChar: string; rightChar: string; meta?: string }
 	| { kind: "content"; inner: string }
 	| { kind: "sixel"; raw: string }
 );
@@ -313,8 +315,20 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 					.map(section => 1 + visibleWidth(cap) + visibleWidth(` ${section.label} `) + 3),
 			)
 		: 0;
+	// The closing border of the lower box carries the footer facts; size the box to hold them whole.
+	const liveFooterWidth =
+		staged && options.footerMeta !== undefined && firstLiveSection < sections.length
+			? visibleWidth(`${theme.boxRound.bottomLeft}${cap}`) +
+				visibleWidth(` ${options.footerMeta} `) +
+				visibleWidth(theme.boxRound.bottomRight)
+			: 0;
 	const liveWidth = staged
-		? Math.max(stageWidth(sections.slice(firstLiveSection), false), liveLabelWidth, options.minLiveWidth ?? 0)
+		? Math.max(
+				stageWidth(sections.slice(firstLiveSection), false),
+				liveLabelWidth,
+				liveFooterWidth,
+				options.minLiveWidth ?? 0,
+			)
 		: lineWidth;
 	const liveFitted = staged ? Math.min(Math.max(width, 0), Math.max(liveWidth, visibleWidth(cap) + 2)) : lineWidth;
 	// The live result continues the command frame. It may widen for output,
@@ -378,13 +392,31 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		}
 	}
 
+	// The closing border belongs to the lower box only when there is one. Before execution starts the
+	// block is just the command box, and a bottom sized for an absent lower stage is a few columns wide.
+	const bottomLive = staged && firstLiveSection < sections.length;
+	const bottomWidth = rowWidth(bottomLive);
+	// Footer facts ride the bottom border only when they fit whole; a clipped
+	// border would silently drop trailing facts (exit code, artifact id), so an
+	// overflowing footer wraps into body rows above a plain border instead.
+	const footerMeta = options.footerMeta;
+	const footerFits =
+		footerMeta === undefined ||
+		visibleWidth(` ${footerMeta} `) <=
+			bottomWidth - visibleWidth(`${theme.boxRound.bottomLeft}${cap}`) - visibleWidth(theme.boxRound.bottomRight);
+	if (footerMeta !== undefined && !footerFits) {
+		const footerWrapAt = staged ? Math.max(0, bottomWidth - frameOverhead) : contentWidth;
+		for (const wrappedLine of wrapTextWithAnsi(footerMeta, footerWrapAt)) {
+			const innerPadding = padding(Math.max(0, footerWrapAt - visibleWidth(wrappedLine)));
+			rows.push({ live: bottomLive, kind: "content", inner: `${wrappedLine}${innerPadding}` });
+		}
+	}
 	rows.push({
-		// The closing border belongs to the lower box only when there is one. Before execution starts the
-		// block is just the command box, and a bottom sized for an absent lower stage is a few columns wide.
-		live: staged && firstLiveSection < sections.length,
+		live: bottomLive,
 		kind: "bottom",
 		leftChar: theme.boxRound.bottomLeft,
 		rightChar: theme.boxRound.bottomRight,
+		meta: footerFits ? footerMeta : undefined,
 	});
 
 	const H = rows.length;
@@ -411,14 +443,6 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		const fillCount = Math.max(0, lineWidth - leftWidth - labelWidth - rightWidth);
 		const fillGlyphs = h.repeat(fillCount);
 		return `${border(leftGlyphs)}${trimmedLabel}${border(fillGlyphs)}${border(rightGlyph)}`;
-	};
-
-	const renderBottom = (row: { leftChar: string; rightChar: string }, lineWidth: number): string => {
-		const leftGlyphs = `${row.leftChar}${cap}`;
-		const rightGlyph = row.rightChar;
-		const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
-		const fillGlyphs = h.repeat(fillCount);
-		return `${border(leftGlyphs)}${border(fillGlyphs)}${border(rightGlyph)}`;
 	};
 
 	const renderContent = (inner: string): string =>
@@ -471,11 +495,9 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		const line =
 			r === connectorIndex && row.kind === "bar"
 				? renderConnector(row)
-				: row.kind === "bar"
+				: row.kind === "bar" || row.kind === "bottom"
 					? renderBar(row, widthHere)
-					: row.kind === "bottom"
-						? renderBottom(row, widthHere)
-						: renderContent(row.inner);
+					: renderContent(row.inner);
 		const clip = staged
 			? widthHere < Math.max(visibleWidth(cap) + 2, contentPaddingLeft + contentPaddingRight + 2)
 			: clipFrame;
@@ -656,6 +678,7 @@ export class CachedOutputBlock {
 		);
 		h.optional(options.header);
 		h.optional(options.headerMeta);
+		h.optional(options.footerMeta);
 		h.optional(options.state);
 		h.optional(options.stageTone);
 		h.u32(options.minLiveWidth ?? 0);

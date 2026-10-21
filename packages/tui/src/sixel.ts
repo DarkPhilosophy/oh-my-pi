@@ -1,3 +1,15 @@
+/**
+ * Give an empty first band an explicit transparent width. Zellij derives the
+ * decoded image width from its first pixel row, ignoring the raster minimum
+ * for transparent images; an omitted band otherwise makes the image invisible.
+ * Palette definitions stay before drawing so cropping can still parse them.
+ */
+export function ensureSixelRasterWidth(sequence: string): string {
+	const prefix = /^(\x1bP[0-9;]*q"\d+;\d+;(\d+);\d+(?:#\d+(?:;[12];\d+;\d+;\d+)?|\$)*)(?=-)/.exec(sequence);
+	if (!prefix) return sequence;
+	return `${prefix[1]}!${prefix[2]}?$${sequence.slice(prefix[1]!.length)}`;
+}
+
 interface SixelRun {
 	bits: number;
 	count: number;
@@ -169,5 +181,5 @@ export function cropSixelTop(sequence: string, pixels: number, maxHeightPixels?:
 		}
 	}
 	output.push("\x1b\\");
-	return output.join("");
+	return ensureSixelRasterWidth(output.join(""));
 }

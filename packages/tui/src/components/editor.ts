@@ -733,6 +733,8 @@ export class Editor implements Component, Focusable {
 	#autocompletePrefix: string = "";
 	#autocompleteCommandArgument = false;
 	#autocompleteRenderAboveEditor = false;
+	/** False while the popup's untouched top row is a description-only slash hit ({@link AutocompleteItem.descriptionMatch}): Enter then submits the typed text. */
+	#enterAcceptsSelection = true;
 
 	#autocompleteRequestId: number = 0;
 	#autocompletePendingRequest: AutocompleteRequest | undefined;
@@ -2115,6 +2117,7 @@ export class Editor implements Component, Focusable {
 						this.onAutocompleteUpdate?.();
 					} else {
 						this.#autocompleteList.handleInput(data);
+						this.#enterAcceptsSelection = true;
 						this.onAutocompleteUpdate?.();
 						return;
 					}
@@ -2159,8 +2162,11 @@ export class Editor implements Component, Focusable {
 					// Check for stale autocomplete state while an async refresh is pending
 					const currentLine = this.#state.lines[this.#state.cursorLine] ?? "";
 					const currentTextBeforeCursor = currentLine.slice(0, this.#state.cursorCol);
-					if (!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected)) {
-						// Autocomplete is stale - cancel and fall through to normal submission
+					if (
+						!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected) ||
+						!this.#enterAcceptsSelection
+					) {
+						// Stale, or a description-only hit the user never selected: submit the typed text.
 						this.#cancelAutocomplete();
 					} else {
 						if (selected && this.#autocompleteProvider) {
@@ -2192,10 +2198,12 @@ export class Editor implements Component, Focusable {
 					if (
 						!selected ||
 						!this.#autocompletePrefixMatchesCursorText(currentTextBeforeCursor, selected) ||
-						this.#selectedSlashArgumentIsAlreadyTyped(selected)
+						this.#selectedSlashArgumentIsAlreadyTyped(selected) ||
+						!this.#enterAcceptsSelection
 					) {
-						// Stale, or accepting would only append whitespace to an already fully
-						// typed slash-command argument (`/mcp list` + Enter): cancel and fall
+						// Stale, accepting would only append whitespace to an already fully
+						// typed slash-command argument (`/mcp list` + Enter), or the row is a
+						// description-only hit the user never selected: cancel and fall
 						// through to normal submission instead of swallowing the keypress.
 						this.#cancelAutocomplete();
 					} else {
@@ -2339,9 +2347,10 @@ export class Editor implements Component, Focusable {
 				) {
 					const syncResult = this.#autocompleteProvider.trySyncSlashCompletion(textBeforeCursor);
 					// The collapsed `/skill:` namespace row is not a runnable command; Enter submits
-					// immediately after applying, so only a real command may be completed here.
+					// immediately after applying, so only a real command may be completed here, and
+					// only one whose name matches: a description-only hit would run an unrelated command.
 					const selected = syncResult?.items.find(item => item.value !== SKILL_NAMESPACE);
-					if (syncResult && selected) {
+					if (syncResult && selected && !selected.descriptionMatch) {
 						// Invalidate any pending async autocomplete so its stale results are discarded
 						this.#autocompleteRequestId += 1;
 						// Apply the best match and submit the completed command
@@ -5104,6 +5113,7 @@ export class Editor implements Component, Focusable {
 		this.#autocompleteRenderAboveEditor = suggestions.items.some(item => item.renderAboveEditor === true);
 
 		this.#autocompleteList = this.#createAutocompleteList(suggestions.prefix, suggestions.items);
+		this.#enterAcceptsSelection = !suggestions.items[0]?.descriptionMatch;
 		this.#autocompleteState = state;
 		this.onAutocompleteUpdate?.();
 	}

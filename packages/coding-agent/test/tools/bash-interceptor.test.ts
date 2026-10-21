@@ -17,6 +17,7 @@ function createBashTool(rules: BashInterceptorRule[]): BashTool {
 			"bash.autoBackground.enabled": false,
 			"bash.autoBackground.thresholdMs": 60_000,
 		}),
+		getSessionFile: () => null,
 	} as unknown as ToolSession;
 
 	return new BashTool(session);
@@ -54,6 +55,7 @@ function createForwardingBashTool(options?: {
 		hasBuiltInTool(name: string) {
 			return name === (options?.toolName ?? "grep") ? (options?.hasBuiltInTool ?? true) : undefined;
 		},
+		getSessionFile: () => null,
 	} as unknown as ToolSession;
 	return { tool: new BashTool(session), forwardedInputs };
 }

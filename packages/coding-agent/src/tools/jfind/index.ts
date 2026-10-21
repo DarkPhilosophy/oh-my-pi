@@ -15,7 +15,14 @@ import { InternalUrlFilesystem } from "../../internal-urls/url-filesystem";
 import { hasNativeJudge, journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../../judgment";
 import findDescription from "../../prompts/tools/find.md" with { type: "text" };
 import type { ToolSession } from "..";
-import { formatPathRelativeToCwd, normalizePathLikeInput, resolveSearchResultPath } from "../path-utils";
+import { resolveToolTier } from "../approval";
+import {
+	formatPathRelativeToCwd,
+	normalizePathLikeInput,
+	resolveSearchResultPath,
+	searchPathTier,
+} from "../path-utils";
+import { searchApprovalCacheTargets } from "../search-approval-targets";
 import { toolResult } from "../tool-result";
 import { type CascadeResult, runCascade } from "./cascade";
 import { rankedHeat } from "./passages";
@@ -52,7 +59,12 @@ export function isFindEnabled(session: ToolSession): boolean {
 /** Semantic search tool: describe a behavior, get files and line ranges that implement it. */
 export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 	readonly name = "find";
-	readonly approval = "read" as const;
+	readonly approval = searchPathTier;
+	/** `always-ask-cached` keys: the tree (or file) it searches, as `grep` reports one. */
+	readonly approvalCacheTargets = (args: unknown): readonly string[] | undefined => {
+		const root = (args as { path?: string } | null | undefined)?.path;
+		return searchApprovalCacheTargets(root ? [root] : [], this.session.cwd, entry => entry);
+	};
 	readonly loadMode = "essential";
 	readonly label = "Find";
 	readonly summary = "Semantic grep: find files and line ranges by describing what they do";
@@ -76,7 +88,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 		// listed, scanned, and read in place through the URL filesystem.
 		const filesystem = new InternalUrlFilesystem({
 			context: sessionResolveContext(this.session, { signal }),
-			tier: this.approval,
+			tier: resolveToolTier(this, params),
 		});
 		const root = await resolveSearchRoot(filesystem, rawScopeInput, cwd);
 		const scopePath =
