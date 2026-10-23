@@ -53,7 +53,7 @@ import { TspDocument } from "./apply";
 import { getNativeBlob, type NativeBlob } from "./blobs";
 import { node } from "./describe";
 import { encodeTspJson, encodeTspMessage, type TspHello, TspReader, splitTspMessage } from "./encode";
-import type { DescribeContext, NativeChild, NativeNode, NativeSurface, NativeUiEvent } from "./node";
+import type { DescribeContext, NativeChild, NativeNode, NativeScreen, NativeSurface, NativeUiEvent } from "./node";
 import { NARROW_SHEET_COLS } from "./overlay";
 import { nativeComponentId, Reconciler } from "./reconcile";
 import { setNativeRendering } from "./state";
@@ -521,13 +521,11 @@ export class NativeBackend {
 			}
 		}
 		let surface: Surface;
-		let main: readonly NativeChild[];
-		let dock: readonly NativeChild[];
-		let layer: NativeChild[];
+		let screenPage: NativeScreen | undefined;
 		if (fullscreen >= 0) {
 			const component = overlays[fullscreen]!.component;
-			const page = component.describeScreen?.(this.#cx);
-			const role = page?.role ?? SESSION_ROLE;
+			screenPage = component.describeScreen?.(this.#cx);
+			const role = screenPage?.role ?? SESSION_ROLE;
 			if (this.#screen?.role !== role) {
 				// A page with another role is another surface: its styling keys off the `o`.
 				if (this.#screen) this.#close(this.#screen, false);
@@ -535,19 +533,12 @@ export class NativeBackend {
 				this.#open(this.#screen);
 			}
 			surface = this.#screen;
-			main = page?.main ?? [component];
-			dock = page?.dock ?? [];
-			layer = overlays.slice(fullscreen + 1).map(overlay => this.#overlayNode(overlay));
 		} else {
 			if (this.#screen) {
 				this.#close(this.#screen, false);
 				this.#screen = null;
 			}
 			surface = this.#inline;
-			const described = this.#host.describeSurface(this.#cx);
-			main = described.main;
-			dock = described.dock;
-			layer = overlays.map(overlay => this.#overlayNode(overlay));
 		}
 		this.#pruneOverlayNodes(overlays);
 		if (!this.#hasCredit(surface)) {
@@ -556,6 +547,19 @@ export class NativeBackend {
 			return;
 		}
 		surface.dirty = false;
+		let main: readonly NativeChild[];
+		let dock: readonly NativeChild[];
+		let layer: NativeChild[];
+		if (fullscreen >= 0) {
+			main = screenPage?.main ?? [overlays[fullscreen]!.component];
+			dock = screenPage?.dock ?? [];
+			layer = overlays.slice(fullscreen + 1).map(overlay => this.#overlayNode(overlay));
+		} else {
+			const described = this.#host.describeSurface(this.#cx);
+			main = described.main;
+			dock = described.dock;
+			layer = overlays.map(overlay => this.#overlayNode(overlay));
+		}
 		const ops = surface.reconciler.reconcile({ main, dock, layer }, this.#cx);
 		const focused = this.#host.focused();
 		const focus = focused ? surface.reconciler.focusTarget(focused) : null;

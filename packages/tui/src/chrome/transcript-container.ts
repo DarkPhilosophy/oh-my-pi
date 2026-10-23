@@ -60,7 +60,7 @@ export interface AppendOnlyTranscriptBlock {
 }
 
 interface FinalizableBlock {
-	isTranscriptBlockFinalized?(): boolean;
+	isTranscriptBlockFinalized?(native?: boolean): boolean;
 	readonly commitToHistoryOnFinalize?: boolean;
 	/** Immutable prefix in trimmed render rows, excluding mutable status/output. */
 	getTranscriptReadyRowCount?(width: number): number;
@@ -165,9 +165,9 @@ const RETIREMENT_BUDGET_MS = 8;
 const EMPTY_ROWS: readonly string[] = [];
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
 
-function isFinalized(component: Component): boolean {
+function isFinalized(component: Component, native = false): boolean {
 	const block = component as Component & FinalizableBlock;
-	return (block.isTranscriptBlockFinalized?.() ?? true) && block.isTranscriptBlockPending?.() !== true;
+	return (block.isTranscriptBlockFinalized?.(native) ?? true) && block.isTranscriptBlockPending?.() !== true;
 }
 
 function blockMode(component: Component): TranscriptBlockMode {
@@ -1108,7 +1108,7 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		const children = this.children;
 		for (const child of children) {
-			if (!isNativeSettled(child) && isFinalized(child)) settleNative(child);
+			if (!isNativeSettled(child) && isFinalized(child, true)) settleNative(child);
 		}
 		const previous = this.#nativeBlocks;
 		if (previous.length === children.length && previous.every((child, index) => child === children[index])) {

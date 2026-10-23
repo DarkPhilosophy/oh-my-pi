@@ -56,6 +56,34 @@ describe("native backend", () => {
 		expect(h.errors).toEqual([]);
 	});
 
+	it("does not describe a blocked inline surface and describes the latest state when credit returns", async () => {
+		const stream = new Probe(md("first", { stream: true }));
+		let descriptions = 0;
+		harness = await TspHarness.start(tui => {
+			tui.setFrameProvider({
+				renderFrame: () => ({ viewport: [] }),
+				acknowledgeHistory: () => {},
+				describeSurface: () => {
+					descriptions++;
+					return { main: [stream], dock: [] };
+				},
+			});
+		}, { credits: 1, autoAck: false });
+		const h = harness;
+		const before = descriptions;
+		for (const text of ["second", "latest"]) {
+			stream.current = md(text, { stream: true });
+			await h.render();
+		}
+		expect(h.frames.length).toBe(1);
+		expect(descriptions).toBe(before);
+		h.terminal.ackAll();
+		h.flush();
+		expect(descriptions).toBe(before + 1);
+		expect(h.byId(nativeComponentId(stream))?.p).toEqual({ text: "latest", stream: true });
+		expect(h.errors).toEqual([]);
+	});
+
 	it("renders a credit-blocked change once the oldest frame stalls, without any ack", async () => {
 		const stream = new Probe(md("one", { stream: true }));
 		harness = await TspHarness.start(tui => tui.addChild(stream), { credits: 2, autoAck: false });

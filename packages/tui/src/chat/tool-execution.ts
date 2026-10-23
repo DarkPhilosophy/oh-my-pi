@@ -1036,7 +1036,7 @@ export class ToolExecutionComponent extends Container {
 	 * results, including detached background tasks, remain active and mutable
 	 * until they settle. Hidden blocks render no rows and cannot gate history.
 	 */
-	isTranscriptBlockFinalized(): boolean {
+	isTranscriptBlockFinalized(native = false): boolean {
 		if (!this.#toolActivityVisible) return true;
 		if (this.#sealed) return true;
 		if (this.#result === undefined) {
@@ -1050,9 +1050,10 @@ export class ToolExecutionComponent extends Container {
 				(!isEditLikeToolName(this.#toolName) || this.#previewStreamSettled)
 			);
 		}
-		// A parked background task's call already returned; job frames that land
-		// while it is still live keep updating it, but it must not gate history.
-		if (this.#parkedBackground) return true;
+		// Terminal history may retire a parked call, but the native document
+		// still receives its job frames. Keep its diff state until the final
+		// result so streaming updates do not remount the output subtree.
+		if (this.#parkedBackground) return !native || !this.#isPartial;
 		return !this.#isPartial;
 	}
 
