@@ -1937,10 +1937,14 @@ export class TurnRecovery {
 		return current && current !== pinned ? [pinned, current] : [pinned];
 	}
 
-	/** Live session role for chain lookup, provided its assignment still matches the active model. */
+	/**
+	 * Live session role for chain lookup, provided its assignment still matches the active model.
+	 * Temporary switches record the `fallback` role; skipping them keeps the assigned role (e.g. a
+	 * subagent's own, possibly empty, chain) once the session is back on that role's model.
+	 */
 	#liveRetryRoleHint(currentModel: Model | null | undefined): string | undefined {
-		const role = this.#host.sessionManager?.getLastModelChangeRole?.();
-		if (!role || role === EPHEMERAL_MODEL_CHANGE_ROLE || !currentModel) return undefined;
+		const role = this.#host.sessionManager?.getLastModelChangeRole?.({ skipEphemeral: true });
+		if (!role || !currentModel) return undefined;
 		const configured = this.#host.settings.getModelRole(role);
 		if (!configured) return undefined;
 		const resolved = resolveModelOverride([configured], this.#host.modelRegistry, this.#host.settings);

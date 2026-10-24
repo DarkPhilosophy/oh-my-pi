@@ -613,7 +613,7 @@ export interface CreateAgentSessionOptions {
 	modelPatternAuthFallback?: string;
 	/** Role name used to install retry fallbacks after deferred subagent patterns resolve. */
 	modelPatternFallbackRole?: string;
-	/** Validated default retry chain to install when a deferred singleton pattern resolves. */
+	/** Validated inherited retry chain for a deferred singleton pattern; empty explicitly disables fallbacks. */
 	modelPatternDefaultFallbackChain?: string[];
 	/** Thinking selector. Default: from settings, else unset */
 	thinkingLevel?: ConfiguredThinkingLevel;
@@ -2076,6 +2076,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
 	let initialRetryFallback: InitialRetryFallbackState | undefined;
+	let modelPatternRetryFallbackRole: string | undefined;
 	// Identify session model strings to restore in fallback order. We do an
 	// initial pass here so model-dependent setup (thinking-level resolution,
 	// host preconnect) can use the restored model; extension-registered
@@ -3251,11 +3252,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							fallbackSelectors.push(selector);
 						}
 					}
-					if (fallbackSelectors.length > 0) {
+					if (fallbackSelectors.length > 0 || options.modelPatternDefaultFallbackChain?.length === 0) {
 						installRetryFallbackRole(settings, options.modelPatternFallbackRole, {
 							primary: primarySelector,
 							chain: fallbackSelectors,
 						});
+						modelPatternRetryFallbackRole = options.modelPatternFallbackRole;
 					}
 				}
 				model = selectedModel;
@@ -4700,7 +4702,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		} else {
 			// Save initial model, thinking level, and service tier for new sessions so they can be restored on resume.
 			if (model) {
-				sessionManager.appendModelChange(`${model.provider}/${model.id}`);
+				const initialModel = `${model.provider}/${model.id}`;
+				sessionManager.appendModelChange(initialModel);
+				// A deferred pattern's own retry role follows the explicit default entry, as
+				// the task executor records it, so chain lookup prefers the pattern's chain
+				// while resume still restores this model as the default.
+				if (modelPatternRetryFallbackRole) {
+					sessionManager.appendModelChange(initialModel, modelPatternRetryFallbackRole);
+				}
 			}
 			if (!autoThinking) {
 				// Do not write the `auto` selector before the first turn resolves; auto
