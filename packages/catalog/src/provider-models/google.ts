@@ -35,6 +35,8 @@ export interface GoogleAntigravityAccount {
 	accountKey?: string;
 	/** Endpoint recorded on this account's credential; falls back to the manager's `endpoint`. */
 	apiEndpoint?: string;
+	/** Cloud Code Assist project of the credential, sent with roster discovery like the native client. */
+	projectId?: string;
 }
 
 export interface GoogleAntigravityModelManagerConfig {
@@ -115,6 +117,7 @@ export function googleAntigravityModelManagerOptions(
 								result: await fetchAntigravityDiscoveryModels({
 									token: account.accessToken,
 									endpoint: account.apiEndpoint ?? config?.endpoint,
+									projectId: account.projectId,
 									fetcher,
 								}),
 							})),
@@ -142,7 +145,15 @@ export function googleAntigravityModelManagerOptions(
 						return unionAccountCatalogs(
 							catalogs.map(({ accountKey, models }) =>
 								tagAccess && accountKey !== undefined
-									? models.map(model => ({ ...model, accountAccess: { [accountKey]: {} } }))
+									? models.map(model => ({
+											...model,
+											accountAccess: {
+												[accountKey]:
+													model.antigravityWireProfiles === undefined
+														? {}
+														: { antigravityWireProfiles: model.antigravityWireProfiles },
+											},
+										}))
 									: models,
 							),
 						);
@@ -169,6 +180,7 @@ export function googleGeminiCliModelManagerOptions(
 						}
 						const result = await fetchAntigravityDiscoveryModels({
 							token,
+							projectId: config?.projectId,
 							fetcher,
 							collapseTable,
 						});

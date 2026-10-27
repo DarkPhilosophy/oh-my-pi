@@ -110,6 +110,17 @@ import {
 	SPECULATIVE_STREAM_SESSION,
 } from "./types";
 import { yieldIfDue } from "./utils/yield";
+
+async function waitForProcessPause(config: AgentLoopConfig, signal?: AbortSignal): Promise<void> {
+	try {
+		while (agentPauseGate.paused && !signal?.aborted) {
+			config.onPauseChange?.(true);
+			await agentPauseGate.waitUntilResumed(signal);
+		}
+	} finally {
+		config.onPauseChange?.(false);
+	}
+}
 /** Stop-details marker for a provider error after assistant content/tool args already streamed. */
 export const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_after_content";
 
@@ -1125,6 +1136,9 @@ interface StepCounter {
 	count: number;
 }
 
+/** Largest setTimeout delay before 32-bit overflow (Node/Bun fire in ~1 ms past this). */
+const MAX_TIMER_MS = 2_147_483_647;
+
 function isDeadlineExceeded(deadline: number | undefined): boolean {
 	return deadline !== undefined && Date.now() >= deadline;
 }
@@ -1211,16 +1225,17 @@ async function runLoopBody(
 ): Promise<void> {
 	let deadlineTimer: Timer | undefined;
 	if (config.deadline !== undefined) {
+		const deadline = config.deadline;
 		const deadlineAbortController = new AbortController();
 		const deadlineReason = new DOMException("Deadline exceeded", "TimeoutError");
-		const delay = config.deadline - Date.now();
-		if (delay <= 0) {
-			deadlineAbortController.abort(deadlineReason);
-		} else {
-			deadlineTimer = setTimeout(() => {
-				deadlineAbortController.abort(deadlineReason);
-			}, delay);
-		}
+		// setTimeout overflows past 2^31-1 ms and fires in ~1 ms, so a valid `--max-time 600h`
+		// aborted the first turn at once: wait in bounded slices and recheck the deadline.
+		const armDeadline = (): void => {
+			const delay = deadline - Date.now();
+			if (delay <= 0) deadlineAbortController.abort(deadlineReason);
+			else deadlineTimer = setTimeout(armDeadline, Math.min(delay, MAX_TIMER_MS));
+		};
+		armDeadline();
 		signal = signal ? AbortSignal.any([signal, deadlineAbortController.signal]) : deadlineAbortController.signal;
 	}
 
@@ -1327,7 +1342,7 @@ async function runLoopBody(
 				// Park at the turn boundary while the process-wide pause gate is
 				// engaged (host /pause). An external abort releases the park so a
 				// cancelled run still unwinds while everything else stays frozen.
-				if (agentPauseGate.paused) await agentPauseGate.waitUntilResumed(signal);
+				if (agentPauseGate.paused) await waitForProcessPause(config, signal);
 
 				// Build the provider-bound context before opening the turn. Queue
 				// messages are added now but their events remain deferred until
@@ -1439,6 +1454,7 @@ async function runLoopBody(
 				let recovered: HarmonyRecoveredToolCall | undefined;
 				let message: AssistantMessage;
 				try {
+					if (agentPauseGate.paused) await waitForProcessPause(config, signal);
 					message = await streamAssistantResponse(
 						currentContext,
 						config,
@@ -1789,7 +1805,7 @@ async function runLoopBody(
 						: [...live, ...((await config.getSteeringMessages?.(signal)) || [])];
 					if (hasMoreToolCalls) {
 						// Mid-work: fold any non-interrupting asides into the next turn alongside steering.
-						const asides = signal?.aborted ? [] : resolveAsides(await config.getAsideMessages?.());
+						const asides = signal?.aborted ? [] : resolveAsides(await config.getAsideMessages?.("work"));
 						pendingMessages = asides.length > 0 ? [...steering, ...asides] : steering;
 					} else {
 						// Stop boundary: only steering (live user input) forces another turn here. Leave
@@ -1817,7 +1833,7 @@ async function runLoopBody(
 			// above and this yield point (e.g. queued while onBeforeYield ran). Without
 			// this poll it would strand in the queue until the next manual prompt.
 			const lateSteering = signal?.aborted ? [] : (await config.getSteeringMessages?.(signal)) || [];
-			const asideMessages = signal?.aborted ? [] : resolveAsides(await config.getAsideMessages?.());
+			const asideMessages = signal?.aborted ? [] : resolveAsides(await config.getAsideMessages?.("stop"));
 			const followUpMessages = signal?.aborted ? [] : (await config.getFollowUpMessages?.(signal)) || [];
 			if (lateSteering.length > 0 || asideMessages.length > 0 || followUpMessages.length > 0) {
 				// Set as pending so the inner loop processes them before stopping.
@@ -3367,6 +3383,18 @@ async function executeToolCalls(
 		};
 	});
 
+	// Derive batch readiness from existing dispatch records, not extra participants.
+	const refreshPauseState = (): void => {
+		config.onPauseChange?.(
+			agentPauseGate.paused &&
+				!signal?.aborted &&
+				!speculationCoordinator?.isRunning &&
+				records.some(record => !record.started && !record.skipped && !record.toolResultMessage) &&
+				!records.some(record => record.started && !record.toolResultMessage),
+		);
+	};
+	if (speculationCoordinator) speculationCoordinator.onIdle = refreshPauseState;
+
 	const checkAsideInterrupts = async (): Promise<void> => {
 		// Asides only fire once: an interrupt already recorded on interruptState
 		// must not re-abort, and (unlike steering) never re-consumes a queue.
@@ -3517,7 +3545,11 @@ async function executeToolCalls(
 		// Park before starting this tool while the process-wide pause gate is
 		// engaged. Tools already executing are unaffected (pausing never aborts);
 		// a batch interrupted mid-pause unwinds via the signal checks below.
-		if (agentPauseGate.paused) await agentPauseGate.waitUntilResumed(record.signal);
+		while (agentPauseGate.paused && !record.signal.aborted) {
+			refreshPauseState();
+			await agentPauseGate.waitUntilResumed(record.signal);
+		}
+		config.onPauseChange?.(false);
 
 		const { toolCall, tool } = record;
 		// Validation (and the beforeToolCall hook) ran in the prepare phase; a
@@ -3851,7 +3883,13 @@ async function executeToolCalls(
 			concurrency = concurrencyMode ?? "shared";
 		}
 		const start = concurrency === "exclusive" ? Promise.all([lastExclusive, ...sharedTasks]) : lastExclusive;
-		const task = start.then(() => runTool(record, index));
+		const task = start.then(async () => {
+			try {
+				await runTool(record, index);
+			} finally {
+				refreshPauseState();
+			}
+		});
 		tasks.push(task);
 		if (concurrency === "exclusive") {
 			lastExclusive = task;
@@ -3863,6 +3901,8 @@ async function executeToolCalls(
 	try {
 		await Promise.allSettled(tasks);
 	} finally {
+		if (speculationCoordinator) speculationCoordinator.onIdle = undefined;
+		config.onPauseChange?.(false);
 		steeringWatchAbortController.abort();
 		await steeringWatchPromise?.catch(() => undefined);
 		clearInterval(steeringWatchTimer);

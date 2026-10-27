@@ -42,7 +42,7 @@ export const cfgPowerSleepPrevention = register({
 		group: "Power",
 		label: "Sleep Prevention",
 		description:
-			"Prevent the system sleeping during active sessions. Each level is cumulative — it adds the flags of all lower levels.",
+			"Prevent the system sleeping while the agent is running a turn; an idle session, including one waiting on background jobs, does not hold it. Each level is cumulative — it adds the flags of all lower levels.",
 		options: [
 			{
 				value: "off",
@@ -52,7 +52,7 @@ export const cfgPowerSleepPrevention = register({
 			{
 				value: "idle",
 				label: "Prevent Idle Sleep",
-				description: "Keep the system awake while a session is open (macOS `caffeinate -i`)",
+				description: "Keep the system awake while the agent is running a turn (macOS `caffeinate -i`)",
 			},
 			{
 				value: "display",
@@ -1515,4 +1515,28 @@ export const cfgThinkingBudgets = combine({
 	high: cfgThinkingBudgetsHigh,
 	xhigh: cfgThinkingBudgetsXhigh,
 	max: cfgThinkingBudgetsMax,
+});
+
+/** Rejects a cost threshold that is not a positive USD amount. */
+function validateCostThreshold(id: string): (raw: unknown) => void {
+	return raw => {
+		if (raw === undefined || raw === null || (typeof raw === "number" && Number.isFinite(raw) && raw > 0)) return;
+		throw new Error(`Invalid ${id}: expected a positive USD amount, got ${Bun.inspect(raw)}.`);
+	};
+}
+
+/** Session-tree spend (USD) at which omp warns once; `--warn-cost` overrides it for one run. */
+export const cfgSessionWarnCost = register({
+	id: "session.warnCost",
+	type: "number",
+	default: undefined,
+	validate: validateCostThreshold("session.warnCost"),
+});
+
+/** Session-tree spend (USD) at which omp stops sending model requests; `--max-cost` overrides it for one run. */
+export const cfgSessionMaxCost = register({
+	id: "session.maxCost",
+	type: "number",
+	default: undefined,
+	validate: validateCostThreshold("session.maxCost"),
 });

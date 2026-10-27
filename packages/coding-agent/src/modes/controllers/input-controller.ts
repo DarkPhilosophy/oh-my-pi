@@ -40,7 +40,9 @@ import { createModelMentionSource } from "@oh-my-pi/pi-tui/prompt/model-mention-
 import { createModelBrowserSource } from "../model-browser-source";
 import { parseQueueShorthand, splitQueuedMessages } from "@oh-my-pi/pi-tui/prompt/queue-input";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
+import { parseFileSlashInvocation, renderFileSlashCommand } from "../../extensibility/slash-commands";
 import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
+import { openLocalFileInEditor } from "../local-file-editor";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { AgentRegistry } from "../../registry/agent-registry";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
@@ -190,6 +192,19 @@ const FOCUSED_VIEW_COMMANDS: Record<string, (args: string) => boolean> = {
 const FOCUSED_VIEW_COMMAND_LIST = Object.keys(FOCUSED_VIEW_COMMANDS)
 	.map(name => `/${name}`)
 	.join(", ");
+
+/** Commands whose handler owns the submitted draft, images included: Enter takes it out of the editor first. */
+const DETACHED_DRAFT_COMMANDS = new Set([
+	"plan",
+	"vibe",
+	"goal",
+	"guided-goal",
+	"tan",
+	"btw",
+	"omfg",
+	"handoff",
+	"cleanse",
+]);
 
 function looksLikePastedShellPrompt(code: string): boolean {
 	const firstLine = code.split("\n", 1)[0]?.trimStart() ?? "";
@@ -408,6 +423,19 @@ export class InputController {
 					void this.openExternalEditor();
 					return { consume: true };
 				}
+				if (this.ctx.keybindings.matches(data, "app.local.open")) {
+					if (this.ctx.ui.hasOverlay()) return undefined;
+					const focused = this.ctx.ui.getFocused();
+					if (
+						focused instanceof HookEditorComponent ||
+						focused === this.ctx.hookSelector ||
+						focused === this.ctx.hookInput
+					) {
+						return undefined;
+					}
+					void this.openLocalFilePicker();
+					return { consume: true };
+				}
 				if (this.ctx.keybindings.matches(data, "app.tools.toggleVisibility")) {
 					if (this.ctx.ui.hasOverlay()) return undefined;
 					const focused = this.ctx.ui.getFocused();
@@ -573,10 +601,13 @@ export class InputController {
 				}
 				return;
 			}
-			if (this.ctx.loadingAnimation) {
-				if (this.ctx.cancelPendingSubmission()) {
-					return;
-				}
+			if (this.ctx.loadingAnimation && this.ctx.cancelPendingSubmission()) {
+				return;
+			}
+			// The turn is over and only background jobs can resume it; its row
+			// stays mounted, so this is checked before the loader's abort.
+			const awaitingAsyncWork = this.ctx.eventController.isAwaitingAsyncWork();
+			if (this.ctx.loadingAnimation && !awaitingAsyncWork) {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			} else if (this.ctx.session.isBashRunning) {
 				this.ctx.session.abortBash();
@@ -590,6 +621,10 @@ export class InputController {
 				this.ctx.editor.setText("");
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
+			} else if (awaitingAsyncWork) {
+				// End the wait. The jobs keep running; their results land in context
+				// for the next prompt instead of starting a turn.
+				void this.ctx.eventController.stopAwaitingAsyncWork();
 			} else if (this.ctx.session.isStreaming) {
 				this.#abortStreamingTurn();
 			} else if (this.ctx.editor.getText().trim()) {
@@ -937,17 +972,18 @@ export class InputController {
 		return compacted.text.trim();
 	}
 
-	#dropSubmittedPending(images: ImageContent[] | undefined, links: (string | undefined)[] | undefined): void {
+	#dropSubmittedPending(images: ImageContent[] | undefined): void {
 		if (!images?.length) return;
-		const pending = this.ctx.editor.pendingImages;
+		const editor = this.ctx.editor;
 		// Drop the snapshot only while it is still the live prefix: attachments
-		// added while the handler was pending stay in place.
-		if (!images.every((image, index) => pending[index] === image)) return;
-		pending.splice(0, images.length);
-		const linkCount = Math.min(links?.length ?? 0, this.ctx.editor.pendingImageLinks.length);
-		this.ctx.editor.pendingImageLinks.splice(0, linkCount);
-		this.ctx.editor.imageLinks =
-			this.ctx.editor.pendingImageLinks.length > 0 ? this.ctx.editor.pendingImageLinks : undefined;
+		// added while the handler was pending stay in place, renumbered from #1.
+		if (!images.every((image, index) => editor.pendingImages[index] === image)) return;
+		const newerDraft = editor.getExpandedText();
+		editor.pendingImages.splice(0, images.length);
+		editor.pendingImageLinks.splice(0, images.length);
+		editor.imageLinks = editor.pendingImageLinks.length > 0 ? editor.pendingImageLinks : undefined;
+		const renumbered = shiftImageMarkers(newerDraft, -images.length);
+		if (renumbered !== newerDraft) editor.setCollapsedText(renumbered);
 	}
 
 	async #runInputHandlers(
@@ -969,6 +1005,9 @@ export class InputController {
 	setupEditorSubmitHandler(): void {
 		this.ctx.editor.onSubmit = async (text: string) => {
 			const submittedText = text;
+			// The Editor resets before calling onSubmit, so this is normally empty;
+			// different editor text after an await below is a newer draft.
+			const draftText = this.ctx.editor.getText();
 			const armed = this.#armedBareCommand;
 			this.#armedBareCommand = undefined;
 			const armedBareCommand =
@@ -1036,28 +1075,15 @@ export class InputController {
 					// before this callback ran, so anything in it now is a newer draft;
 					// only the submitted attachments are dropped, and only while they
 					// are still the live prefix.
-					this.#dropSubmittedPending(inputImages, inputImageLinks);
+					this.#dropSubmittedPending(inputImages);
 					return;
 				}
 				({ text, images: inputImages, imageLinks: inputImageLinks } = input);
 				hasInputImages = (inputImages?.length ?? 0) > 0;
 			}
 			const submittedMode = parseSlashCommand(text)?.name;
-			const draftDetached =
-				submittedMode === "plan" ||
-				submittedMode === "vibe" ||
-				submittedMode === "goal" ||
-				submittedMode === "guided-goal";
-			if (
-				draftDetached &&
-				submittedImages?.length &&
-				submittedImages.every((image, index) => this.ctx.editor.pendingImages[index] === image)
-			) {
-				this.ctx.editor.pendingImages.splice(0, submittedImages.length);
-				this.ctx.editor.pendingImageLinks.splice(0, submittedImages.length);
-				this.ctx.editor.imageLinks =
-					this.ctx.editor.pendingImageLinks.length > 0 ? this.ctx.editor.pendingImageLinks : undefined;
-			}
+			const draftDetached = submittedMode !== undefined && DETACHED_DRAFT_COMMANDS.has(submittedMode);
+			if (draftDetached) this.#dropSubmittedPending(submittedImages);
 
 			if (!text && !hasInputImages) return;
 
@@ -1139,6 +1165,18 @@ export class InputController {
 				// No local render: the prompt comes back from the host as a
 				// collab-prompt event/entry and renders with the author badge.
 				this.ctx.collabGuest.sendPrompt(text, images);
+				return;
+			}
+
+			// `side: true` file commands answer as a /btw side question: off the
+			// transcript and runnable mid-turn, so they never steer the running work.
+			// The side question carries text only, so the submitted attachments drop.
+			if (
+				await this.#runSideFileCommand(text, {
+					detach: () => this.#detachSideSubmission(draftText, submittedImages),
+					restore: () => this.#restoreResetSubmission(submittedText),
+				})
+			) {
 				return;
 			}
 
@@ -1431,6 +1469,60 @@ export class InputController {
 		);
 	}
 
+	/**
+	 * Answer `text` as a /btw side question when it invokes a `side: true` file command.
+	 * Extension, custom and skill commands keep precedence over a file command of the same name.
+	 * `draft.detach` releases the submission's remaining editor state before the side question
+	 * runs; `draft.restore` hands the submission back when its template fails to render.
+	 */
+	async #runSideFileCommand(text: string, draft: { detach?: () => void; restore: () => void }): Promise<boolean> {
+		const invocation = parseFileSlashInvocation(text);
+		if (!invocation || !this.ctx.fileSlashCommands.has(invocation.name)) return false;
+		const session = this.ctx.session;
+		if (session.extensionRunner?.getCommand(invocation.name) !== undefined) return false;
+		if (session.customCommands.some(loaded => loaded.command.name === invocation.name)) return false;
+		if (isKnownSkillCommand(this.ctx, text)) return false;
+		const command = session.slashCommands.find(cmd => cmd.name === invocation.name);
+		if (!command?.side) return false;
+		let question: string;
+		try {
+			question = renderFileSlashCommand(command, invocation.args);
+		} catch (error) {
+			draft.restore();
+			this.ctx.showError(error instanceof Error ? error.message : String(error));
+			return true;
+		}
+		this.ctx.editor.addToHistory(text);
+		draft.detach?.();
+		const args = invocation.args.trim();
+		await this.ctx.handleBtwCommand(question, undefined, args ? `/${command.name} ${args}` : `/${command.name}`);
+		return true;
+	}
+
+	/** Put back a submission the editor reset on Enter, unless a newer draft took its place. */
+	#restoreResetSubmission(submittedText: string): void {
+		if (!this.ctx.editor.getText()) this.ctx.editor.setText(submittedText);
+	}
+
+	/**
+	 * Detach a side command's submission without erasing input that arrived while it
+	 * awaited dispatch: the whole draft clears only while the editor still holds
+	 * `draftText`; otherwise only the submitted attachments drop, and only while they
+	 * are still the live prefix.
+	 */
+	#detachSideSubmission(draftText: string, images: ImageContent[] | undefined): void {
+		if (this.ctx.editor.getText() === draftText) this.ctx.editor.clearDraft();
+		else this.#dropSubmittedPending(images);
+	}
+
+	/** Whether `text` dispatches to a builtin, matching executeBuiltinSlashCommand(). */
+	#matchesBuiltinSlashCommand(text: string): boolean {
+		const parsed = parseSlashCommand(text);
+		if (!parsed) return false;
+		const builtin = lookupBuiltinSlashCommand(parsed.name);
+		return builtin !== undefined && (builtin.allowArgs === true || !parsed.args);
+	}
+
 	/** Whether `text` invokes a registered extension command, which runs locally instead of prompting the model. */
 	#isLocalExtensionCommand(text: string): boolean {
 		const extensionCommandSpace = text.indexOf(" ");
@@ -1445,6 +1537,7 @@ export class InputController {
 	/** Submit editor text to the focused subagent session (chat and continue shortcuts only). */
 	async #submitToFocusedSession(text: string, streamingBehavior: "steer" | "followUp"): Promise<void> {
 		const target = this.ctx.viewSession;
+		const draftText = this.ctx.editor.getText();
 		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 		const imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
@@ -1466,11 +1559,24 @@ export class InputController {
 				// without a way to cancel them, /usage reports account-wide limits, and
 				// /model, /switch, /effort change the focused agent's model and thinking.
 				this.#recordSlashCommandUsage(text);
-				if ((await executeBuiltinSlashCommand(text, { ctx: this.ctx })) === true) {
+				const input = images ? { images, imageLinks } : undefined;
+				if ((await executeBuiltinSlashCommand(text, { ctx: this.ctx, input })) === true) {
 					if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 					return;
 				}
 			}
+		}
+		// Builtins keep precedence over side file commands, matching the main
+		// dispatch; non-viewer builtins fall through to the "return first" gate.
+		if (
+			text &&
+			!this.#matchesBuiltinSlashCommand(text) &&
+			(await this.#runSideFileCommand(text, {
+				detach: () => this.#detachSideSubmission(draftText, images),
+				restore: () => this.#restoreResetSubmission(text),
+			}))
+		) {
+			return;
 		}
 		if (text && (text.startsWith("/") || text.startsWith("!") || parsePythonCommandInput(text))) {
 			this.ctx.showStatus(
@@ -1918,12 +2024,25 @@ export class InputController {
 			}
 		}
 
+		// Ctrl+Enter detached the draft before the first await, so a side command
+		// has no editor state left to release; a render failure hands it back.
+		const restoreSideDraft = { restore: () => restoreDetachedDraft(this.ctx.editor, text, images, imageLinks) };
+
 		// Compaction first: while compacting, free text gets queued via
 		// `queueCompactionMessage`, and `/skill:*` rides the same queue so a
 		// skill typed during compaction is not lost or short-circuited through
 		// `promptCustomMessage`. The compaction-resume path re-parses the
 		// queued text into a user-attributed skill invocation before delivery.
+		// Side commands answer now instead: the queue would deliver them as a
+		// main-turn prompt. Builtins keep precedence, as in the dispatch below.
 		if (this.ctx.session.isCompacting) {
+			if (
+				text &&
+				!this.#matchesBuiltinSlashCommand(text) &&
+				(await this.#runSideFileCommand(text, restoreSideDraft))
+			) {
+				return;
+			}
 			this.ctx.queueCompactionMessage(text, "followUp", images, { preserveDraft: true });
 			return;
 		}
@@ -1949,6 +2068,8 @@ export class InputController {
 				return;
 			}
 		}
+
+		if (text && (await this.#runSideFileCommand(text, restoreSideDraft))) return;
 
 		// Skill commands invoke through the custom-message path regardless of
 		// which keybinding submitted them. Enter routes them as `steer`;
@@ -2839,6 +2960,11 @@ export class InputController {
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender();
 		}
+	}
+
+	/** Alt+G: the `/local` picker. `openLocalFileInEditor` refuses collab guests itself. */
+	openLocalFilePicker(): Promise<void> {
+		return openLocalFileInEditor(this.ctx);
 	}
 
 	registerExtensionShortcuts(): void {

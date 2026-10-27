@@ -227,6 +227,10 @@ void doWork(loader.signal).then(result => {
 return loader;
 ```
 
+## Pause status
+
+The `/pause` screen shows the same local turn-and-job state in ANSI and TSP: draining turns and running jobs count, while parked or finished turns do not. When both counts reach zero, it hides the rows and signals readiness. These counts cover OMP-tracked work only, not device-wide idleness.
+
 ## Realistic custom component example (extension command)
 
 ```ts

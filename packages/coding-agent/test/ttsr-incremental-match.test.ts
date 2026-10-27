@@ -84,6 +84,65 @@ describe("TTSR incremental stream matching", () => {
 			spy.mockRestore();
 		}
 	});
+
+	describe("one long unterminated line (raw tool-argument JSON escapes its newlines)", () => {
+		const TOOL: TtsrMatchContext = { source: "tool", toolName: "bash", streamKey: "toolcall:long-line" };
+		const DELTA = 16;
+
+		function toolRule(name: string, condition: string): Rule {
+			return { ...rule(name, condition), scope: ["tool"] };
+		}
+
+		function stream(manager: TtsrManager, wire: string): Rule[][] {
+			const results: Rule[][] = [];
+			for (let offset = 0; offset < wire.length; offset += DELTA) {
+				results.push(manager.checkDelta(wire.slice(offset, offset + DELTA), TOOL));
+			}
+			return results;
+		}
+
+		it("reads the line a bounded number of times instead of once per delta", () => {
+			const manager = new TtsrManager({ enabled: true });
+			manager.addRule(toolRule("force-push", "git\\s+push\\s+--force"));
+			const wire = JSON.stringify({ command: "echo ok\n".repeat(8_192) });
+			const test = RegExp.prototype.test;
+			let scanned = 0;
+			const spy = vi.spyOn(RegExp.prototype, "test").mockImplementation(function (this: RegExp, input: string) {
+				if (this.source.includes("push")) scanned += input.length;
+				return test.call(this, input);
+			});
+			try {
+				for (const matches of stream(manager, wire)) expect(matches).toEqual([]);
+				expect(manager.checkDelta("", TOOL, { final: true })).toEqual([]);
+				// Rescanning the whole line on every 16-character delta reads it ~2000 times over.
+				expect(scanned).toBeGreaterThanOrEqual(wire.length);
+				expect(scanned).toBeLessThan(16 * wire.length);
+			} finally {
+				spy.mockRestore();
+			}
+		});
+
+		it("still reports a match deep in the line mid-stream, and exactly on the final check", () => {
+			const filler = "echo ok\n".repeat(4_096);
+			const wire = JSON.stringify({ command: `${filler}git push --force origin main\n${filler}` });
+			const matchEnd = wire.indexOf("--force") + "--force".length;
+
+			const manager = new TtsrManager({ enabled: true });
+			manager.addRule(toolRule("force-push", "git\\s+push\\s+--force"));
+			const results = stream(manager, wire);
+			const firstHit = results.findIndex(matches => names(matches).includes("force-push"));
+			expect(firstHit).toBeGreaterThanOrEqual(0);
+			// Deferred scans may report late, but within a quarter of the line's growth, never before the text exists.
+			expect(firstHit * DELTA + DELTA).toBeGreaterThanOrEqual(matchEnd);
+			expect(firstHit * DELTA).toBeLessThanOrEqual(matchEnd * 1.25 + DELTA);
+
+			const finalOnly = new TtsrManager({ enabled: true });
+			finalOnly.addRule(toolRule("force-push", "git\\s+push\\s+--force"));
+			const cut = matchEnd + 64;
+			stream(finalOnly, wire.slice(0, cut));
+			expect(names(finalOnly.checkDelta("", TOOL, { final: true }))).toEqual(["force-push"]);
+		});
+	});
 });
 
 describe("TTSR tool inspection cache", () => {

@@ -70,22 +70,11 @@ function emptyStop(): MockResponse {
 	};
 }
 
-// A zero-block `stop` for which the provider still billed output tokens: content
-// was generated and dropped downstream (e.g. a filter/refusal flattened to
-// `finish_reason: "stop"` by a proxy), so the context/`/shake images` hint is wrong.
-function filteredEmptyStop(): MockResponse {
+function reportedOutputEmptyStop(reasoningTokens?: number): MockResponse {
 	return {
 		content: [],
 		stopReason: "stop",
-		usage: { output: 126, cacheRead: 100 },
-	};
-}
-
-function reasoningOnlyEmptyStop(): MockResponse {
-	return {
-		content: [],
-		stopReason: "stop",
-		usage: { output: 126, reasoningTokens: 126, cacheRead: 100 },
+		usage: { output: 126, cacheRead: 100, ...(reasoningTokens === undefined ? {} : { reasoningTokens }) },
 	};
 }
 
@@ -545,40 +534,46 @@ describe("AgentSession empty stop guard", () => {
 		expect(retryEndEvents[0]?.finalError).not.toContain("/shake images");
 	});
 
-	it("names billed output tokens instead of the context hint when a capped empty stop billed output", async () => {
-		const { session, mock } = await createHarness([
-			filteredEmptyStop(),
-			filteredEmptyStop(),
-			filteredEmptyStop(),
-			filteredEmptyStop(),
-		]);
-		const retryEndEvents: Array<Extract<AgentSessionEvent, { type: "auto_retry_end" }>> = [];
-		session.subscribe(event => {
-			if (event.type === "auto_retry_end") {
-				retryEndEvents.push(event);
+	it.each([
+		["unknown reasoning usage", undefined],
+		["partial reasoning usage", 42],
+		["reasoning-only usage", 126],
+	] as const)(
+		"reports capped empty-stop diagnostics without inventing a cause for %s",
+		async (_label, reasoningTokens) => {
+			const { session } = await createHarness(
+				Array.from({ length: 4 }, () => reportedOutputEmptyStop(reasoningTokens)),
+			);
+			const retryEndEvents: Array<Extract<AgentSessionEvent, { type: "auto_retry_end" }>> = [];
+			session.subscribe(event => {
+				if (event.type === "auto_retry_end") retryEndEvents.push(event);
+			});
+
+			await expectPromptCompletes(session.prompt("answer without tools"));
+			await session.waitForIdle();
+
+			expect(retryEndEvents).toEqual([expect.objectContaining({ success: false, attempt: 3 })]);
+			const diagnostic = retryEndEvents[0]?.finalError ?? "";
+			expect(diagnostic).toContain("126 output tokens billed");
+			expect(diagnostic).not.toContain("/shake images");
+			if (reasoningTokens === undefined) {
+				expect(diagnostic).toContain("the reasoning/output split is unknown");
+			} else {
+				expect(diagnostic).toContain(`${reasoningTokens} of them reasoning`);
 			}
-		});
-
-		await expectPromptCompletes(session.prompt("answer that gets filtered"));
-		await session.waitForIdle();
-
-		expect(mock.calls).toHaveLength(4);
-		expect(retryEndEvents).toHaveLength(1);
-		expect(retryEndEvents[0]?.success).toBe(false);
-		const finalError = retryEndEvents[0]?.finalError ?? "";
-		expect(finalError).toContain("126 output tokens billed");
-		expect(finalError).toContain("the reasoning/output split is unknown");
-		expect(finalError).not.toContain("/shake images");
-		// Billed non-reasoning output is positive: the drop hypothesis is allowed.
-		expect(finalError).toContain("content may have been generated and dropped");
-	});
+			if (reasoningTokens === 126) {
+				expect(diagnostic).not.toContain("content may have been generated and dropped");
+			}
+			expect(diagnostic).not.toMatch(/content filter/i);
+		},
+	);
 
 	it("reports the reasoning split for a capped zero-block stop billed only reasoning tokens", async () => {
 		const { session, mock } = await createHarness([
-			reasoningOnlyEmptyStop(),
-			reasoningOnlyEmptyStop(),
-			reasoningOnlyEmptyStop(),
-			reasoningOnlyEmptyStop(),
+			reportedOutputEmptyStop(126),
+			reportedOutputEmptyStop(126),
+			reportedOutputEmptyStop(126),
+			reportedOutputEmptyStop(126),
 		]);
 		const retryEndEvents: Array<Extract<AgentSessionEvent, { type: "auto_retry_end" }>> = [];
 		session.subscribe(event => {

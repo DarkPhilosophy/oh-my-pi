@@ -27,6 +27,7 @@ import {
 	AgentBusyError,
 	type AgentEvent,
 	type AgentMessage,
+	type AgentPreModelCallStop,
 	type AgentState,
 	type AgentTool,
 	type AgentToolCall,
@@ -91,6 +92,7 @@ import { resolveCatalogPolicy } from "@oh-my-pi/pi-catalog/compat/catalog-policy
 import { supportsOutputTokenLimit } from "@oh-my-pi/pi-catalog/compat/output-limits";
 import { requiresNativeTools, requiresToolFreeHistoryForToolOptOut } from "@oh-my-pi/pi-catalog/compat/tools";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
+import type { CatalogPolicyInputs } from "@oh-my-pi/pi-catalog/types";
 import { type EditStore, type PowerAssertion, type PowerAssertionOptions } from "@oh-my-pi/pi-natives";
 import {
 	$env,
@@ -165,7 +167,14 @@ import { createExtensionModelQuery } from "../extensibility/extensions/model-api
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
-import type { Skill, SkillWarning } from "../extensibility/skills";
+import {
+	type BuiltSkillPromptMessage,
+	loadSkillPromptBody,
+	renderSkillPromptMessage,
+	type Skill,
+	type SkillPromptInput,
+	type SkillWarning,
+} from "../extensibility/skills";
 import { expandSlashCommand, type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
@@ -357,6 +366,7 @@ import {
 	shouldEvaluateCodexAutoRedeem,
 	shouldPromptCodexAutoRedeem,
 } from "./codex-auto-reset";
+import { COST_GATE_NOTICE_SOURCE, type CostCapRefusal, CostGate } from "./cost-gate";
 import { recordCredentialPin, seedCredentialPins } from "./credential-pin";
 import { isDateCwdReminderControl } from "./date-cwd-reminder";
 import { EvalRunner, type EvalRunnerHost } from "./eval-runner";
@@ -868,6 +878,10 @@ export class AgentSession implements SettingsScope {
 	readonly settings: Settings;
 	/** Session-start policy, independent of the selected project memory backend. */
 	readonly memoryEnabled: boolean;
+	#costGate: CostGate;
+	/** False for a subagent, whose gate belongs to its session tree's root. */
+	readonly #ownsCostGate: boolean;
+	#costCapRefusal: CostCapRefusal | undefined;
 	/** Entries of tools mounted under `xd://`; empty when virtual devices are unmounted. */
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
@@ -1055,6 +1069,8 @@ export class AgentSession implements SettingsScope {
 	#ircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
+	/** Active {@link holdIrcWakes} holds. */
+	#ircWakeHolds = 0;
 	/** The observation whose monitor is attached; at most one at a time. */
 	#openTurnObservation: TurnObservation | undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
@@ -1079,6 +1095,7 @@ export class AgentSession implements SettingsScope {
 	#extensionRunner: ExtensionRunner | undefined = undefined;
 	#getEvalPreludes: (() => readonly EvalPreludeDefinition[]) | undefined;
 	#reconcileBrowserMcpFilter: AgentSessionConfig["reconcileBrowserMcpFilter"];
+	#setMcpServerInstructionsSource: AgentSessionConfig["setMcpServerInstructionsSource"];
 	#skillDescriptions: SkillDescriptionCatalog;
 	#promptSkillsSource: readonly Skill[] | undefined;
 	#promptSkills: readonly Skill[] = [];
@@ -1500,10 +1517,21 @@ export class AgentSession implements SettingsScope {
 	 *  it, so park the follow-up queue across the wake and restore it after. It stays queued post-wake
 	 *  because #canAutoContinueForFollowUp suppresses follow-up auto-resume while a user interrupt is
 	 *  in effect, even though the wake left a provider-valid tail. */
-	#wakeForIrc(records: AgentMessage[]): void {
+	#wakeForIrc(wakeRecords: AgentMessage[]): void {
 		if (this.#modeExitDrainSuppressionDepth > 0) {
-			this.#irc.queueAside(records);
+			this.#irc.queueAside(wakeRecords);
 			return;
+		}
+		// While a driven run holds wakes, its monitor would take this turn's answer
+		// as the run's result: park a non-parent message for a turn of its own.
+		let records = wakeRecords;
+		if (this.#ircWakeHolds > 0) {
+			const held = records.filter(record => this.#irc.isPeerMessage(record));
+			if (held.length > 0) {
+				this.#irc.queueDeferredWake(held);
+				records = records.filter(record => !this.#irc.isPeerMessage(record));
+				if (records.length === 0) return;
+			}
 		}
 		// Park only a *blocked* follow-up (one a user interrupt is intentionally holding); an
 		// already-resumable follow-up can ride the wake turn normally without reordering.
@@ -1828,6 +1856,8 @@ export class AgentSession implements SettingsScope {
 		);
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.#ownsCostGate = config.costGate === undefined;
+		this.#costGate = config.costGate ?? this.#createCostGate();
 		this.#skillDescriptions = config.skillDescriptions ?? new SkillDescriptionCatalog();
 		this.memoryEnabled = config.memoryEnabled ?? true;
 		this.#modelRegistry = config.modelRegistry;
@@ -2008,6 +2038,7 @@ export class AgentSession implements SettingsScope {
 		}
 		this.#getEvalPreludes = config.getEvalPreludes;
 		this.#reconcileBrowserMcpFilter = config.reconcileBrowserMcpFilter;
+		this.#setMcpServerInstructionsSource = config.setMcpServerInstructionsSource;
 		this.#customCommands = config.customCommands ?? [];
 		const recoveryHost: TurnRecoveryHost = {
 			agent: this.agent,
@@ -2183,11 +2214,22 @@ export class AgentSession implements SettingsScope {
 					this.#foldStrandedIrcAsidesIntoContext(messages);
 					return;
 				}
+				const observation =
+					this.#ircWakeTurnObserver && !this.#openTurnObservation
+						? this.#startTurnObservation(messages)
+						: undefined;
+				let turnError: unknown;
 				const inFlightEpoch = this.#beginInFlight();
 				try {
 					await this.agent.prompt(messages.length === 1 ? first : messages);
+				} catch (error) {
+					turnError = error;
+					throw error;
 				} finally {
 					this.#endInFlight(inFlightEpoch);
+					// The delivery receipt settles when injectIdle returns; waiting for
+					// owned deliveries here would wait on this very flush.
+					void this.#finishTurnObservation(observation, turnError);
 				}
 			},
 			scheduleIdleFlush: run => {
@@ -2237,8 +2279,13 @@ export class AgentSession implements SettingsScope {
 		// instead of sitting behind it. Deferred wakes are not peeked: no
 		// boundary injection would drain them. Foreground tools are unaffected.
 		this.agent.hasQueuedAsides = () => this.#irc.hasAsides();
-		this.agent.setAsideMessageProvider(() => {
-			const thunks: AsideMessage[] = this.#irc.drainPending().map(record => () => record);
+		this.agent.setAsideMessageProvider(boundary => {
+			// A subagent whose messages get turns of their own (its run holds them,
+			// or its wake observer answers them) never extends a finished turn with
+			// one: that turn's text is its result.
+			const keepPeerMessages =
+				boundary === "stop" && (this.#ircWakeHolds > 0 || this.#ircWakeTurnObserver !== undefined);
+			const thunks: AsideMessage[] = this.#irc.drainPending({ keepPeerMessages }).map(record => () => record);
 			thunks.push(...this.yieldQueue.drainLazy());
 			// Mid-run todo reconciliation — evaluated at injection time so a turn
 			// that flips a todo just before this poll suppresses the nudge.
@@ -2345,6 +2392,7 @@ export class AgentSession implements SettingsScope {
 			modelRegistry: this.#modelRegistry,
 			model: () => this.model,
 			sessionId: () => this.sessionId,
+			costGate: () => this.#costGate,
 			localProtocolOptions: () => this.#localProtocolOptions(),
 			transformContext: (messages, signal) => this.#transformContext(messages, signal),
 			convertToLlm: messages => this.#convertToLlm(messages),
@@ -2611,6 +2659,7 @@ export class AgentSession implements SettingsScope {
 			},
 			obfuscateTextForProvider: text => this.#obfuscateTextForProvider(text),
 			obfuscatePreparationForProvider: preparation => this.#obfuscatePreparationForProvider(preparation),
+			getPromptCacheKeyForModel: model => this.getPromptCacheKeyForModel(model),
 			closeCodexProviderSessionsForHistoryRewrite: () => this.#closeCodexProviderSessionsForHistoryRewrite(),
 			resetCodexProviderAfterCompaction: compaction => this.#resetCodexProviderAfterCompaction(compaction),
 			resetPlanReference: () => {
@@ -2650,6 +2699,21 @@ export class AgentSession implements SettingsScope {
 				this.#maintenance.renderArchiveForModel(context.messages),
 			),
 		);
+		// A request past the cap mid-run stops the run before it is sent: no turn opens, nothing is billed.
+		// The gate is registered only while a cap is set: any before-model-call gate also turns a user abort
+		// before the next request into a clean stop, which leaves no interrupted turn for `/retry`.
+		let removeCostCapGate: (() => void) | undefined;
+		const syncCostCapGate = () => {
+			if (this.#costGate.capped) {
+				removeCostCapGate ??= this.agent.addBeforeModelCall(() => this.#refuseOverCostCap());
+			} else if (removeCostCapGate) {
+				removeCostCapGate();
+				removeCostCapGate = undefined;
+			}
+		};
+		syncCostCapGate();
+		this.addDisposer(this.#costGate.onCapChange(syncCostCapGate));
+		this.addDisposer(() => removeCostCapGate?.());
 
 		const handoffHost: SessionHandoffHost = {
 			agent: this.agent,
@@ -3305,6 +3369,48 @@ export class AgentSession implements SettingsScope {
 	/** True while a submission has been admitted but has not yet started a turn, queued, or bailed. */
 	get hasAdmittedSubmission(): boolean {
 		return this.#admittedSubmissionCount > 0;
+	}
+
+	/** The session tree's cost gate; a root session's is replaced on `/new` and on a switch to another saved session. */
+	get costGate(): CostGate {
+		return this.#costGate;
+	}
+
+	/** The latest model request the cost gate refused; print and RPC modes report it as the run's stop reason. */
+	get costCapRefusal(): CostCapRefusal | undefined {
+		return this.#costCapRefusal;
+	}
+
+	/** Records and announces a refused request of this session's own agent loop. */
+	reportCostCapRefusal(refusal: CostCapRefusal): void {
+		this.#costCapRefusal = refusal;
+		this.emitNotice("error", refusal.message, COST_GATE_NOTICE_SOURCE);
+	}
+
+	/** Records and announces a cost-cap refusal of the next model request; `undefined` lets it through. */
+	#refuseOverCostCap(): AgentPreModelCallStop | undefined {
+		const refusal = this.#costGate.check();
+		if (!refusal) return undefined;
+		this.reportCostCapRefusal(refusal);
+		return { stop: true, reason: refusal.message };
+	}
+
+	/** A gate seeded with this session file's recorded spend. */
+	#createCostGate(): CostGate {
+		return new CostGate(this.settings, this.sessionManager.getUsageStatistics().cost, message =>
+			this.emitNotice("warning", message, COST_GATE_NOTICE_SOURCE),
+		);
+	}
+
+	/**
+	 * After `/new` or a switch to another saved session, a root session's spend starts
+	 * from that file's recorded spend. Fork, branch and `/btw` continue the same
+	 * conversation in this process and keep the gate, so they never restore budget.
+	 * Requests still in flight finish on the gate they started on; subagents keep
+	 * the tree's gate they were given.
+	 */
+	#reseedCostGate(): void {
+		if (this.#ownsCostGate) this.#costGate = this.#createCostGate();
 	}
 
 	/** Resolves once every currently admitted submission has dispatched, queued, or bailed. */
@@ -5049,6 +5155,7 @@ export class AgentSession implements SettingsScope {
 		signal: AbortSignal,
 		request: ScheduledAgentContinueRequest,
 		coalescedSources: Set<string>,
+		onStart?: () => void,
 	): Promise<AgentContinueOutcome> {
 		try {
 			// During an automatic-retry saga the primary model's selector cooldown
@@ -5083,6 +5190,7 @@ export class AgentSession implements SettingsScope {
 			}
 			for (;;) {
 				try {
+					if (!this.agent.state.isStreaming) onStart?.();
 					await this.agent.continue(signal);
 					return { status: "completed" };
 				} catch (error) {
@@ -5191,7 +5299,13 @@ export class AgentSession implements SettingsScope {
 
 				const inFlightEpoch = this.#beginInFlight();
 				const coalescedSources = new Set([options.source]);
-				const promise = this.#runAgentContinue(signal, request, coalescedSources);
+				let observation: TurnObservation | undefined;
+				const onStart = this.#ircWakeTurnObserver
+					? () => {
+							observation = this.#startTurnObservation([]);
+						}
+					: undefined;
+				const promise = this.#runAgentContinue(signal, request, coalescedSources, onStart);
 				const attempt: ActiveAgentContinue = {
 					schedulerToken: request.schedulerToken,
 					turnEnded: false,
@@ -5200,8 +5314,10 @@ export class AgentSession implements SettingsScope {
 					promise,
 				};
 				this.#activeAgentContinue = attempt;
+				let outcome: AgentContinueOutcome | undefined;
 				try {
-					this.#handleAgentContinueOutcome(await promise, request);
+					outcome = await promise;
+					this.#handleAgentContinueOutcome(outcome, request);
 				} finally {
 					// Clear the active attempt BEFORE #endInFlight(): the settle drain it
 					// triggers (#drainStrandedQueuedMessages -> queued-message-drain) runs
@@ -5212,6 +5328,7 @@ export class AgentSession implements SettingsScope {
 					}
 					this.#usagePreflightReadyForNextModelCall = false;
 					this.#endInFlight(inFlightEpoch);
+					void this.#finishTurnObservation(observation, outcome?.status === "failed" ? outcome.error : undefined);
 				}
 			},
 			{
@@ -7085,6 +7202,16 @@ export class AgentSession implements SettingsScope {
 		return this.#tools.refreshMCPTools(mcpTools);
 	}
 
+	/**
+	 * Feeds instructions from MCP servers the host connects outside the session's
+	 * own manager (ACP `session/new.mcpServers`) into the "## MCP Server
+	 * Instructions" prompt section. Takes effect on the next prompt rebuild, which
+	 * {@link refreshMCPTools} triggers when the instructions changed.
+	 */
+	setMcpServerInstructionsSource(source: (() => Map<string, string> | undefined) | undefined): void {
+		this.#setMcpServerInstructionsSource?.(source);
+	}
+
 	/** Makes turns wait, bounded, for in-flight MCP discovery before building their system prompt. */
 	setPendingMCPDiscovery(discovery: Promise<void>): void {
 		const settled = () => {
@@ -7314,15 +7441,30 @@ export class AgentSession implements SettingsScope {
 		return this.#providerBoundary.prepareSimpleStreamOptions(options, provider);
 	}
 
-	/** Cache identity for the main loop and side requests that reuse its context. */
-	getPromptCacheKeyForModel(model: Model | undefined): string | undefined {
-		const candidate = this.sessionManager.getHeader()?.taskPromptCacheKey;
-		return (
-			this.agent.promptCacheKey ??
-			(candidate !== undefined && model !== undefined && resolveCatalogPolicy(model).taskSiblingPromptCache === true
-				? candidate
-				: undefined)
-		);
+	/**
+	 * Cache identity for the main loop and side requests that reuse its context:
+	 * the agent's explicit key, else the Task family key (persisted header copy,
+	 * then the session stash) when `model` opts into shared prompt caching.
+	 */
+	getPromptCacheKeyForModel(model: CatalogPolicyInputs | undefined): string | undefined {
+		if (this.agent.promptCacheKey !== undefined) return this.agent.promptCacheKey;
+		if (model === undefined || resolveCatalogPolicy(model).sharedPromptCache !== true) return undefined;
+		return this.sessionManager.getHeader()?.taskPromptCacheKey ?? this.sessionManager.getTaskSiblingCandidate();
+	}
+
+	/**
+	 * Persist the stashed Task family candidate once a primary request on an
+	 * opted-in model consumes it, so fork and reopen — which read only the
+	 * header — keep the key. No-op under an explicit key, which wins on the wire.
+	 */
+	promoteTaskSiblingCandidate(model: CatalogPolicyInputs): void {
+		if (this.agent.promptCacheKey !== undefined) return;
+		if (this.sessionManager.getHeader()?.taskPromptCacheKey !== undefined) return;
+		const candidate = this.sessionManager.getTaskSiblingCandidate();
+		if (candidate === undefined || resolveCatalogPolicy(model).sharedPromptCache !== true) return;
+		void this.sessionManager
+			.setTaskPromptCacheKey(candidate)
+			.catch(error => logger.warn("Failed to persist task prompt cache key", { error: String(error) }));
 	}
 
 	/** Current steering mode */
@@ -7847,13 +7989,20 @@ export class AgentSession implements SettingsScope {
 	 * let abort() cancel it. Either way the image stays saved and the notice says the
 	 * description is unavailable.
 	 */
-	async #buildImageDescriptionNotice(normalizedImages: ImageContent[]): Promise<CustomMessage | undefined> {
+	async #buildImageDescriptionNotice(
+		normalizedImages: ImageContent[],
+		signal?: AbortSignal,
+	): Promise<CustomMessage | undefined> {
 		const controller = new AbortController();
 		this.#imageDescriptionAbortControllers.add(controller);
 		try {
 			return await this.#providerBoundary.buildImageDescriptionNotice(
 				normalizedImages,
-				AbortSignal.any([controller.signal, AbortSignal.timeout(IMAGE_DESCRIPTION_ADMISSION_TIMEOUT_MS)]),
+				AbortSignal.any([
+					controller.signal,
+					AbortSignal.timeout(IMAGE_DESCRIPTION_ADMISSION_TIMEOUT_MS),
+					...(signal ? [signal] : []),
+				]),
 			);
 		} finally {
 			this.#imageDescriptionAbortControllers.delete(controller);
@@ -8179,6 +8328,7 @@ export class AgentSession implements SettingsScope {
 				: undefined;
 		let turnError: unknown;
 		let dispatched = false;
+		const refusalBeforeDispatch = this.#costCapRefusal;
 		try {
 			dispatched = await this.#promptWithMessage(message, expandedText, {
 				...options,
@@ -8212,11 +8362,12 @@ export class AgentSession implements SettingsScope {
 		}
 		outcome.sessionClaimed = dispatched;
 		if (!dispatched && message.role === "user") {
-			// An abort (Esc) or preflight denial raced turn setup: the prompt never
-			// reached the agent or the session file. Hand it back to the host so the
-			// user can edit/resubmit instead of losing it (tree/branch can't offer
-			// a message that was never persisted).
-			this.#promptDropped?.({ text: typedText, images: options?.images });
+			// An abort (Esc), preflight denial or the cost cap raced turn setup: the
+			// prompt never reached the agent or the session file. Hand it back to the
+			// host so the user can edit/resubmit instead of losing it (tree/branch
+			// can't offer a message that was never persisted).
+			const refusal = this.#costCapRefusal !== refusalBeforeDispatch ? this.#costCapRefusal : undefined;
+			this.#promptDropped?.({ text: typedText, images: options?.images, reason: refusal?.message });
 		}
 		if (!dispatched && options?.throwOnDrop) throw new PromptDroppedError();
 		return true;
@@ -8590,6 +8741,8 @@ export class AgentSession implements SettingsScope {
 			if (autoPrewalkTask) await this.#prewalk.beginAutoTask();
 			const autoPrewalk = autoPrewalkTask ? this.#prewalk.classifyAuto(expandedText, setupAbort.signal) : undefined;
 			if (!(await this.#runUsageAwarePreflightForNextModelCall())) return false;
+			// A capped session hands the prompt back rather than start a run whose first request it refuses.
+			if (this.#refuseOverCostCap()) return false;
 			// Flush any pending bash messages before the new prompt
 			await this.#bash.flushPending();
 			this.#eval.flushPending();
@@ -8684,6 +8837,13 @@ export class AgentSession implements SettingsScope {
 				});
 				for (const fileMentionMessage of fileMentionMessages) {
 					messages.push(await this.#normalizeAgentMessageImages(fileMentionMessage));
+					// `@image.png` mentions are attachments too: a text-only model gets the
+					// same vision-description companion as `options.images`.
+					const mentionImages = fileMentionMessage.files.flatMap(file => (file.image ? [file.image] : []));
+					const descriptionNotice = mentionImages.length
+						? await this.#buildImageDescriptionNotice(mentionImages)
+						: undefined;
+					if (descriptionNotice) messages.push(descriptionNotice);
 				}
 			}
 
@@ -10457,6 +10617,25 @@ export class AgentSession implements SettingsScope {
 		return this.#tools.skills;
 	}
 
+	/** Load a user-invoked skill and authorize model tags in its arguments. */
+	async buildUserSkillPrompt(
+		skill: Pick<Skill, "name" | "filePath" | "baseDir">,
+		input: SkillPromptInput,
+	): Promise<BuiltSkillPromptMessage> {
+		return this.renderUserSkillPrompt(skill, input, await loadSkillPromptBody(skill));
+	}
+
+	/** Render an already-loaded skill only after the invoking submission is still current. */
+	renderUserSkillPrompt(
+		skill: Pick<Skill, "name" | "filePath" | "baseDir">,
+		input: SkillPromptInput,
+		body: string,
+	): BuiltSkillPromptMessage {
+		return renderSkillPromptMessage(skill, input, body, "user", {
+			expandUserArgs: args => this.#modelMentions.expandMentions(args),
+		});
+	}
+
 	/** Descriptions frozen when this session's system prompt was built. */
 	get renderedSkills(): readonly Skill[] {
 		const skills = this.skills;
@@ -10849,7 +11028,8 @@ export class AgentSession implements SettingsScope {
 		const titleSignal = signal
 			? AbortSignal.any([signal, this.#titleGenerationAbortController.signal])
 			: this.#titleGenerationAbortController.signal;
-		if (titleSignal.aborted) return null;
+		// A capped session sends no further model requests, titles included.
+		if (titleSignal.aborted || this.#costGate.check()) return null;
 		// The title request carries user text, so it follows this session's own credential
 		// redaction policy like its conversation requests (see `settingsAwareStreamFn`).
 		const title = await withCredentialRedaction(cfgSecretsEnabled.get(this.settings), () =>
@@ -11196,6 +11376,7 @@ export class AgentSession implements SettingsScope {
 			resetCapabilities();
 			await this.refreshBaseSystemPrompt();
 
+			this.#reseedCostGate();
 			// Emit session_switch event with reason "new" to hooks
 			if (this.#extensionRunner) {
 				await this.#extensionRunner.emit({
@@ -12388,19 +12569,50 @@ export class AgentSession implements SettingsScope {
 		return this.#irc.waitForReplies();
 	}
 
+	/** Whether a message from `from` still waits here for a turn of its own (a reply can still come). */
+	hasQueuedIrcFrom(from: string): boolean {
+		return this.#irc.hasQueuedFrom(from);
+	}
+
 	/** Registers an in-flight IRC wake-turn relay. */
 	trackIrcReply(pending: Promise<void>): void {
 		this.#irc.trackReply(pending);
 	}
 
 	/**
-	 * Installs task-executor monitoring around turns no executor drives: autonomous IRC
-	 * wake turns and user prompts (focused-session steering of a kept-alive subagent).
+	 * Installs task-executor monitoring around kept-alive subagent turns that
+	 * have no executor caller: IRC wakes, focused prompts and bare continuations.
 	 */
 	setIrcWakeTurnObserver(
 		observer: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined,
 	): void {
 		this.#ircWakeTurnObserver = observer;
+	}
+
+	/**
+	 * Holds IRC wakes from anyone but the parent while the task executor drives
+	 * this session's run, whose monitor would take a wake turn's answer as the
+	 * run's result. Held messages wait as deferred wakes and get a monitored turn
+	 * of their own once every hold is released. Returns the release.
+	 */
+	holdIrcWakes(): () => void {
+		this.#ircWakeHolds++;
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			this.#ircWakeHolds--;
+			this.#resumeStrandedIrcAsides();
+		};
+	}
+
+	/**
+	 * Whether IRC messages still wait here for a turn: under a {@link holdIrcWakes}
+	 * hold, or queued (e.g. behind a pooled yield contract). The lifecycle must not
+	 * park this session yet, since parking would drop them.
+	 */
+	get ircWakesPending(): boolean {
+		return this.#ircWakeHolds > 0 || this.#irc.hasPending();
 	}
 
 	/** Emits an IRC relay observation for UI rendering without persisting it. */
@@ -12473,9 +12685,16 @@ export class AgentSession implements SettingsScope {
 				`Model ${modelDescription} does not support tools: false for ephemeral turns because its transport requires native tools.`,
 			);
 		}
+		// Images, those of earlier side turns too, get a prompt's handling: normalized
+		// for the model, and described by a vision model for a text-only one.
+		const promptImages = await this.#normalizeImagesForModel(args.promptImages);
+		const imageDescriptionNotice = promptImages?.length
+			? await this.#buildImageDescriptionNotice(promptImages, args.signal)
+			: undefined;
+		const history = args.history && (await this.#prepareSideHistory(args.history, args.signal));
 		assertEphemeralTurnReady();
 		const cacheSessionId = this.sessionId;
-		const snapshot = this.#buildEphemeralSnapshot(args.promptText, args.history);
+		const snapshot = this.#buildEphemeralSnapshot(args.promptText, history, promptImages, imageDescriptionNotice);
 		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
 		assertEphemeralTurnReady();
 		const sideContext = await this.agent.buildSideRequestContext(llmMessages);
@@ -12612,13 +12831,33 @@ export class AgentSession implements SettingsScope {
 		};
 	}
 
+	async #prepareSideHistory(history: readonly Message[], signal?: AbortSignal): Promise<AgentMessage[]> {
+		const prepared: AgentMessage[] = [];
+		for (const message of history) {
+			const normalized = await this.#normalizeAgentMessageImages(message);
+			const images =
+				normalized.role === "user" && Array.isArray(normalized.content)
+					? normalized.content.filter((part): part is ImageContent => part.type === "image")
+					: [];
+			const notice = images.length > 0 ? await this.#buildImageDescriptionNotice(images, signal) : undefined;
+			if (notice) prepared.push(notice);
+			prepared.push(normalized);
+		}
+		return prepared;
+	}
+
 	/**
 	 * Build a message snapshot for an ephemeral side-channel turn.  Includes
 	 * the in-flight streaming assistant message (if any) so the model sees
 	 * the partial response in context, then appends detached side-channel history
 	 * and the current prompt after the no-tools reminder.
 	 */
-	#buildEphemeralSnapshot(promptText: string, history?: readonly Message[]): AgentMessage[] {
+	#buildEphemeralSnapshot(
+		promptText: string,
+		history?: readonly AgentMessage[],
+		images?: ImageContent[],
+		imageDescriptionNotice?: CustomMessage,
+	): AgentMessage[] {
 		const messages = [...this.messages];
 		const streaming = this.agent.state.streamMessage;
 		if (streaming && streaming.role === "assistant" && Array.isArray(streaming.content)) {
@@ -12659,9 +12898,10 @@ export class AgentSession implements SettingsScope {
 			// Detach before the conversion pipeline can await or mutate caller-owned messages.
 			messages.push(...structuredClone(history));
 		}
+		if (imageDescriptionNotice) messages.push(imageDescriptionNotice);
 		messages.push({
 			role: "user",
-			content: [{ type: "text", text: promptText }],
+			content: [{ type: "text", text: promptText }, ...(images ?? [])],
 			attribution: "agent",
 			timestamp: Date.now(),
 		});
@@ -12800,6 +13040,7 @@ export class AgentSession implements SettingsScope {
 		const previousBaseSystemPromptBeforeMemoryPromotion = this.#memory.promotionSnapshot;
 		const previousFreshProviderSessionId = this.#freshProviderSessionId;
 		const previousInheritedProviderPromptCacheKey = this.#inheritedProviderPromptCacheKey;
+		const previousTaskSiblingCandidate = this.sessionManager.getTaskSiblingCandidate();
 
 		// Snapshot the full checkpoint runtime state: the success path calls
 		// #rehydrateCheckpointRewindState(), which clears and rebuilds all four
@@ -12863,6 +13104,9 @@ export class AgentSession implements SettingsScope {
 				this.#freshProviderSessionId = undefined;
 				this.#clearInheritedProviderPromptCacheKey();
 				this.#adoptInheritedProviderPromptCacheKey();
+				// The outgoing session's parent-derived family candidate is scoped
+				// to it; the resumed session's own header decides affinity from here.
+				this.sessionManager.clearTaskSiblingCandidate();
 			}
 			this.#syncAgentSessionId(undefined, false);
 			this.#memory.rekeyForCurrentSessionId();
@@ -12906,6 +13150,7 @@ export class AgentSession implements SettingsScope {
 			// so jobs they start belong to the resumed session. Deliveries are held until now.
 			if (switchingToDifferentSession) this.#cancelOwnAsyncJobs();
 
+			this.#reseedCostGate();
 			// Emit session_switch event to hooks
 			if (this.#extensionRunner) {
 				await this.#extensionRunner.emit({
@@ -13065,6 +13310,9 @@ export class AgentSession implements SettingsScope {
 			this.#usagePreflightReadyForNextModelCall = previousUsagePreflightReadyForNextModelCall;
 			this.#usagePreflightReadyModel = previousUsagePreflightReadyModel;
 			this.#inheritedProviderPromptCacheKey = previousInheritedProviderPromptCacheKey;
+			if (previousTaskSiblingCandidate !== undefined) {
+				this.sessionManager.setTaskSiblingCandidate(previousTaskSiblingCandidate);
+			}
 			this.#checkpointState = previousCheckpointState;
 			this.#pendingRewindReport = previousPendingRewindReport;
 			this.#lastCompletedRewind = previousLastCompletedRewind;
@@ -13304,6 +13552,7 @@ export class AgentSession implements SettingsScope {
 		assistantMessage: AssistantMessage,
 		leafId: string,
 		sessionId: string,
+		images?: ImageContent[],
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
 		using _transition = this.#beginSessionTransition();
 		const previousSessionFile = this.sessionFile;
@@ -13332,6 +13581,12 @@ export class AgentSession implements SettingsScope {
 		if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
 			throw new Error("Cannot branch /btw: session changed since /btw started");
 		}
+
+		// The promoted question gets a prompt's image handling, description included.
+		const promotedImages = await this.#normalizeImagesForModel(images);
+		const imageDescriptionNotice = promotedImages?.length
+			? await this.#buildImageDescriptionNotice(promotedImages)
+			: undefined;
 
 		await withTimeout(
 			this.#cancelPostPromptTasks(),
@@ -13376,9 +13631,10 @@ export class AgentSession implements SettingsScope {
 			this.#clearSessionScopedToolState();
 
 			this.#rehydrateCheckpointRewindState();
+			if (imageDescriptionNotice) this.sessionManager.appendMessage(imageDescriptionNotice);
 			this.sessionManager.appendMessage({
 				role: "user",
-				content: [{ type: "text", text: question }],
+				content: [{ type: "text", text: question }, ...(promotedImages ?? [])],
 				attribution: "user",
 				timestamp: Date.now(),
 			});

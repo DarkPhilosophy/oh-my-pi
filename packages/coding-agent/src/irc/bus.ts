@@ -48,6 +48,17 @@ export class IrcBus {
 		IrcBus.#globals = new WeakMap();
 	}
 
+	/**
+	 * Count a settled job of agent `from` owned by `to` as `from`'s reply to
+	 * `to`: the job delivers that agent's outcome, so it answers what `to`
+	 * asked it before now (see {@link unansweredSends}). With no bus yet no
+	 * message was ever sent, so there is nothing to answer.
+	 */
+	static recordReply(from: string, to: string): void {
+		const bus = IrcBus.#globals.get(AgentRegistry.global());
+		if (bus) bus.#recordReply(from, to);
+	}
+
 	readonly #registry: AgentRegistry;
 	readonly #lifecycle: () => AgentLifecycleManager;
 	readonly #mailboxes = new Map<string, IrcMessage[]>();
@@ -56,6 +67,8 @@ export class IrcBus {
 	readonly #lastSent = new Map<string, Map<string, SendMark>>();
 	/** The latest direct (non-broadcast) send per `from` → `to`; see {@link unansweredSends}. */
 	readonly #lastDirect = new Map<string, Map<string, SendMark>>();
+	/** The latest job-carried reply per agent → owner; see {@link IrcBus.recordReply}. */
+	readonly #lastJobReply = new Map<string, Map<string, SendMark>>();
 	/** Last {@link SendMark.seq} handed out, taken when a send starts. */
 	#sendSeq = 0;
 
@@ -90,20 +103,24 @@ export class IrcBus {
 		const mark: SendMark = { ts: message.ts, seq: ++this.#sendSeq };
 		const receipt = await this.#deliver(message, opts);
 		if (receipt.outcome !== "failed") {
-			this.#record(this.#lastSent, message, mark);
-			if (!message.broadcast && !message.wakeRelay) this.#record(this.#lastDirect, message, mark);
+			this.#record(this.#lastSent, message.from, message.to, mark);
+			if (!message.broadcast && !message.wakeRelay) this.#record(this.#lastDirect, message.from, message.to, mark);
 		}
 		return receipt;
 	}
 
-	#record(table: Map<string, Map<string, SendMark>>, message: IrcMessage, mark: SendMark): void {
-		let sent = table.get(message.from);
+	#record(table: Map<string, Map<string, SendMark>>, from: string, to: string, mark: SendMark): void {
+		let sent = table.get(from);
 		if (!sent) {
 			sent = new Map();
-			table.set(message.from, sent);
+			table.set(from, sent);
 		}
 		// Deliveries can settle out of order; keep the latest send.
-		if ((sent.get(message.to)?.seq ?? 0) < mark.seq) sent.set(message.to, mark);
+		if ((sent.get(to)?.seq ?? 0) < mark.seq) sent.set(to, mark);
+	}
+
+	#recordReply(from: string, to: string): void {
+		this.#record(this.#lastJobReply, from, to, { ts: Date.now(), seq: ++this.#sendSeq });
 	}
 
 	/**
@@ -118,10 +135,10 @@ export class IrcBus {
 
 	/**
 	 * Agents `from` messaged directly at or after `sinceTs` that have sent
-	 * nothing back since, with when the latest of those messages went out:
-	 * the replies a `wait` can block for. "Since" is by send order, not
-	 * timestamp, so an answer to an earlier question never settles a later one
-	 * sent within the same millisecond.
+	 * nothing back since, nor settled a job `from` owns, with when the latest
+	 * of those messages went out: the replies a `wait` can block for. "Since"
+	 * is by send order, not timestamp, so an answer to an earlier question
+	 * never settles a later one sent within the same millisecond.
 	 */
 	unansweredSends(from: string, sinceTs: number): Array<{ to: string; sentAt: number }> {
 		const sends = this.#lastDirect.get(from);
@@ -129,8 +146,10 @@ export class IrcBus {
 		const unanswered: Array<{ to: string; sentAt: number }> = [];
 		for (const [to, sent] of sends) {
 			if (sent.ts < sinceTs) continue;
-			const reply = this.#lastSent.get(to)?.get(from);
-			if (reply === undefined || reply.seq < sent.seq) unanswered.push({ to, sentAt: sent.ts });
+			const answered = [this.#lastSent, this.#lastJobReply].some(
+				replies => (replies.get(to)?.get(from)?.seq ?? 0) > sent.seq,
+			);
+			if (!answered) unanswered.push({ to, sentAt: sent.ts });
 		}
 		return unanswered;
 	}

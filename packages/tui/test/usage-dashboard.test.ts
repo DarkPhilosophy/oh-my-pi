@@ -2,6 +2,8 @@ import { createAccountMasker, createUsageTextMasker } from "@oh-my-pi/pi-tui/ove
 import * as os from "node:os";
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { DailyActivityPoint } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
+import type { DescribeContext } from "../src/native/node";
+import type { TspText } from "@oh-my-pi/pi-wire";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import {
 	buildHeatmapLayout,
@@ -128,8 +130,12 @@ describe("buildProviderCards", () => {
 		// One exhausted + one barely-used account: the classic report shows the
 		// aggregate (~50% free), so the card must not read 0% free.
 		const reports = [
-			report("anthropic", "a@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 1.0, "exhausted", now + 1000)]),
-			report("anthropic", "b@x.test", [limit("anthropic", "b", "7d", "Claude 7 Day", 0.0, "ok", now + 99_000)]),
+			report("anthropic", "a@x.test", [
+				{ ...limit("anthropic", "a", "7d", "Claude 7 Day", 1.0, "exhausted", now + 1000), id: "anthropic:7d" },
+			]),
+			report("anthropic", "b@x.test", [
+				{ ...limit("anthropic", "b", "7d", "Claude 7 Day", 0.0, "ok", now + 99_000), id: "anthropic:7d" },
+			]),
 		];
 		const cards = buildProviderCards(reports, now);
 		expect(cards).toHaveLength(1);
@@ -547,280 +553,29 @@ describe("buildProviderCards split + privacy", () => {
 		expect(rendered).not.toContain("\t");
 		expect(Bun.stripANSI(rendered)).toContain("ab *** (Org   Name)");
 	});
-});
 
-describe("buildProviderCards split + privacy", () => {
-	const now = Date.now();
-	const reports = [
-		report("anthropic", "alice@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 1.0, "exhausted")]),
-		report("anthropic", "alina@x.test", [limit("anthropic", "b", "7d", "Claude 7 Day", 0.0, "ok")]),
-	];
+	it("keeps distinct buckets that share a label and window separate instead of averaging them", () => {
+		// Antigravity's Google counter: the drained Gemini 4 Argon weekly bucket
+		// beside a barely-used shared Gemini weekly bucket (issue #16790). Both
+		// limits say `Gemini|weekly`, so label-keyed grouping averaged them into
+		// one "50% left" row that hid the drained bucket. The provider now labels
+		// the Argon bucket "Gemini (Argon)", but the grouping must hold even for
+		// two limits that share a label (pre-label-fix reports).
+		const googleWeekly = {
+			...limit("google-antigravity", "account", "weekly", "Gemini", 0.0, "ok", now + 99_000),
+			id: "google-antigravity:google:default:gemini-weekly",
+		};
+		const argonWeekly = {
+			...limit("google-antigravity", "account", "weekly", "Gemini", 1.0, "exhausted", now + 1000),
+			id: "google-antigravity:google:default:gemini-argon-wtu-weekly",
+		};
+		const reports = [report("google-antigravity", "user@example.test", [googleWeekly, argonWeekly])];
 
-	it("merge=false yields one card per account, each with its own fraction", () => {
-		const cards = buildProviderCards(reports, now, { merge: false });
-		expect(cards.map(card => card.account)).toEqual(["alice@x.test", "alina@x.test"]);
-		expect(cards.map(card => card.windows[0].fraction)).toEqual([1, 0]);
-	});
+		const windows = buildProviderCards(reports, now)[0].windows;
 
-	it("partitions one combined report by scoped account IDs without averaging matching windows", () => {
-		const combined = report("anthropic", "shared@x.test", [
-			limit("anthropic", "account-a", "7d", "Claude 7 Day", 0.2, "ok"),
-			limit("anthropic", "account-a", "5h", "Claude 5 Hour", 0.4, "ok"),
-			limit("anthropic", "account-b", "7d", "Claude 7 Day", 0.8, "warning"),
-		]);
-		combined.metadata = { ...combined.metadata, accountId: "stale-report-account" };
-
-		const cards = buildProviderCards([combined], now, { merge: false });
-
-		expect(cards).toHaveLength(2);
-		expect(cards.map(card => card.windows.length).sort()).toEqual([1, 2]);
-		expect(
-			cards
-				.flatMap(card => card.windows)
-				.filter(window => window.label === "Claude 7 Day")
-				.map(window => window.fraction)
-				.sort(),
-		).toEqual([0.2, 0.8]);
-	});
-
-	it("partitions one combined report by scoped project IDs", () => {
-		const projectLimit = (projectId: string, usedFraction: number): UsageReport["limits"][number] => ({
-			...limit("google-gemini-cli", "", "daily", "Gemini Daily", usedFraction, "ok"),
-			scope: { provider: "google-gemini-cli", projectId, windowId: "daily" },
-		});
-		const combined = report("google-gemini-cli", "shared@x.test", [
-			projectLimit("project-a", 0.1),
-			projectLimit("project-b", 0.9),
-		]);
-		combined.metadata = { ...combined.metadata, projectId: "stale-report-project" };
-
-		const split = buildProviderCards([combined], now, { merge: false });
-		expect(split).toHaveLength(2);
-		expect(split.map(card => card.windows[0].fraction).sort()).toEqual([0.1, 0.9]);
-
-		const merged = buildProviderCards([combined], now, { merge: true });
-		expect(merged).toHaveLength(1);
-		expect(merged[0].windows[0].fraction).toBeCloseTo(0.5);
-	});
-
-	it("keeps same-label organizations distinct when split and aggregates them when merged", () => {
-		const sameEmail = "shared@x.test";
-		const reports = [
-			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.8, "warning")], {
-				orgId: "org-team-east",
-				orgName: "Team",
-			}),
-			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", 0.2, "ok")], {
-				orgId: "org-team-west",
-				orgName: "Team",
-			}),
-		];
-
-		const split = buildProviderCards(reports, now, { merge: false });
-		expect(split).toHaveLength(2);
-		expect(split.map(card => card.account)).toEqual([`${sameEmail} (Team)`, `${sameEmail} (Team)`]);
-		expect(split.map(card => card.windows[0].fraction)).toEqual([0.8, 0.2]);
-		for (const enabled of [false, true]) {
-			const labeled = buildProviderCards(reports, now, {
-				merge: false,
-				mask: createAccountMasker(reports.map(formatReportAccountLabel), enabled),
-			});
-			expect(new Set(labeled.map(card => card.account)).size).toBe(2);
-			expect(labeled.every(card => card.account?.includes("Team"))).toBe(true);
-		}
-
-		const merged = buildProviderCards(reports, now, { merge: true });
-		expect(merged).toHaveLength(1);
-		expect(merged[0].accounts).toBe(2);
-		expect(merged[0].windows[0].fraction).toBeCloseTo(0.5);
-	});
-
-	it("splits same-base accounts by organization name when ids are absent", () => {
-		const sameEmail = "shared@x.test";
-		const reports = ["East", "West"].map((orgName, index) =>
-			report("anthropic", sameEmail, [limit("anthropic", "shared", "7d", "Claude 7 Day", index / 10, "ok")], {
-				orgId: "",
-				orgName,
-			}),
-		);
-		const cards = buildProviderCards(reports, now, { merge: false });
-		expect(cards).toHaveLength(2);
-		expect(Object.fromEntries(cards.map(card => [card.account, card.windows[0].fraction]))).toEqual({
-			[`${sameEmail} (East)`]: 0,
-			[`${sameEmail} (West)`]: 0.1,
-		});
-	});
-
-	it("retains distinguishing organization tails in narrow split-card headers", () => {
-		const reports: UsageReport[] = ["East", "West"].map(region => ({
-			provider: "openai",
-			fetchedAt: 1,
-			limits: [],
-			metadata: { email: "shared@example.test", orgName: `Acme Corporation Workspace ${region}` },
-		}));
-		const dashboard = new UsageDashboardComponent({
-			reports,
-			renderDetail: () => "",
-			createMasker: createAccountMasker,
-			maskAccountLabels: true,
-			mergeAccounts: false,
-			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
-		});
-		const lines = dashboard.render(80).map(line => Bun.stripANSI(line));
-		expect(lines.join("\n")).toContain("East");
-		expect(lines.join("\n")).toContain("West");
-		expect(lines.every(line => Bun.stringWidth(line) <= 80)).toBe(true);
-	});
-
-	it("masks opaque parentheses while preserving only metadata-attributed organization labels", () => {
-		const reports: UsageReport[] = [
-			{ provider: "openai", fetchedAt: 1, limits: [], metadata: { accountId: "Jane Doe (finance)" } },
-			{ provider: "openai", fetchedAt: 1, limits: [], metadata: { accountId: "Jane Doe", orgName: "finance" } },
-		];
-		const cards = buildProviderCards(reports, 1, {
-			merge: false,
-			mask: createAccountMasker(reports.map(formatReportAccountLabel), true),
-		});
-		expect(cards.map(card => card.account).sort()).toEqual(["Jan***", "Jan*** (finance)"]);
-		const dashboard = new UsageDashboardComponent({
-			reports,
-			renderDetail: () => "",
-			createMasker: createAccountMasker,
-			maskAccountLabels: true,
-			mergeAccounts: false,
-			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
-		});
-		const text = Bun.stripANSI(dashboard.render(160).join("\n"));
-		expect(text).not.toContain("Jane Doe");
-		expect(text).toContain("Jan*** (finance)");
-	});
-
-	it("neutralizes terminal controls in split-card account labels before fitting", () => {
-		const reports = [
-			report("anthropic", "alice\t\x1b[31m@x.test", [limit("anthropic", "a", "7d", "Claude 7 Day", 0.2, "ok")], {
-				orgId: "org-a",
-				orgName: "East\t\x1b[2J",
-			}),
-		];
-		const dashboard = new UsageDashboardComponent({
-			reports,
-			renderDetail: () => "",
-			createMasker: createAccountMasker,
-			maskAccountLabels: false,
-			mergeAccounts: false,
-			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
-		});
-		const rendered = dashboard.render(36).join("\n");
-		expect(rendered).not.toContain("\x1b[31m");
-		expect(rendered).not.toContain("\x1b[2J");
-		expect(
-			Bun.stripANSI(rendered)
-				.split("\n")
-				.every(line => line.length <= 36),
-		).toBe(true);
-	});
-
-	it("masks split-card account labels and keeps colliding prefixes distinguishable", () => {
-		const labels = reports.map(formatReportAccountLabel);
-		const cards = buildProviderCards(reports, now, { merge: false, mask: createAccountMasker(labels, true) });
-
-		const masked = cards.map(card => card.account);
-		expect(masked.every(label => label !== undefined && !label.includes("@x.test"))).toBe(true);
-		expect(new Set(masked).size).toBe(2);
-	});
-	it.each(["", " (US)"])("keeps organization qualifiers visible in narrow split-card headers: %s", suffix => {
-		const email = "shared-account-with-a-long-address@example.test";
-		const reports = [
-			report("anthropic", email, [limit("anthropic", "east", "7d", "Claude 7 Day", 0.8, "warning")], {
-				orgId: "org-east",
-				orgName: `East${suffix}`,
-			}),
-			report("anthropic", email, [limit("anthropic", "west", "7d", "Claude 7 Day", 0.2, "ok")], {
-				orgId: "org-west",
-				orgName: `West${suffix}`,
-			}),
-		];
-		const dashboard = new UsageDashboardComponent({
-			reports,
-			renderDetail: () => "",
-			createMasker: createAccountMasker,
-			maskAccountLabels: false,
-			mergeAccounts: false,
-			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
-		});
-		const headers = Bun.stripANSI(dashboard.render(36).join("\n"))
-			.split("\n")
-			.filter(line => line.includes(`(East${suffix})`) || line.includes(`(West${suffix})`));
-		expect(headers).toHaveLength(2);
-		expect(headers.some(line => line.includes(`(East${suffix})`))).toBe(true);
-		expect(headers.some(line => line.includes(`(West${suffix})`))).toBe(true);
-		expect(headers.every(line => line.length <= 36)).toBe(true);
-	});
-	it("keeps collision ordinals visible for narrow same-organization split cards", () => {
-		const reports = ["mailone@example.test", "mailtwo@example.test"].map((email, index) =>
-			report(
-				"anthropic",
-				email,
-				[limit("anthropic", `account-${index}`, "7d", "Claude 7 Day", 0.2 + index * 0.1, "ok")],
-				{ orgId: `org-${index}`, orgName: "Long Organization" },
-			),
-		);
-		const dashboard = new UsageDashboardComponent({
-			reports,
-			renderDetail: () => "",
-			createMasker: createAccountMasker,
-			maskAccountLabels: true,
-			mergeAccounts: false,
-			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
-		});
-		const headers = Bun.stripANSI(dashboard.render(48).join("\n"))
-			.split("\n")
-			.filter(line => line.includes("mai***"));
-
-		expect(headers).toHaveLength(2);
-		expect(headers.some(line => line.includes("mai*** (2)"))).toBe(true);
-		expect(new Set(headers).size).toBe(2);
-		expect(headers.every(line => line.length <= 48)).toBe(true);
-	});
-
-	it("renders normalized masked short account IDs without embedded line breaks", () => {
-		const dashboard = new UsageDashboardComponent({
-			reports: [
-				{
-					provider: "openai-codex",
-					fetchedAt: Date.now(),
-					limits: [limit("openai-codex", "ab\r\ncd", "5h", "5 hours", 0.2, "ok")],
-					metadata: { accountId: "ab\r\ncd", orgName: "Org\tName" },
-				},
-			],
-			renderDetail: () => "",
-			createMasker: createAccountMasker,
-			maskAccountLabels: true,
-			mergeAccounts: false,
-			labelPlacement: "moving",
-			loadActivity: async () => {},
-			requestRender: () => {},
-			onClose: () => {},
-		});
-		const rendered = dashboard.render(48).join("\n");
-		expect(rendered).not.toContain("\r");
-		expect(rendered).not.toContain("\t");
-		expect(Bun.stripANSI(rendered)).toContain("ab *** (Org   Name)");
+		expect(windows).toHaveLength(2);
+		expect(windows.find(window => window.fraction === 1)?.resetMs).toBe(1000);
+		expect(windows.find(window => window.fraction === 0)?.status).toBe("ok");
 	});
 });
 
@@ -1171,6 +926,78 @@ describe("UsageDashboardComponent", () => {
 				expect(quotaLines[1]).toContain("84%");
 				for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 			}
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it("sanitizes provider labels and duplicate-window tags before rendering", () => {
+		const label = "Claude\t7 Day\x1b[2J\x07\r\n(Fable)";
+		const component = dashboard([
+			report("anthropic", "a@test", [
+				limit("anthropic", "a", "5\th", label, 0.4, "ok"),
+				limit("anthropic", "a", "7\nd", label, 0.2, "ok"),
+			]),
+		]);
+		try {
+			const lines = component.render(100);
+			for (const line of lines) {
+				expect(line).not.toMatch(/[\t\r\n\x07]/);
+				expect(line).not.toContain("\x1b[2J");
+				expect(visibleWidth(line)).toBeLessThanOrEqual(100);
+			}
+			const output = Bun.stripANSI(lines.join("\n"));
+			expect(output).toMatch(/Claude +7 Day +\(Fable\)/);
+			expect(output).toMatch(/5 +h/);
+			expect(output).toMatch(/7 +d/);
+		} finally {
+			component.dispose();
+		}
+	});
+
+	it("keeps distinct buckets that share a label and window separate in the detail view", () => {
+		// Same payload as the cards regression (issue #16790): two weekly
+		// Google-counter limits with one label, distinct ids. The detail rows
+		// must not merge them into one bucket with two identical account rows.
+		const now = Date.now();
+		const withId = (id: string, frac: number, status: "ok" | "exhausted") => ({
+			...limit("google-antigravity", "account", "weekly", "Gemini", frac, status, now + 3_600_000),
+			id,
+		});
+		const component = dashboard([
+			report("google-antigravity", "user@example.test", [
+				withId("google-antigravity:google:default:gemini-weekly", 0.0, "ok"),
+				withId("google-antigravity:google:default:gemini-argon-wtu-weekly", 1.0, "exhausted"),
+			]),
+		]);
+		try {
+			component.handleInput("\r");
+			// The detail tables live in the native tree on real terminals.
+			const cx: DescribeContext = {
+				cols: 120,
+				reduceMotion: false,
+				dark: true,
+				supports: () => true,
+				feature: () => true,
+			};
+			const pending: unknown[] = [component.describe(cx)];
+			let bucketHeads = 0;
+			for (let node = pending.pop(); node; node = pending.pop()) {
+				if (!node || typeof node !== "object" || !("c" in node)) continue;
+				const described = node as {
+					c?: unknown[];
+					k?: string;
+					p?: { rows?: { cells?: Record<string, TspText> }[] };
+				};
+				pending.push(...(described.c ?? []));
+				if (described.k !== "table" || !described.p?.rows) continue;
+				// A row whose limit cell is non-empty starts a bucket; follower
+				// rows (same bucket, other accounts) leave it empty.
+				for (const row of described.p.rows) if (row.cells?.limit && row.cells.limit.length > 0) bucketHeads++;
+			}
+			// One bucket head per limit: the label|window-only key produced a
+			// single merged bucket holding both account rows.
+			expect(bucketHeads).toBe(2);
 		} finally {
 			component.dispose();
 		}

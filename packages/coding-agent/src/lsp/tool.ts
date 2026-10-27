@@ -364,6 +364,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							await waitForProjectLoaded(client, signal);
 							throwIfAborted(signal);
 						}
+						// Open dependencies can hold pre-edit overlays after external disk writes.
+						// Reconcile them before the importer's diagnostics are computed.
+						await reconcileOpenFilesFromDisk(client, signal);
 						const minVersion = client.diagnosticsVersion;
 						await refreshFile(client, resolved, signal);
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
@@ -1366,9 +1369,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 				case "code_actions": {
 					let diagnostics = client.diagnostics.get(uri)?.diagnostics ?? [];
-					// A reconcile dropped the stale diagnostics and pushed a didChange;
-					// the server re-publishes (or a pull answers) asynchronously, so read
-					// the map now and quick-fix providers see an empty context.diagnostics.
+					// A reconcile dropped the stale diagnostics and pushed a didChange (or
+					// reopened a document closed for idleness); the server re-publishes (or a
+					// pull answers) asynchronously, so read the map now and quick-fix
+					// providers see an empty context.diagnostics.
 					// Wait for diagnostics matching the reconciled document version first.
 					// Non-diagnostic actions (refactors, source actions) still return if the
 					// wait cannot complete, so a diagnostics failure never breaks code_actions.

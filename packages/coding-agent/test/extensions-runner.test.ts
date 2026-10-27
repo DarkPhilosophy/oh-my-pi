@@ -3793,8 +3793,8 @@ describe("ExtensionRunner", () => {
 			expect(executed).toEqual([{ command: "echo original" }, { command: "echo revised" }]);
 		});
 
-		it("forfeits the xdevApproved prompt bypass when a handler revises the input", async () => {
-			// write.ts dispatches xd:// devices with xdevApproved: true because its
+		it("forfeits the xd:// prompt bypass when a handler revises the input", async () => {
+			// write.ts dispatches xd:// devices with xdevPolicyKey because its
 			// outer gate already approved the ORIGINAL device input. A tool_call
 			// revision may raise the tier, so revised input must face the full gate
 			// (here: no interactive UI => reject) instead of riding the outer approval.
@@ -3820,7 +3820,7 @@ describe("ExtensionRunner", () => {
 			const wrapped = new ExtensionToolWrapper(createRecordingTool(recordPath), runner);
 			const xdevContext = {
 				settings: Settings.isolated({ "tools.approvalMode": "always-ask" }),
-				xdevApproved: true,
+				xdevPolicyKey: "bash",
 			} as never;
 
 			await expect(
@@ -3898,7 +3898,7 @@ describe("ExtensionRunner", () => {
 			let effectiveTier: string | undefined;
 			const xdevContext = {
 				settings: Settings.isolated({ "tools.approvalMode": "yolo" }),
-				xdevApproved: true,
+				xdevPolicyKey: "bash",
 				xdevTierResolved: (tier: string) => {
 					effectiveTier = tier;
 				},

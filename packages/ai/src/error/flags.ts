@@ -230,7 +230,8 @@ export const TRANSIENT_TRANSPORT_PATTERN =
 	/\b(?:no[_ -]?capacity|(?:high|peak)[ _-]?demand|(?:at|over|insufficient)[ _-]?capacity|capacity[ _-]?(?:exceeded|exhausted)|peak[ _-]?load)\b|overloaded|provider.?returned.?error|rate.?limit|too many requests|auth-gateway\s+5\d{2}(?=[:\s]|$)|\b(?:429|500|502|503|504)\b|service.?unavailable|temporar(?:y|ily)[ _-]?unavailable|server.?error|internal.?error|retry your request|network.?error|connection.?error|connection.?refused|unable.?to.?connect\.\s*is the computer able to access the url\?|other side closed|use of closed network connection|fetch failed|upstream.?connect|upstream.?request.?failed|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall|no error details in response|HTTP2(?:StreamReset|RefusedStream|EnhanceYourCalm)|nghttp2_(?:internal_error|refused_stream)|stream closed with error code nghttp2_(?:internal_error|refused_stream)|\bE(?:TIMEOUT|NOTFOUND|NETUNREACH|HOSTUNREACH)\b|\bFailedToOpenSocket\b|no internet connection|couldn.?t reach|couldn.?t connect to|tls certificate verification failed|malformed.?function.?call/i;
 const AUTH_FAILURE_PATTERN =
 	/\b(?:401|403|unauthorized|forbidden|authentication|auth[_ ]?unavailable|no auth available|(?:invalid|no)[_ ]?api[_ ]?key)\b/i;
-const MALFORMED_FUNCTION_CALL_PATTERN = /\bmalformed.?function.?call\b/i;
+const MALFORMED_FUNCTION_CALL_PATTERN =
+	/\b(?:malformed[_. ]?(?:function[_. ]?call|response)|unexpected[_. ]?tool[_. ]?call)\b/i;
 const PROVIDER_FINISH_ERROR_PATTERN = /\bProvider (?:returned error finish_reason|finish_reason:\s*error)\b/i;
 const EMPTY_RESPONSE_PATTERN = /\bthought-only response without final output\b/i;
 const CONTENT_FILTER_PATTERN = /\b(?:incomplete:\s*)?content_filter\b/i;
@@ -604,13 +605,23 @@ export function isStreamEnvelopeErrorText(text: string): boolean {
 	return text.includes(STREAM_ENVELOPE_ERROR_PREFIX);
 }
 
+/** Persisted-text form of a truncated stream envelope: an
+ *  `Anthropic stream envelope error:` diagnostic naming the frame the stream
+ *  never reached (`before message_start|delta|stop`). Covers both a connection
+ *  that dies inside an open envelope and an in-band `error` frame that a
+ *  gateway or proxy substitutes for the cut, so turn recovery can classify the
+ *  family by its envelope marker instead of per-gateway wording. */
+export function isStreamEnvelopeTruncationText(text: string): boolean {
+	return TRANSIENT_ENVELOPE_PATTERN.test(text) && TRANSIENT_ENVELOPE_TRUNCATION_PATTERN.test(text);
+}
+
 function isTransientErrorText(text: string): boolean {
 	return (
 		isUnexpectedSocketCloseMessage(text) ||
 		isStreamReadErrorText(text) ||
 		PYTHON_HTTP2_STREAM_RESET_PATTERN.test(text) ||
 		PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(text) ||
-		(TRANSIENT_ENVELOPE_PATTERN.test(text) && TRANSIENT_ENVELOPE_TRUNCATION_PATTERN.test(text)) ||
+		isStreamEnvelopeTruncationText(text) ||
 		TRANSIENT_TRANSPORT_PATTERN.test(text)
 	);
 }

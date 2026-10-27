@@ -1705,10 +1705,13 @@ export class TurnRecovery {
 
 	/**
 	 * Mid-generation transport death: the local idle watchdog's stream stall, an
-	 * HTTP/2 stream reset, or a gateway close without the terminal event. A
-	 * premature close (no finish_reason/terminal event) is the same failure
-	 * class as a stall or reset. Resets and closes are ignored while a
-	 * deliberate abort, disposal, or streaming-edit abort owns the stream.
+	 * HTTP/2 stream reset, a gateway close without the terminal event, or a
+	 * truncated stream envelope. A premature close (no finish_reason/terminal
+	 * event) and an envelope that never reached its terminal frame — including a
+	 * gateway's in-band `error` frame, which the provider reports as the same
+	 * envelope truncation — are the same failure class as a stall or reset.
+	 * Resets and closes are ignored while a deliberate abort, disposal, or
+	 * streaming-edit abort owns the stream.
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
@@ -1718,6 +1721,7 @@ export class TurnRecovery {
 			return false;
 		}
 		return (
+			AIError.isStreamEnvelopeTruncationText(errorMessage) ||
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
@@ -2309,21 +2313,39 @@ export class TurnRecovery {
 				// failure — an unbounded retry loop against a model that cannot work.
 				if (this.#isNoOpRetryFallback(candidate, selector)) continue;
 				if (options?.excludeProvider === candidate.provider) continue;
-				// Anthropic signatures and redacted blocks are model-bound, while the
-				// latest assistant response must remain byte-identical. A same-provider
-				// model switch can satisfy neither constraint, so keep retrying the
-				// source model or consider a later cross-provider candidate whose
-				// message transform can safely demote the foreign thinking.
-				// Exception: when redeeming Anthropic fallback credit on refusal, the server
-				// validates thinking blocks across the boundary itself using the credit token.
+				// Redeeming Anthropic fallback credit replays the refused request's frozen
+				// body; the server validates thinking blocks across the boundary itself
+				// using the credit token.
 				const canRedeemFallbackCredit =
 					creditHandle !== undefined &&
 					candidate.api === "anthropic-messages" &&
 					candidate.provider === failedMessage.provider &&
 					creditTargets.includes(candidate.id) &&
 					Date.now() < creditHandle.expiresAt;
+				// Anthropic signatures and redacted blocks are model-bound, while the
+				// latest assistant response must remain byte-identical. On a transient
+				// failure keep retrying the source model, or consider a later
+				// cross-provider candidate whose message transform can safely demote the
+				// foreign thinking.
+				// A classifier refusal is exempt: the source model declines the same
+				// request again, and Anthropic's documented retry for a refusal resends
+				// the history unchanged on another Claude model, which drops the thinking
+				// blocks it cannot read (preserved thinking, "Switching models
+				// mid-conversation"). Skipping same-provider candidates here ended the turn
+				// on the refusal with every Anthropic entry of the chain untried.
+				// While the refusal's fallback credit can still be redeemed, only its
+				// targets pass, so an earlier non-target entry cannot forfeit the credit.
+				// An Anthropic-compatible proxy that will not verify a sibling model's
+				// signature is covered by the transport, not by skipping the hop: the
+				// `Invalid signature in thinking block` 400 escalates to a retry that
+				// replays no thinking and succeeds, and the session stops replaying it
+				// afterwards.
+				const creditLive =
+					creditHandle !== undefined && creditTargets.length > 0 && Date.now() < creditHandle.expiresAt;
+				const refusalMayReplay = options?.refusalWalk === true && !creditLive;
 				if (
 					!canRedeemFallbackCredit &&
+					!refusalMayReplay &&
 					candidate.api === "anthropic-messages" &&
 					latestAssistant?.api === "anthropic-messages" &&
 					latestAssistant.provider === candidate.provider &&
@@ -3022,6 +3044,7 @@ export class TurnRecovery {
 		// hidden redirect so the retried turn sees a directive to break the repeated
 		// pattern instead of re-sampling the same stalled reasoning.
 		this.#maybeInjectThinkingLoopRedirect(id);
+		this.#maybeInjectMalformedFunctionCallRedirect(id, maxRetries, preserveFailedTurn, switchedModel);
 
 		// Day-scale provider waits (a monthly quota reset parsed from the error
 		// text) exceed the signed 32-bit timer limit; sleepLong chunks the sleep
@@ -3160,6 +3183,25 @@ export class TurnRecovery {
 			undefined,
 			"agent",
 		);
+	}
+	#maybeInjectMalformedFunctionCallRedirect(
+		id: number,
+		maxRetries: number,
+		preserveFailedTurn: boolean,
+		switchedModel: boolean,
+	): void {
+		if (!AIError.is(id, AIError.Flag.MalformedFunctionCall)) return;
+		if (preserveFailedTurn || switchedModel) return;
+		const reminder = prompt.render(malformedFunctionCallRetryTemplate, {
+			retryCount: this.#retryAttempt,
+			maxRetries,
+		});
+		this.#host.agent.appendMessage({
+			role: "developer",
+			content: [{ type: "text", text: reminder }],
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
 	}
 
 	/**

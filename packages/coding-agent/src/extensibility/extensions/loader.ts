@@ -3,7 +3,6 @@
  */
 
 import type * as fs1 from "node:fs";
-import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -594,15 +593,14 @@ export async function discoverExtensionPaths(
 
 	const isDisabledName = (name: string): boolean => disabled.has(`extension-module:${name}`);
 
-	const addPath = (extPath: string): void => {
+	// Key on the real file so a symlink and its target load once, e.g. an
+	// extensions/ symlink plus the same file passed with --extension. Missing
+	// paths keep their lexical key so the loader still reports them.
+	const addPath = async (extPath: string): Promise<void> => {
 		const resolved = path.resolve(extPath);
-		// Configured and plugin discovery can expose the same extension through
-		// different symlink spellings (for example ~/.omp/agent/extensions and
-		// ~/.omp/plugins/node_modules). Deduplicate by the filesystem target so
-		// one factory cannot bind two runtimes to the same extension.
 		let identity = resolved;
 		try {
-			identity = fsSync.realpathSync.native(resolved);
+			identity = await fs.realpath(resolved);
 		} catch (err) {
 			if (isEacces(err) || hasFsCode(err, "EPERM")) {
 				logger.warn("Failed to canonicalize extension path", { path: resolved, error: String(err) });
@@ -616,10 +614,10 @@ export async function discoverExtensionPaths(
 		}
 	};
 
-	const addPaths = (paths: string[]) => {
+	const addPaths = async (paths: string[]): Promise<void> => {
 		for (const extPath of paths) {
 			if (isDisabledName(getExtensionNameFromPath(extPath))) continue;
-			addPath(extPath);
+			await addPath(extPath);
 		}
 	};
 
@@ -636,7 +634,7 @@ export async function discoverExtensionPaths(
 			providers: ["native"],
 		});
 		for (const ext of discovered.items) {
-			addPath(ext.path);
+			await addPath(ext.path);
 		}
 	}
 
@@ -650,18 +648,18 @@ export async function discoverExtensionPaths(
 			for (const hookPath of hooks.items
 				.map(hook => hook.path)
 				.filter(hookPath => isExtensionFile(path.basename(hookPath)))) {
-				addPath(hookPath);
+				await addPath(hookPath);
 			}
 		}
 	} else {
 		for (const configuredPath of configuredPaths) {
-			addPaths(await discoverHooksInPackageRoot(resolvePath(configuredPath, cwd)));
+			await addPaths(await discoverHooksInPackageRoot(resolvePath(configuredPath, cwd)));
 		}
 	}
 
 	// 3. Discover extension entry points from installed plugins.
 	if (ambient) {
-		addPaths(await getAllPluginExtensionPaths(cwd));
+		await addPaths(await getAllPluginExtensionPaths(cwd));
 	}
 
 	// 4. Explicitly configured paths
@@ -676,11 +674,11 @@ export async function discoverExtensionPaths(
 		}
 
 		if (stat?.isDirectory()) {
-			addPaths(resolveExtensionDirectory(resolved, CONFIGURED_EXTENSION_DIRECTORY_OPTIONS).files);
+			await addPaths(resolveExtensionDirectory(resolved, CONFIGURED_EXTENSION_DIRECTORY_OPTIONS).files);
 			continue;
 		}
 
-		addPath(resolved);
+		await addPath(resolved);
 	}
 
 	return allPaths;

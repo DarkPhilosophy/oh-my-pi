@@ -947,9 +947,18 @@ export interface Application {
   pid?: number
 }
 
-/** Controls whether launching an application deliberately activates it. */
+/**
+ * How `apps.open` opens its target.
+ *
+ * `activate` deliberately brings the application forward. On macOS a file,
+ * folder or URL target opens in its default application, or in `app` (an
+ * application ID, name or path); `reveal` instead shows the file or folder
+ * selected in Finder, which comes to the front.
+ */
 export interface ApplicationOpenOptions {
   activate?: boolean
+  reveal?: boolean
+  app?: string
 }
 
 /** Filters the native application inventory without requiring screen access. */
@@ -1727,12 +1736,13 @@ export declare function diffWords(oldText: string, newText: string): Array<DiffC
 
 /**
  * Whole-call apply outcome. `is_error` carries the model-facing failure in
- * `text` with no files.
+ * `text` with no files, and `error_kind` its class (`EditError::kind`).
  */
 export interface EditApplyOutcome {
   text: string
   files: Array<EditFileOutcome>
   isError: boolean
+  errorKind?: string
 }
 
 /** Apply-time knobs. */
@@ -1759,6 +1769,9 @@ export interface EditDiffResult {
 
 /** Numbered unified diff between two texts (`generateDiffString`). */
 export declare function editDiffString(oldText: string, newText: string, path?: string | undefined | null): EditDiffResult
+
+/** Every `errorKind` a failed apply outcome can carry. */
+export declare function editErrorKinds(): Array<string>
 
 /** A destructive file operation a payload declares. */
 export interface EditFileOpIntent {
@@ -2231,6 +2244,13 @@ export interface GrepOptions {
    * every file under it.
    */
   glob?: string
+  /**
+   * Glob patterns of files and directories to leave out, relative to `path`:
+   * one without `/` matches at any depth (`*.test.ts`, `vendor`), a leading
+   * `/` anchors it to `path` (`/vendor`); a matched directory is not
+   * searched.
+   */
+  exclude?: Array<string>
   /**
    * Match simple glob patterns at any depth (default: true; `*.ts` ->
    * `**\/*.ts`). Set false when `glob` is already relative to `path`.

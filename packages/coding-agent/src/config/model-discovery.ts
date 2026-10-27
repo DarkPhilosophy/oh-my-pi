@@ -23,7 +23,7 @@ import {
 	OPENAI_COMPAT_DISCOVERY_DEFAULT_MAX_TOKENS,
 	resolveLiteLLMApi,
 } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
-import type { KindApiKind, ModelSpec, OpenAICompat } from "@oh-my-pi/pi-catalog/types";
+import { type KindApiKind, type ModelSpec, type OpenAICompat, runnerApiKind } from "@oh-my-pi/pi-catalog/types";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { ProviderDiscovery } from "./models-config-schema";
@@ -203,6 +203,9 @@ export interface DiscoveryContext {
 	 * Returns undefined when no key is stored or it is a local/no-auth
 	 * sentinel; otherwise an {@link ApiKey} whose resolver participates in the
 	 * central force-refresh/rotate auth-retry policy on 401/usage-limit.
+	 * The bearer authenticates only the discovery request: discovered models
+	 * carry just the provider's configured headers, since the model cache
+	 * never persists header values and drops rows that had them.
 	 */
 	getBearerApiKeyResolver(provider: string): Promise<ApiKey | undefined>;
 }
@@ -658,7 +661,6 @@ async function discoverLlamaCppModelsAt(
 	const modelsUrl = `${baseUrl}/models`;
 
 	const baseHeaders: Record<string, string> = { ...providerConfig.headers };
-	let headers = baseHeaders;
 	const customTimeoutMs = providerConfig.discovery.timeoutMs;
 	const attempt = async (h: Record<string, string>) => {
 		const [payload, metadata] = await Promise.all([
@@ -670,7 +672,6 @@ async function discoverLlamaCppModelsAt(
 				if (!response.ok) {
 					throw new DiscoveryHttpError(response.status, modelsUrl);
 				}
-				headers = h;
 				return (await response.json()) as unknown;
 			}),
 			discoverLlamaCppServerMetadata(ctx, baseUrl, h, customTimeoutMs),
@@ -706,7 +707,7 @@ async function discoverLlamaCppModelsAt(
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 					contextWindow,
 					maxTokens: resolveLlamaCppMaxTokens(contextWindow, serverMetadata?.maxTokens),
-					headers,
+					headers: baseHeaders,
 				},
 				providerConfig.discovery.type,
 			),
@@ -853,9 +854,16 @@ function extractOpenAIModelsListInputCapabilities(item: {
 	input?: unknown;
 	input_modalities?: unknown;
 	architecture?: unknown;
+	metadata?: unknown;
 }): ("text" | "image")[] | undefined {
 	const architecture = isRecord(item.architecture) ? item.architecture : undefined;
-	const modalities = collectModalities([item.input, item.input_modalities, architecture?.input_modalities]);
+	const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+	const modalities = collectModalities([
+		item.input,
+		item.input_modalities,
+		architecture?.input_modalities,
+		metadata?.input_modalities,
+	]);
 	if (modalities.size === 0) return undefined;
 	return modalities.has("image") ? ["text", "image"] : ["text"];
 }
@@ -965,7 +973,6 @@ export async function discoverOpenAIModelsList(
 	const modelsUrl = appendModelsPath(baseUrl);
 
 	const baseHeaders: Record<string, string> = { ...providerConfig.headers };
-	let headers = baseHeaders;
 	// LM Studio is a desktop server reached over loopback, so an unanswered
 	// probe means "not installed / not running", never "slow link": give it the
 	// same tight budget the other implicit local engines use instead of the
@@ -993,7 +1000,6 @@ export async function discoverOpenAIModelsList(
 				if (!res.ok) {
 					throw new DiscoveryHttpError(res.status, modelsUrl);
 				}
-				headers = h;
 				return (await res.json()) as {
 					data?: Array<{
 						id?: string;
@@ -1043,6 +1049,10 @@ export async function discoverOpenAIModelsList(
 		// headers/baseUrl/cost stay local.
 		const reference = resolveModelReference(id, references) as ModelSpec<Api> | undefined;
 		const referenceCompat = reference?.compat as OpenAICompat | undefined;
+		// codex-lb and similar registries nest the route's identity beside its
+		// reasoning ladder: `display_name`, `context_window`, `input_modalities`.
+		const metadata = isRecord(item.metadata) ? item.metadata : undefined;
+		const advertisedName = typeof metadata?.display_name === "string" ? metadata.display_name.trim() : "";
 		const input = nativeMetadataForModel?.input ??
 			extractOpenAIModelsListInputCapabilities(item) ??
 			reference?.input ?? ["text"];
@@ -1073,6 +1083,7 @@ export async function discoverOpenAIModelsList(
 		const reportedContextWindow =
 			toPositiveNumberOrUndefined(item.max_model_len) ??
 			toPositiveNumberOrUndefined(item.context_length) ??
+			toPositiveNumberOrUndefined(metadata?.context_window) ??
 			reportedLimitsContextWindow ??
 			nativeMetadataForModel?.contextWindow ??
 			reference?.contextWindow ??
@@ -1085,7 +1096,7 @@ export async function discoverOpenAIModelsList(
 		if (task) {
 			specs.push({
 				id,
-				name: reference?.name ?? id,
+				name: advertisedName || reference?.name || id,
 				api: task.api,
 				kind: task.kind,
 				provider: providerConfig.provider,
@@ -1098,13 +1109,13 @@ export async function discoverOpenAIModelsList(
 				// token window. Neither produces output tokens.
 				contextWindow: task.kind === "embedding" ? reportedContextWindow : null,
 				maxTokens: null,
-				headers,
+				headers: baseHeaders,
 			} as ModelSpec<Api>);
 			continue;
 		}
 		const api =
 			providerConfig.discovery.type === "litellm"
-				? resolveLiteLLMApi(undefined, id, providerConfig.api)
+				? resolveLiteLLMApi(item, id, providerConfig.api)
 				: providerConfig.api;
 		const contextWindow = reportedContextWindow ?? DISCOVERY_DEFAULT_CONTEXT_WINDOW;
 		// A row that advertises its own reasoning ladder (codex-lb `metadata`
@@ -1114,8 +1125,9 @@ export async function discoverOpenAIModelsList(
 		const advertisedReasoning = extractAdvertisedReasoning(item);
 		specs.push({
 			id,
-			name: reference?.name ?? id,
+			name: advertisedName || reference?.name || id,
 			api,
+			kind: runnerApiKind(api),
 			provider: providerConfig.provider,
 			baseUrl,
 			reasoning: reference?.reasoning === true || advertisedReasoning !== undefined,
@@ -1143,7 +1155,7 @@ export async function discoverOpenAIModelsList(
 				reportedMaxTokens ?? reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
 				contextWindow,
 			),
-			headers,
+			headers: baseHeaders,
 			compat: {
 				supportsStore: false,
 				supportsDeveloperRole: false,
@@ -1169,10 +1181,8 @@ export async function discoverLiteLLMModels(
 	const references = getBundledModelReferenceIndex();
 	const resolveReference = (id: string) => resolveModelReference(id, references) as ModelSpec<Api> | undefined;
 	const baseHeaders: Record<string, string> = { ...providerConfig.headers };
-	let headers = baseHeaders;
 	const timeoutMs = providerConfig.discovery.timeoutMs ?? 10_000;
 	const attempt = async (h: Record<string, string>) => {
-		headers = h;
 		let authError: DiscoveryHttpError | undefined;
 		const authAwareFetch: FetchImpl = async (input, init) => {
 			const response = await ctx.fetch(input, init);
@@ -1215,7 +1225,7 @@ export async function discoverLiteLLMModels(
 	if (richModels === null) {
 		return discoverOpenAIModelsList({ ...providerConfig, baseUrl }, ctx);
 	}
-	return richModels.map(spec => buildDiscoveredModel({ ...spec, headers }, "litellm"));
+	return richModels.map(spec => buildDiscoveredModel({ ...spec, headers: baseHeaders }, "litellm"));
 }
 
 /**
@@ -1241,7 +1251,6 @@ export async function discoverProxyModels(
 	const modelsUrl = `${baseUrl}/models`;
 
 	const baseHeaders: Record<string, string> = { ...providerConfig.headers };
-	let headers = baseHeaders;
 	const timeoutMs = providerConfig.discovery.timeoutMs ?? 10_000;
 	const attempt = async (h: Record<string, string>) =>
 		withTimeoutSignal(timeoutMs, async signal => {
@@ -1252,7 +1261,6 @@ export async function discoverProxyModels(
 			if (!res.ok) {
 				throw new DiscoveryHttpError(res.status, modelsUrl);
 			}
-			headers = h;
 			return (await res.json()) as {
 				data?: Array<{ id?: string; name?: string; supported_endpoint_types?: string[]; context_length?: number }>;
 			};
@@ -1302,7 +1310,7 @@ export async function discoverProxyModels(
 					reference?.contextWindow ??
 					DISCOVERY_DEFAULT_CONTEXT_WINDOW,
 				maxTokens: reference?.maxTokens ?? discoveryDefaultMaxTokens(api),
-				headers,
+				headers: baseHeaders,
 				// OpenAI-compat fields are no-ops on anthropic models; the
 				// Anthropic SDK ignores them. Provider-level disableStrictTools
 				// flows in via #applyProviderCompat for the third-party-Anthropic

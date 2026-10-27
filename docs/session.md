@@ -58,7 +58,7 @@ Terminal breadcrumb files are written under:
 ~/.omp/agent/terminal-sessions/<terminal-id>
 ```
 
-Breadcrumb content begins with cwd and session file path. Optional extra lines are `fresh` and `cwdstat <device> <inode>`. A fresh breadcrumb preserves an initially created, lazy session whose JSONL file does not exist yet, preventing `continueRecent()` from reopening the previous session. Explicit `newSession()` boundaries materialize their header before returning. The directory identity permits automatic re-rooting after a same-filesystem project rename; a missing cwd alone is not move evidence. Writes are synchronous, ordered, and best-effort.
+Breadcrumb content begins with cwd and session file path. Optional extra lines are `fresh` and `cwdstat <device> <inode>`. A fresh breadcrumb preserves an initially created, lazy session whose JSONL file does not exist yet, preventing `continueRecent()` from reopening the previous session. Explicit `newSession()` boundaries materialize their header before returning, except the lazy successor created by `drop` (`/delete`). The directory identity permits automatic re-rooting after a same-filesystem project rename; a missing cwd alone is not move evidence. Writes are synchronous, ordered, and best-effort.
 
 ## File Format
 
@@ -82,6 +82,7 @@ Session files are JSONL: one JSON object per line. Current files physically begi
   "additionalDirectories": ["/work/shared"],
   "previousSessionFiles": ["/old/location/session.jsonl"],
   "providerPromptCacheKey": "optional inherited cache identity",
+  "taskPromptCacheKey": "optional local-only Task sibling family key",
   "parentSession": "optional lineage marker"
 }
 ```
@@ -92,6 +93,11 @@ Notes:
 - `additionalDirectories` records normalized, deduplicated workspace roots beyond `cwd`.
 - `previousSessionFiles` records prior absolute locations after successful moves.
 - `providerPromptCacheKey` carries an inherited provider prompt-cache identity for eligible full forks.
+- `taskPromptCacheKey` is a local-only Task sibling family key (`<parent cache key>:<agent name>`), omitted from shares and HTML exports.
+  - The executor derives it once the child session exists, regardless of the child's initial model. An empty parent cache lineage derives nothing, so those children keep their own session identity.
+  - Until a request uses it, the key lives in a session-scoped, non-persisted stash. The first primary request on a model that opts into `shared-prompt-cache` writes it to the header, so fork and reopen keep it.
+  - Each request decides consumption against its own model: an explicit session key wins; otherwise the family key applies only on opted-in models.
+  - The stash does not survive a fork, move, branch, new-session reset, or switch to a different session; a rolled-back move or switch restores it.
 - `parentSession` is an opaque lineage string. Current code writes either a session id or a session path depending on flow (`fork`, `forkFrom`, `createBranchedSession`, or explicit `newSession({ parentSession })`). Treat it as metadata, not a typed foreign key.
 
 - `titleSource` is `auto` or `user`; automatic renames cannot overwrite a user title.
@@ -526,7 +532,7 @@ Ordinary completed appends update memory and local file storage synchronously on
 
 - A new ordinary session remains memory-only until it contains an assistant message or a caller invokes `ensureOnDisk()`.
 - Before that gate, entries remain in memory; crossing it writes the full title slot, header, and accumulated entries.
-- Explicit `newSession()` (including `/new`) calls `ensureOnDisk()` before returning, preserving an empty session boundary across terminals.
+- Explicit `newSession()` (including `/new`) calls `ensureOnDisk()` before returning, preserving an empty session boundary across terminals. The `/delete` successor (`drop`) is the exception: it stays lazy, because the fresh terminal breadcrumb already pins this terminal to it and a failed deletion leaves the predecessor as a legitimate resume target; a zero-turn quit must not leave an empty file.
 - Afterwards, entries append incrementally.
 - Saving an editor draft forces a discoverable header and stores `draft.txt` with a marker; if the draft disappears while only startup metadata remains, close removes that draft-only session. Explicit `ensureOnDisk()` sessions remain resumable.
 - Concurrent completed appends supersede an in-flight atomic rewrite with an authoritative full-body rewrite so stale publication cannot clobber them.

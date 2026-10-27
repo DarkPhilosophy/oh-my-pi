@@ -618,6 +618,16 @@ export class CommandController {
 		info += `${theme.fg("dim", "Assistant:")} ${stats.assistantMessages}\n`;
 		info += `${theme.fg("dim", "Tool Calls:")} ${stats.toolCalls}\n`;
 		info += `${theme.fg("dim", "Tool Results:")} ${stats.toolResults}\n`;
+		if (stats.editRejections !== undefined) {
+			const kinds = Object.entries(stats.editRejections).sort(
+				([aKind, aCount], [bKind, bCount]) => bCount - aCount || aKind.localeCompare(bKind),
+			);
+			const total = kinds.reduce((sum, [, count]) => sum + count, 0);
+			const breakdown = kinds
+				.map(([kind, count]) => `${replaceTabs(sanitizeText(kind.replaceAll("_", " ")))} ${count}`)
+				.join(", ");
+			info += `${theme.fg("dim", "Edit Rejections:")} ${total} ${theme.fg("dim", `(${breakdown})`)}\n`;
+		}
 		info += `${theme.fg("dim", "Total:")} ${stats.totalMessages}\n\n`;
 		// Append-only context
 		{
@@ -2752,7 +2762,14 @@ export function renderUsageReports(
 		for (const report of providerReports) {
 			for (const limit of report.limits) {
 				const windowId = limit.window?.id ?? limit.scope.windowId ?? "default";
-				const key = `${formatLimitTitle(limit)}|${windowId}`;
+				// Distinct buckets can share a label and window (Antigravity's Gemini
+				// vs Gemini (Argon) weekly) and must stay separate rows instead of
+				// averaging into "50% free", so the id joins the key. Label and window
+				// stay in it too: some providers build ids positionally or per plan
+				// (kimi's `${index}`, copilot's allowance), where ids differ across
+				// accounts for the same quota. `sharedGroup` keeps the routing copies
+				// of one shared bucket together.
+				const key = limit.scope.sharedGroup ?? `${formatLimitTitle(limit)}|${windowId}|${limit.id}`;
 				const windowLabel = limit.window?.label ?? windowId;
 				const entry = limitGroups.get(key) ?? {
 					label: formatLimitTitle(limit),

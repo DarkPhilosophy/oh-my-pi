@@ -2,16 +2,64 @@
 
 ## [Unreleased]
 
-### Added
-
-- Added `PI_ANTHROPIC_API_VERSION=2026-10-21` to send Anthropic API version 2026-10-21 to the official Anthropic API; sampling parameters are omitted under that version, which rejects them ([#16706](https://github.com/can1357/oh-my-pi/pull/16706) by [@H4vC](https://github.com/H4vC))
+## [18.13.1] - 2026-10-27
 
 ### Fixed
 
+- Codex accounts whose spend cap is used up are no longer picked through credit overage or from usage cached before the upgrade ([#16973](https://github.com/can1357/oh-my-pi/pull/16973) by [@DusKing1](https://github.com/DusKing1))
+- Fixed Codex capacity 429s (`turn_rate_limit_exceeded`, "Codex is at capacity") reporting "Try again in ~N min" from the plan's usage-window reset, which made retries wait hours instead of the response's Retry-After ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
+
+## [18.13.0] - 2026-10-26
+
+### Breaking Changes
+
+- `OpenAIRequestSetupModel` now requires the catalog-policy fields (`api`, `reasoning`), so callers building a reduced model for `resolveOpenAIRequestSetup` must pass them ([#16988](https://github.com/can1357/oh-my-pi/pull/16988) by [@rafalopilowski1](https://github.com/rafalopilowski1))
+
+### Added
+
+- Added `PI_ANTHROPIC_API_VERSION=2026-10-21` to send Anthropic API version 2026-10-21 to the official Anthropic API; sampling parameters are omitted under that version, which rejects them ([#16706](https://github.com/can1357/oh-my-pi/pull/16706) by [@H4vC](https://github.com/H4vC))
+- OpenCode Go requests on lanes that opt into shared prompt caching send an explicit prompt-cache key as `x-opencode-session`, so Task siblings, forks and their parent reuse one gateway cache; custom providers declaring `providerType: "opencode-go"` get the same OpenCode headers ([#16988](https://github.com/can1357/oh-my-pi/pull/16988) by [@rafalopilowski1](https://github.com/rafalopilowski1))
+
+### Changed
+
+- Reduced the CPU spent preparing tool schemas on every model call, so requests with many tools start faster ([#16780](https://github.com/can1357/oh-my-pi/pull/16780) by [@yuzu-octopus](https://github.com/yuzu-octopus))
+- Fixed tool schema normalization modifying the caller's schema in place, which added the folded `const` value to a tool's own `enum` array ([#16780](https://github.com/can1357/oh-my-pi/pull/16780) by [@yuzu-octopus](https://github.com/yuzu-octopus))
+- Google Antigravity requests now carry the same request labels as the official 2.26.0 client (`cascade_id`, `root_cascade_id`, `request_id`, `used_non_gemini_model`), and image model lookup sends the account's project ([#17012](https://github.com/can1357/oh-my-pi/pull/17012) by [@apoc](https://github.com/apoc))
+- Google Antigravity requests now send each model tier's own `model_enum` label, output cap and thinking setting from the serving account's model list, as the official client does: Claude 5.5 and Gemini 4 Argon tiers send a thinking level, Gemini 3.8 Flash tiers the tier's thinking budget ([#17012](https://github.com/can1357/oh-my-pi/pull/17012) by [@apoc](https://github.com/apoc))
+- Google Antigravity requests now number conversation steps like the official client (the first request is step 1, and each model turn and tool result adds one), send `Accept-Encoding: gzip` without an explicit `Accept`, and no longer send the Claude thinking beta header to Claude 5.5 ([#17012](https://github.com/can1357/oh-my-pi/pull/17012) by [@apoc](https://github.com/apoc))
+
+### Fixed
+
+- Anthropic-compatible endpoints that require a `thinking` block on every turn of the current turn no longer replay a 400 when the history holds a turn an upstream answered without reasoning; the serializer pads those turns ([#16739](https://github.com/can1357/oh-my-pi/pull/16739) by [@lz37](https://github.com/lz37))
+- Fixed an Anthropic stream that a gateway or proxy cuts after `message_start`, substituting an in-band `error` frame, being reported as a completed-turn provider failure instead of a retryable stream truncation ([#16990](https://github.com/can1357/oh-my-pi/pull/16990) by [@Maziar123](https://github.com/Maziar123))
+- Fixed Kimi Code, Z.AI, and ClinePass usage polls logging a warning every poll for accounts without a metered plan ([#17057](https://github.com/can1357/oh-my-pi/pull/17057) by [@trukhinyuri](https://github.com/trukhinyuri))
+- Fixed Codex usage showing no limits for credit-billed ChatGPT Business/Enterprise seats: `/wham/usage` returns `rate_limit: null` for them, and their per-user credit cap (`spend_control.individual_limit`) is now reported as a `Spend cap (credits)` limit that also gates chat requests when no plan windows exist ([#16973](https://github.com/can1357/oh-my-pi/pull/16973) by [@DusKing1](https://github.com/DusKing1))
+- Fixed overlapping OpenAI Codex requests in the same session (e.g. concurrent auth-gateway requests) closing the WebSocket another request was still streaming on; the later request now goes over SSE ([#16812](https://github.com/can1357/oh-my-pi/pull/16812) by [@Abelo9996](https://github.com/Abelo9996))
+- Fixed Codex WebSocket turns dying with `unsupported_native_inflight_message` when the native turn lane was still busy; the turn is now retried as an independent full-context request instead of surfacing the error ([#17065](https://github.com/can1357/oh-my-pi/pull/17065) by [@AgileInnov8tor](https://github.com/AgileInnov8tor))
+- Fixed OpenRouter native failures appearing as successful empty stops and malformed Responses being replayed before corrective recovery; metadata permission/rate-limit failures no longer trigger malformed-response recovery ([#17063](https://github.com/can1357/oh-my-pi/pull/17063) by [@martijnberger](https://github.com/martijnberger))
 - Fixed Xiaomi MiMo API-key login failing with `Unsupported model mimo-v2.5` after the V2.5 retirement ([#16727](https://github.com/can1357/oh-my-pi/pull/16727) by [@LiPu-jpg](https://github.com/LiPu-jpg))
+- Fixed Xiaomi MiMo login rejecting `ttp-` Token Plan keys with `401 Invalid API Key`; they now validate against the regional Token Plan hosts like `tp-` keys ([#17045](https://github.com/can1357/oh-my-pi/issues/17045))
+- Fixed Xiaomi MiMo Token Plan login reporting `401 Invalid API Key` when the key's own region rejected the probe for another reason; that region's actual error is now shown ([#17045](https://github.com/can1357/oh-my-pi/issues/17045))
 - Fixed non-streaming requests reporting a missing API key when the credential resolver actually failed, hiding auth broker, OAuth and network outages behind "No API key" ([#16655](https://github.com/can1357/oh-my-pi/pull/16655) by [@adi-IL](https://github.com/adi-IL))
+- Fixed Claude subagents with large structured output schemas failing with `Schemas contains too many optional parameters` ([#16887](https://github.com/can1357/oh-my-pi/pull/16887) by [@alphastorm](https://github.com/alphastorm))
 - Fixed auth-gateway requests failing when a client requests an unsupported thinking effort; the gateway now uses the nearest supported tier ([#16671](https://github.com/can1357/oh-my-pi/pull/16671) by [@codyw912](https://github.com/codyw912))
+- Fixed Codex requests failing with `array schema must define items` when a tool or a task's `outputSchema` declares an array without `items` ([#16886](https://github.com/can1357/oh-my-pi/pull/16886) by [@alphastorm](https://github.com/alphastorm))
 - Fixed Anthropic tools whose parameters are a root `anyOf`/`oneOf`/`allOf` of objects being sent as an empty closed object that only accepts `{}`; variant properties now fold into the root `input_schema` ([#16630](https://github.com/can1357/oh-my-pi/issues/16630))
+- Fixed OAuth logins failing with `invalid_grant` after a token refresh took longer than 10 seconds: the refresh now finishes in the background and saves the provider's new refresh token ([#16291](https://github.com/can1357/oh-my-pi/pull/16291) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed a tool call from a Claude model that declined mid-response still running after its server-side fallback model took over ([#16250](https://github.com/can1357/oh-my-pi/pull/16250) by [@will-bogusz](https://github.com/will-bogusz))
+- Added 1h prompt caching on Factory Droid's Claude models (Anthropic, Vertex, Bedrock and Azure upstreams) when you set cache retention to long, and cache warming plus cache-timed idle compaction on those models ([#16296](https://github.com/can1357/oh-my-pi/pull/16296) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed Factory Droid accounts whose login token lacks an organization getting 401 "User not affiliated with an organization" on every request: omp now resolves the account's organization at login and refresh ([#14061](https://github.com/can1357/oh-my-pi/issues/14061)) ([#16257](https://github.com/can1357/oh-my-pi/pull/16257) by [@will-bogusz](https://github.com/will-bogusz))
+- Added image generation and editing through a Factory Droid login: `generate_image` runs Factory's GPT Image 2.5, GPT Image 2.5 Flare and Gemini 3 Pro Image, with up to 16 reference images for GPT Image edits ([#16316](https://github.com/can1357/oh-my-pi/pull/16316) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed OpenAI-compatible chat completions with Anthropic-style prompt caching (`cacheControlFormat: "anthropic"`, e.g. OpenRouter Claude) re-sending a turn's tool calls and results uncached on every tool-loop request; the cache breakpoint now advances onto the latest tool result ([#16845](https://github.com/can1357/oh-my-pi/issues/16845))
+- Fixed native Google (`google-generative-ai`, `google-vertex`) requests failing with `The operation timed out.` after ~5 minutes of slow prefill even when `providers.streamFirstEventTimeoutSeconds` allowed longer ([#16991](https://github.com/can1357/oh-my-pi/issues/16991))
+- Fixed `model.loopGuard` settings being ignored for providers routed through the shared option mapping, such as `openai-responses` models from `models.yml` ([#11129](https://github.com/can1357/oh-my-pi/issues/11129), [#16963](https://github.com/can1357/oh-my-pi/pull/16963) by [@SipgateSteffenPaul](https://github.com/SipgateSteffenPaul))
+- Fixed Google Antigravity's Gemini 4 Argon weekly bucket sharing the generic "Gemini" label with the shared Gemini weekly bucket, leaving usage rows indistinguishable; the Argon bucket now reads "Gemini (Argon)" ([#16790](https://github.com/can1357/oh-my-pi/issues/16790))
+- Fixed Anthropic API-key requests with thinking off failing with 400 "context_management: Extra inputs are not permitted" on Claude Opus 5.5 and Fable 5.1, and on Claude Haiku 5.5 after an effort change (for example a retry fallback from a model without reasoning) ([#17047](https://github.com/can1357/oh-my-pi/pull/17047) by [@sjawhar](https://github.com/sjawhar))
+- Fixed every GitLab Duo Agent request failing with 4400 "Flow configuration failed security validation" when a context file (such as an `AGENTS.md`) contains an HTML comment ([#17044](https://github.com/can1357/oh-my-pi/pull/17044) by [@trukhinyuri](https://github.com/trukhinyuri))
+- Fixed a GitLab Duo Agent session that GitLab rejects on close (WebSocket 4000–4999) ending as an empty answer that was silently retried three times; it now ends with an error naming GitLab's reason and HTTP status ([#17044](https://github.com/can1357/oh-my-pi/pull/17044) by [@trukhinyuri](https://github.com/trukhinyuri))
+- Fixed Cursor GitHub and Google logins never getting an account email ([#17048](https://github.com/can1357/oh-my-pi/pull/17048) by [@trukhinyuri](https://github.com/trukhinyuri))
+- Fixed Cursor X Subscription usage treating the weekly Grok/Composer pool as third-party budget; third-party models are now metered by prepaid credit ([#17048](https://github.com/can1357/oh-my-pi/pull/17048) by [@trukhinyuri](https://github.com/trukhinyuri))
+- Fixed Google models (`google-generative-ai`, `google-vertex`, `google-gemini-cli`/Antigravity) running out of output on small `maxTokens` requests with reasoning on, ending with thinking only and no answer; the requested `maxTokens` now leaves room for thinking on top, as on other providers ([#16943](https://github.com/can1357/oh-my-pi/pull/16943) by [@Mouriya-Emma](https://github.com/Mouriya-Emma))
 
 ## [18.12.5] - 2026-10-21
 
@@ -6415,3 +6463,4 @@ Older entries are archived in [packages/ai/CHANGELOG.md@0dd6aff5f282](https://gi
 Older entries are archived in [packages/ai/CHANGELOG.md@592e894eb29e](https://github.com/can1357/oh-my-pi/blob/592e894eb29ed3db2ee2dae71ec7d72ac13c64c8/packages/ai/CHANGELOG.md).
 Older entries are archived in [packages/ai/CHANGELOG.md@bb602d67c9b6](https://github.com/can1357/oh-my-pi/blob/bb602d67c9b685535bbf8ef1a1cc9de3c944ede4/packages/ai/CHANGELOG.md).
 Older entries are archived in [packages/ai/CHANGELOG.md@7a5f1425b9bd](https://github.com/can1357/oh-my-pi/blob/7a5f1425b9bd79c3c74ae1d8946782b0494c8aa9/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@917a36589039](https://github.com/can1357/oh-my-pi/blob/917a365890396071a959dfd2865a3538518ef717/packages/ai/CHANGELOG.md).

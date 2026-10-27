@@ -253,6 +253,7 @@ export const stateDefs = {
 		cost: "number",
 		"credits?": "SessionCredits",
 		"routedModels?": "Record<string, number>",
+		"editRejections?": doc("Record<string, number>", "Failed edits by the engine's `errorKind`."),
 		"contextUsage?": "ContextUsage",
 	},
 	MessagesPage: {
@@ -308,6 +309,7 @@ export const stateDefs = {
 	BtwHistoryTurn: doc(
 		{
 			question: "string",
+			"images?": doc("ImageContent[]", "Images attached to the question."),
 			answer: "string",
 			status: "BtwStatus",
 			createdAt: "number.integer",
@@ -319,6 +321,7 @@ export const stateDefs = {
 	BtwHistoryRecord: doc(
 		{
 			question: "string",
+			"images?": doc("ImageContent[]", "Images attached to the question."),
 			answer: "string",
 			status: "BtwStatus",
 			createdAt: "number.integer",

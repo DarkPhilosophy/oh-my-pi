@@ -137,8 +137,50 @@ describe("focused subagent view slash commands", () => {
 
 	it("runs /btw with its question from the focused view instead of steering the agent", async () => {
 		const { raw, prompt } = await submit("/btw what is it doing?");
-		expect(raw.handleBtwCommand).toHaveBeenCalledWith("what is it doing?");
+		expect(raw.handleBtwCommand).toHaveBeenCalledWith("what is it doing?", undefined);
 		expect(prompt).not.toHaveBeenCalled();
+	});
+
+	it("answers a side file command from the focused view and releases its draft", async () => {
+		const focused = createFocusedContext();
+		Object.assign(focused.raw, { fileSlashCommands: new Set(["sitrep"]) });
+		Object.assign(focused.raw.session, {
+			slashCommands: [
+				{
+					name: "sitrep",
+					description: "",
+					content: "Report. Focus: $ARGUMENTS",
+					side: true,
+					source: "via OMP User",
+				},
+			],
+		});
+		const controller = new InputController(focused.ctx);
+		controller.setupEditorSubmitHandler();
+		focused.editor.setText("/sitrep the migration");
+		await focused.ctx.editor.onSubmit?.("/sitrep the migration");
+		expect(focused.raw.handleBtwCommand).toHaveBeenCalledWith(
+			"Report. Focus: the migration",
+			undefined,
+			"/sitrep the migration",
+		);
+		expect(focused.editor.clearDraft).toHaveBeenCalledTimes(1);
+		expect(focused.prompt).not.toHaveBeenCalled();
+	});
+
+	it("keeps a builtin gated to the main session when a side file command shares its name", async () => {
+		const focused = createFocusedContext();
+		Object.assign(focused.raw, { fileSlashCommands: new Set(["clear"]) });
+		Object.assign(focused.raw.session, {
+			slashCommands: [{ name: "clear", description: "", content: "Side", side: true, source: "via OMP User" }],
+		});
+		const controller = new InputController(focused.ctx);
+		controller.setupEditorSubmitHandler();
+		focused.editor.setText("/clear");
+		await focused.ctx.editor.onSubmit?.("/clear");
+		expect(focused.raw.handleBtwCommand).not.toHaveBeenCalled();
+		expect(focused.raw.showStatus).toHaveBeenCalledTimes(1);
+		expect(focused.editor.getText()).toBe("/clear");
 	});
 
 	it("sets the focused agent's thinking level with /effort, leaving the main session alone", async () => {

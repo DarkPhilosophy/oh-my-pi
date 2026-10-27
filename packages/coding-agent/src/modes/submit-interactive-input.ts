@@ -17,7 +17,7 @@ export async function submitInteractiveInput(
 		| "optimisticSkillMessagePending"
 	> &
 		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">>,
-	session: Pick<AgentSession, "prompt" | "promptCustomMessage" | "isStreaming">,
+	session: Pick<AgentSession, "prompt" | "promptCustomMessage" | "isStreaming" | "buildUserSkillPrompt">,
 	input: SubmittedUserInput,
 ): Promise<void> {
 	if (input.cancelled) {

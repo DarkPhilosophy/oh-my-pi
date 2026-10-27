@@ -248,6 +248,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	]),
 	"effort-beta": wire("effortBeta", ["anthropic"]),
 	"escape-builtin-tool-names": wire("escapeBuiltinToolNames", ["anthropic"]),
+	"extended-cache-ttl-beta": wire("extendedCacheTtlBeta", ["anthropic"]),
 	"fast-mode": wire("fastMode", ["anthropic"]),
 	"first-party-provider": wire("firstPartyProvider", ["anthropic"]),
 	"honors-claude-code-beta-kill-switch": wire("honorsClaudeCodeBetaKillSwitch", ["anthropic"]),
@@ -257,6 +258,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"official-endpoint": wire("officialEndpoint", ["anthropic", "openai-responses"]),
 	"replay-unsigned-thinking": wire("replayUnsignedThinking", ["anthropic"]),
 	"requires-thinking-enabled": wire("requiresThinkingEnabled", ["anthropic"]),
+	"requires-thinking-presence": wire("requiresThinkingPresence", ["anthropic"]),
 	"requires-tool-result-id": wire("requiresToolResultId", ["anthropic"]),
 	"signing-endpoint": wire("signingEndpoint", ["anthropic"]),
 	"strip-thinking-history": wire("stripThinkingHistory", ["openai", "anthropic", "ollama"]),
@@ -544,12 +546,17 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"limits-patch": { key: "limitsPatch", set: "catalog", shape: "object" },
 	/** Seeds `maxTokens` only when the row reports none; applied after `limits-patch`. */
 	"max-tokens-fallback": { key: "maxTokensFallback", set: "catalog", shape: "scalar" },
-	/** Most output tokens the host serves: a larger reported `maxTokens` is lowered to it; an unknown one stays unknown. */
+	/** Most output tokens the host serves: a larger reported `maxTokens` (and Antigravity per-SKU `maxOutputTokens`) is lowered to it; an unknown one stays unknown. */
 	"max-tokens-ceiling": { key: "maxTokensCeiling", set: "catalog", shape: "scalar" },
 	"long-context-cost": { key: "longContext", set: "catalog", shape: "object" },
 	"prompt-cache": { key: "promptCache", set: "catalog", shape: "object" },
-	"task-sibling-prompt-cache": {
-		key: "taskSiblingPromptCache",
+	/**
+	 * The lane rewards routing related requests — Task siblings, forks, explicit
+	 * `--prompt-cache-key` callers — under one shared prompt-cache key instead of
+	 * each conversation's own identity. Unassigned: per-conversation routing.
+	 */
+	"shared-prompt-cache": {
+		key: "sharedPromptCache",
 		set: "catalog",
 		shape: "scalar",
 		values: [true, false],

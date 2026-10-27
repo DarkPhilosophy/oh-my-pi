@@ -32,7 +32,6 @@ import { prewarmModelConnection } from "@oh-my-pi/pi-ai/providers/connection-pre
 import { isOpenAICodexWebSocketPreferred } from "@oh-my-pi/pi-ai/providers/openai-codex-transport";
 import { withCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
-import { resolveCatalogPolicy } from "@oh-my-pi/pi-catalog/compat/catalog-policy";
 import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { $env } from "@oh-my-pi/pi-utils/env";
@@ -195,6 +194,7 @@ import {
 	loadEffectiveAuthAccountPolicyConfig,
 } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
+import { CostCapError, type CostGate, guardStreamFn } from "./session/cost-gate";
 import {
 	CREDENTIAL_DISABLED_NOTICE_SOURCE,
 	formatCredentialDisabledNotice,
@@ -247,6 +247,7 @@ import {
 	composeAppendPrompt,
 	loadProjectContextFiles as loadContextFilesInternal,
 	projectSystemPromptToolMetadata,
+	withoutAgentsMd,
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
 import { AgentOutputManager } from "./task/output-manager";
@@ -678,6 +679,8 @@ export interface CreateAgentSessionOptions {
 	providerPromptCacheKeySource?: "explicit" | "fork";
 	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
 	deadline?: number;
+	/** Cost gate of the parent session tree; without one the session starts its own from `session.warnCost` / `session.maxCost`. */
+	costGate?: CostGate;
 
 	/** Custom tools to register (in addition to built-in tools). Accepts both CustomTool and ToolDefinition. */
 	customTools?: (CustomTool | ToolDefinition)[];
@@ -766,6 +769,10 @@ export interface CreateAgentSessionOptions {
 	rules?: Rule[];
 	/** Context files (AGENTS.md content). Default: discovered walking up from cwd */
 	contextFiles?: Array<{ path: string; content: string }>;
+	/** Discover no context files: not from cwd (on start or a cwd change), not for additional workspace roots, and no nested AGENTS.md list. Explicit `contextFiles` still load. Inherited by subagents. */
+	noContextFiles?: boolean;
+	/** Drop every context file named `AGENTS.md`: from `contextFiles`, cwd discovery, and additional workspace roots. Set for task subagents. */
+	excludeAgentsMd?: boolean;
 	/** Pre-built workspace tree (skips re-scanning; passed by parents to subagents). */
 	workspaceTree?: WorkspaceTree;
 	/** Prompt templates. Default: discovered from cwd/.omp/prompts/ + agentDir/prompts/ */
@@ -1892,9 +1899,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// Independent discoveries that depend only on cwd/agentDir — kicked off in parallel and awaited
 	// at their respective consumer sites. Their work can overlap with model resolution, secret loading,
 	// session-context build, tool creation, MCP discovery, and extension discovery.
-	const contextFilesPromise = options.contextFiles
-		? Promise.resolve(options.contextFiles)
-		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir);
+	const excludeAgentsMd = options.excludeAgentsMd === true;
+	const contextFileFilter = <T extends { path: string }>(files: T[]): T[] =>
+		excludeAgentsMd ? withoutAgentsMd(files) : files;
+	const pinnedContextFiles = options.contextFiles
+		? contextFileFilter(options.contextFiles)
+		: options.noContextFiles
+			? []
+			: undefined;
+	const contextFilesPromise = pinnedContextFiles
+		? Promise.resolve(pinnedContextFiles)
+		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir).then(contextFileFilter);
 	contextFilesPromise.catch(() => {});
 	const resolveRepoContext = async (repoCwd: string) => {
 		try {
@@ -2280,6 +2295,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let hasSession = false;
 	let hasRegistered = false;
 	const restrictToolNames = options.restrictToolNames === true;
+	// The session tree shares one cost gate: a subagent is given its parent's; a root
+	// session owns one that follows its session file. Read it per request, so a request
+	// lands on the gate of the session file it was sent for.
+	const currentCostGate = (): CostGate | undefined => session?.costGate ?? options.costGate;
 	const enableLsp = options.enableLsp ?? !restrictToolNames;
 	const lspReadOnly = options.lspReadOnly ?? restrictToolNames;
 	// Every root owns its jobs and delivery sinks, even when another root is live.
@@ -2299,6 +2318,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					settings,
 					modelRegistry,
 					sessionId: () => sessionManager.getSessionId(),
+					costGate: currentCostGate,
 					telemetry: () => agent?.telemetry,
 					obfuscate: () => (obfuscator?.hasSecrets() ? text => obfuscator?.obfuscate(text) ?? text : undefined),
 					onUsage: message => {
@@ -2367,6 +2387,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get cwd() {
 				return sessionManager.getCwd();
 			},
+			get costGate() {
+				return currentCostGate();
+			},
 			isToolActive: name => activeToolNames.has(name),
 			setActiveToolNames,
 			toolRegistry,
@@ -2408,6 +2431,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			skipPythonPreflight: options.skipPythonPreflight,
 			contextFiles,
+			noContextFiles: options.noContextFiles,
 			get workspaceTree() {
 				return lateWorkspaceTree ?? resolvedWorkspaceTree;
 			},
@@ -2442,7 +2466,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getPromptCacheKey: () => {
 				if (!session) return undefined;
 				const model = session.agent.state.model;
-				if (!model || resolveCatalogPolicy(model).taskSiblingPromptCache !== true) return undefined;
+				if (!model) return undefined;
 				return session.getPromptCacheKeyForModel(model) ?? session.agent.sessionId;
 			},
 			getToolByName: name => session?.getToolByName(name),
@@ -3973,6 +3997,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					: resolveTelemetry(options.telemetry, providerSessionId),
 			),
 		});
+		// Instructions from MCP servers the host connects outside `mcpManager`
+		// (ACP client-declared servers); installed via
+		// `AgentSession.setMcpServerInstructionsSource`.
+		let hostMcpServerInstructions: (() => Map<string, string> | undefined) | undefined;
+		/** Live server instructions from the session's own manager and any host source, sorted by server name. */
+		const readMcpServerInstructions = (): Map<string, string> | undefined => {
+			const own = mcpManager?.getServerInstructions();
+			const hosted = hostMcpServerInstructions?.();
+			if (!hosted || hosted.size === 0) return own;
+			if (!own || own.size === 0) return hosted;
+			return new Map([...own, ...hosted].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
+		};
 		const rebuildSystemPrompt = async (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
@@ -3981,10 +4017,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const activeRepoContext = hasSession
 				? await logger.time("resolveActiveRepoContext", resolveRepoContext, promptCwd)
 				: initialActiveRepoContext;
-			if (hasSession && options.contextFiles === undefined) {
-				contextFiles = await logger.time("discoverContextFiles", discoverContextFiles, promptCwd, agentDir, [
-					...cfgDisabledExtensions.get(settings),
-				]);
+			if (hasSession && pinnedContextFiles === undefined) {
+				contextFiles = contextFileFilter(
+					await logger.time("discoverContextFiles", discoverContextFiles, promptCwd, agentDir, [
+						...cfgDisabledExtensions.get(settings),
+					]),
+				);
 				toolSession.contextFiles = contextFiles;
 				session.setAdvisorContextPrompt(formatAdvisorContextPrompt(contextFiles));
 			}
@@ -4052,7 +4090,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// `getServerInstructions()` are empty until the background connect
 			// completes; the rebuild that `refreshMCPTools` triggers post-discovery
 			// then picks up the mounted routes and any connected-server instructions.
-			const serverInstructions = mcpManager?.getServerInstructions();
+			const serverInstructions = readMcpServerInstructions();
 			// Drive guidance off the auto-learn BUILTINS currently registered (provenance,
 			// not just an active name): a custom/extension tool that merely shares the
 			// name is not built-in, and the settings reconcile adds/removes the built-ins
@@ -4142,6 +4180,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
+				noContextFiles: options.noContextFiles,
+				excludeAgentsMd,
 				xdevTools: toolSession.xdev ? xdevEntries(toolSession.xdev) : [],
 				xdevDocs: xdevPromptDocs ? renderXdevPromptDocs(xdevPromptDocs, routedCatalogNames) : "",
 				resolvedCustomPrompt: options.customSystemPrompt,
@@ -4498,18 +4538,28 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// slot, preventing the nested-spawn deadlock from issue #3749.
 		const getRequestApiKey =
 			options.getApiKey ?? ((requestModel: Model) => modelRegistry.resolver(requestModel, agent.sessionId));
+		// Every attempt this session sends (primary, side-channel, advisor, cache warming,
+		// image-source retries) passes the session tree's cost gate once it holds its
+		// concurrency slot, and adds its cost to the gate before releasing the slot.
 		const settingsBoundStreamFn = wrapStreamFnWithBlobUrlFallback(
 			createReserveRoutingStreamFn(
 				settings,
 				authStorage,
 				wrapStreamFnWithProviderConcurrency(
 					settings,
-					createSettingsAwareStreamFn(settings, undefined, {
-						canAutoAccept: streamModel =>
-							anthropicSlowModeHasNoSiblingHeadroom(modelRegistry.authStorage, streamModel, session?.sessionId),
-						notify: (level, message) => session?.emitNotice(level, message, "anthropic-slow-mode"),
-						onLane: lane => session?.noteAnthropicSlowModeLane(lane),
-					}),
+					guardStreamFn(
+						createSettingsAwareStreamFn(settings, undefined, {
+							canAutoAccept: streamModel =>
+								anthropicSlowModeHasNoSiblingHeadroom(
+									modelRegistry.authStorage,
+									streamModel,
+									session?.sessionId,
+								),
+							notify: (level, message) => session?.emitNotice(level, message, "anthropic-slow-mode"),
+							onLane: lane => session?.noteAnthropicSlowModeLane(lane),
+						}),
+						currentCostGate,
+					),
 				),
 				getRequestApiKey,
 			),
@@ -4600,6 +4650,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					? undefined
 					: getRequestApiKey(requestModel),
 			streamFn: (streamModel, context, streamOptions) => {
+				// The loop checks the cap before each request, but a side request can finish
+				// in between: refuse here, as this run's refusal, before announcing a dispatch.
+				const refusal = currentCostGate()?.check();
+				if (refusal) {
+					session.reportCostCapRefusal(refusal);
+					return Promise.reject(new CostCapError(refusal));
+				}
 				if (notifyFirstChatDispatch) {
 					const cb = notifyFirstChatDispatch;
 					notifyFirstChatDispatch = undefined;
@@ -4616,6 +4673,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					agent.state.tools.some(tool => tool.name === "think") &&
 					supportsExternalThinking(streamModel);
 				const fallbackCreditRedemption = session?.consumeActiveFallbackCreditRedemption(streamModel);
+				if (streamOptions?.promptCacheKey === undefined) session?.promoteTaskSiblingCandidate(streamModel);
 				const merged: SimpleStreamOptions = {
 					...streamOptions,
 					promptCacheKey: streamOptions?.promptCacheKey ?? session?.getPromptCacheKeyForModel(streamModel),
@@ -4625,6 +4683,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					...merged,
 					...(fallbackCreditRedemption !== undefined ? { fallbackCreditRedemption } : {}),
 				});
+				// A request that waited for a provider slot is checked again when it goes out.
+				if (stream instanceof Promise) {
+					stream.catch(error => {
+						if (error instanceof CostCapError) session.reportCostCapRefusal(error.refusal);
+					});
+				}
 				// Every request through this streamFn is this session's own main
 				// loop (side-channel, advisor, and maintenance requests use
 				// dedicated wrappers), so it owns the warmer. The replay omits the
@@ -4803,6 +4867,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// streamed and parsed on the main thread.
 		session = new AgentSession({
 			cacheWarmer,
+			costGate: options.costGate,
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
 			advisorMemoryPrompt,
@@ -4897,20 +4962,21 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			ensureGoalRegistered,
 			reconcileSettingsGatedTools,
-			getMcpServerInstructions: mcpManager
-				? () => {
-						const raw = mcpManager.getServerInstructions();
-						if (!raw || raw.size === 0) return raw;
-						const out = new Map<string, string>();
-						for (const [name, text] of raw) {
-							out.set(
-								name,
-								text.length > MAX_MCP_INSTRUCTIONS_LENGTH ? text.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH) : text,
-							);
-						}
-						return out;
-					}
-				: undefined,
+			getMcpServerInstructions: () => {
+				const raw = readMcpServerInstructions();
+				if (!raw || raw.size === 0) return raw;
+				const out = new Map<string, string>();
+				for (const [name, text] of raw) {
+					out.set(
+						name,
+						text.length > MAX_MCP_INSTRUCTIONS_LENGTH ? text.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH) : text,
+					);
+				}
+				return out;
+			},
+			setMcpServerInstructionsSource: source => {
+				hostMcpServerInstructions = source;
+			},
 			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
 			ttsrManager,
 			obfuscator,

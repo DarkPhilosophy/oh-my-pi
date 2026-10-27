@@ -591,6 +591,7 @@ function buildExecutorOptions(
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
 		cwd: session.cwd,
+		costGate: session.costGate,
 		additionalDirectories: session.additionalDirectories,
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
@@ -651,7 +652,8 @@ function buildExecutorOptions(
 		enableMCP,
 		customTools: request.customTools,
 		workPoolYieldItems: request.workPoolYieldItems,
-		contextFiles: session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md"),
+		contextFiles: session.contextFiles,
+		noContextFiles: session.noContextFiles,
 		skills,
 		// Autoload runs after session start, outside the seance isolation options.
 		autoloadSkills: preparedSession ? undefined : autoloadSkills,

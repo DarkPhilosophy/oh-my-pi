@@ -2,9 +2,30 @@
 
 ## [Unreleased]
 
+## [18.13.1] - 2026-10-27
+
+### Added
+
+- Hosts can distinguish safely paused agents from turns still draining with `Agent.isPaused` ([#17073](https://github.com/can1357/oh-my-pi/pull/17073) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy)).
+
+## [18.13.0] - 2026-10-26
+
+### Added
+
+- Added `SummaryOptions.remotePromptCacheKey` and `remoteCompactionPolicyModel()` so remote compaction can carry a cache key gated against the request it actually sends ([#16988](https://github.com/can1357/oh-my-pi/pull/16988) by [@rafalopilowski1](https://github.com/rafalopilowski1))
+
+### Changed
+
+- Remote compaction now sends cache and session headers for the endpoint and model the request actually uses, so a configured compaction override no longer inherits the live turn's routing ([#16988](https://github.com/can1357/oh-my-pi/pull/16988) by [@rafalopilowski1](https://github.com/rafalopilowski1))
+- Aside providers (`AgentLoopConfig.getAsideMessages`, `Agent.setAsideMessageProvider`) now receive which boundary is polled, `"work"` after tool calls or `"stop"` at the end of a turn, so they can keep a message out of a finished turn ([#16583](https://github.com/can1357/oh-my-pi/pull/16583) by [@will-bogusz](https://github.com/will-bogusz))
+
 ### Fixed
 
+- Fixed `--max-time` values above about 596 hours (such as `600h`) aborting the first turn with "Deadline exceeded" right away ([#17054](https://github.com/can1357/oh-my-pi/pull/17054) by [@trukhinyuri](https://github.com/trukhinyuri))
+- Fixed repeated compaction on small or provider-capped context windows: compaction keeps only as much recent history as fits under the configured trigger, and no longer counts stale pre-compaction usage ([#16904](https://github.com/can1357/oh-my-pi/pull/16904) by [@eggpeat](https://github.com/eggpeat))
+- Fixed native compaction token estimates counting opaque encrypted-state bytes as conversation text ([#16904](https://github.com/can1357/oh-my-pi/pull/16904) by [@eggpeat](https://github.com/eggpeat))
 - Fixed split-turn compaction leaving `session.compacting` context out of the turn-prefix summary ([#16707](https://github.com/can1357/oh-my-pi/pull/16707) by [@integrITsolutions](https://github.com/integrITsolutions))
+- Fixed compaction failing as a whole, and discarding the completed summary, when the optional short summary fails or returns no answer; the compaction now completes without a short summary, and cancellation still cancels it ([#16942](https://github.com/can1357/oh-my-pi/pull/16942) by [@Mouriya-Emma](https://github.com/Mouriya-Emma))
 
 ## [18.12.4] - 2026-10-20
 

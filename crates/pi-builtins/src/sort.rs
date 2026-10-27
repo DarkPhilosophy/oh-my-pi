@@ -4631,9 +4631,102 @@ impl clap::Parser for Sort {
 	}
 }
 
+/// Moves a field separator that starts with `=` and is attached to `-t` into
+/// its own argument: `-t=` becomes `-t` `=`, and `-nrt=` becomes `-nrt` `=`.
+///
+/// GNU sort reads every byte after `-t` as the separator, so `-t=` selects
+/// `=`. Clap instead strips the first `=` after an attached short option, which
+/// left `-t=` with an empty separator. Values of other options, operands after
+/// `--`, and the separate value of an option such as `-o` are left untouched.
+fn split_attached_separator(argv: Vec<OsString>) -> Vec<OsString> {
+	let app = uu_app();
+	let takes_value =
+		|arg: &Arg| arg.get_action().takes_values() && !arg.is_require_equals_set();
+	let short_takes_value = |short: u8| {
+		app.get_arguments()
+			.find(|arg| arg.get_short() == Some(char::from(short)))
+			.map(takes_value)
+	};
+	// Mirrors clap's `infer_long_args`: an exact name wins, else a unique prefix.
+	let long_takes_value = |name: &str| {
+		let exact = app.get_arguments().find(|arg| arg.get_long() == Some(name));
+		let arg = exact.or_else(|| {
+			let mut prefixed = app
+				.get_arguments()
+				.filter(|arg| arg.get_long().is_some_and(|long| long.starts_with(name)));
+			let first = prefixed.next();
+			if prefixed.next().is_none() { first } else { None }
+		});
+		arg.is_some_and(takes_value)
+	};
+
+	let mut out = Vec::with_capacity(argv.len() + 1);
+	let mut args = argv.into_iter();
+	out.extend(args.next());
+	while let Some(arg) = args.next() {
+		let bytes = arg.as_encoded_bytes();
+		if bytes == b"--" {
+			out.push(arg);
+			out.extend(args);
+			break;
+		}
+		if let Some(long) = bytes.strip_prefix(b"--") {
+			let value_follows = !long.contains(&b'=')
+				&& std::str::from_utf8(long).is_ok_and(|name| long_takes_value(name));
+			out.push(arg);
+			if value_follows {
+				out.extend(args.next());
+			}
+			continue;
+		}
+		let Some(cluster) = bytes.strip_prefix(b"-") else {
+			out.push(arg);
+			continue;
+		};
+		let mut value_follows = false;
+		let mut split_at = None;
+		for (index, &short) in cluster.iter().enumerate() {
+			match short.is_ascii().then(|| short_takes_value(short)).flatten() {
+				Some(false) => continue,
+				// An unknown option ends the scan; clap reports it unchanged.
+				None => break,
+				Some(true) => {},
+			}
+			let value = &cluster[index + 1..];
+			if value.is_empty() {
+				value_follows = true;
+			} else if short == b't' && value[0] == b'=' {
+				// `-` plus the cluster up to and including `t`.
+				split_at = Some(index + 2);
+			}
+			break;
+		}
+		match split_at {
+			Some(split_at) => {
+				let (option, separator) = bytes.split_at(split_at);
+				// SAFETY: both halves come from `OsStr::as_encoded_bytes`, split
+				// after an ASCII byte.
+				out.push(unsafe { OsString::from_encoded_bytes_unchecked(option.to_vec()) });
+				out.push(unsafe { OsString::from_encoded_bytes_unchecked(separator.to_vec()) });
+			},
+			None => {
+				out.push(arg);
+				if value_follows {
+					out.extend(args.next());
+				}
+			},
+		}
+	}
+	out
+}
+
 impl Utility for Sort {
 	const NAME: &'static str = "sort";
 	const USAGE_ERROR: u8 = 2;
+
+	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
+		Ok(split_attached_separator(argv))
+	}
 
 	fn run(self, host: &mut Host) -> i32 {
 		match uu_sort(host, &self.matches, &self.legacy_warnings) {
@@ -6182,5 +6275,35 @@ mod tests {
 				assert!(capture.out() == expected, "{value:?} {stable:?}");
 			}
 		}
+	}
+
+	#[test]
+	fn attached_equals_selects_equals_as_separator() {
+		for args in [&["-t=", "-k2", "-nr"][..], &["-nrt=", "-k2"]] {
+			let (code, capture) = run_util::<Sort>(args, "a=1\nb=3\n", "/");
+			assert_eq!(code, 0, "{args:?}: {}", capture.err());
+			assert_eq!(capture.out(), "b=3\na=1\n", "{args:?}");
+		}
+	}
+
+	#[test]
+	fn attached_separator_keeps_every_byte_after_t() {
+		let (code, capture) = run_util::<Sort>(&["-t==", "-k2"], "a=1\n", "/");
+		assert_eq!(code, 2);
+		assert_eq!(capture.err(), "sort: separator must be exactly one character long: '=='\n");
+	}
+
+	#[test]
+	fn separator_spelling_in_values_and_operands_is_left_alone() {
+		let dir = tempfile::tempdir().expect("tempdir");
+		std::fs::write(dir.path().join("-t="), "b\na\n").expect("fixture");
+		let (code, capture) = run_util::<Sort>(&["--", "-t="], "", dir.path());
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(capture.out(), "a\nb\n");
+
+		std::fs::write(dir.path().join("in"), "d\nc\n").expect("fixture");
+		let (code, capture) = run_util::<Sort>(&["-o", "-t=", "in"], "", dir.path());
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(std::fs::read_to_string(dir.path().join("-t=")).expect("output"), "c\nd\n");
 	}
 }

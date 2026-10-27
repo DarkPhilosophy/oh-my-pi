@@ -45,6 +45,24 @@ The **Remember across sessions** toggle above these answers decides where a gran
 - Grant answers appear only on prompts the mode raised. Prompts forced by a tool policy, an `override` (bash critical commands), a `tools.approval.<tool>: prompt` rule, or a pending provider safety check keep plain Approve/Deny and record nothing.
 - `/forget-approvals` clears the database and every conversation's session grants for the active agent directory. Deleting rows (`DELETE FROM grants`) or the file works too; every check reads the database fresh, so no restart is needed.
 
+## Restricted folders
+
+`tools.restrictedFolders` lists folders where every action needs an explicit approval, whatever the approval mode (`yolo` and `--auto-approve` included) and whatever was remembered:
+
+```yaml
+tools:
+  restrictedFolders:
+    - ~/secrets
+    - C:/work/payments
+```
+
+- A restricted folder covers itself and everything below it. A call whose targets fall inside it (`read`, `write`, `edit`, `grep`, `glob`, `ast_grep`, `find`, and any tool reporting `approvalCacheTargets`) prompts with `Reason: Restricted folder: <folder>`. A recursive search rooted above a restricted folder prompts too, because it reads into it; a one-level listing of the parent does not.
+- Paths are compared like Ask and remember keys: `~` is expanded, relative entries resolve against the session cwd, symlinks are resolved, and on Windows case is folded. `/a/foo` never covers `/a/foobar`.
+- A tool that names no path (`bash`, `eval`, `browser`, MCP tools, eval preludes) is matched by the directory it runs in: its `cwd` argument when it has one, else the session cwd. The command text is not parsed, so a `bash` call running outside the folder that names a file inside it does not match; use a `tools.approval.bash` policy for that.
+- The prompt offers plain **Approve** / **Deny**: no session answer, no grant, and no ACP "Always allow" covers it, so every call asks again. A `deny` policy (tool or `tools.approval.<tool>: deny`) still denies.
+- Without an interactive UI (print mode, headless subagents, the Cursor exec bridge) the call is refused, like any other prompt with nobody to answer it.
+- The `/settings` panel edits the list as JSON under Interaction → Approvals. It is hidden when project config supplies the list, so a project value is never promoted to global config.
+
 ## User overrides
 
 `tools.approval` is honored in every mode:

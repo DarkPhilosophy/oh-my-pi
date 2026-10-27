@@ -4,7 +4,7 @@ import { clearCustomApis, registerCustomApi } from "@oh-my-pi/pi-ai/api-registry
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel, type MockContent, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { complete, completeSimple, stream, streamSimple } from "@oh-my-pi/pi-ai/stream";
-import type { Api, AssistantMessage, AssistantMessageEvent, Context, Model } from "@oh-my-pi/pi-ai/types";
+import type { Api, AssistantMessage, AssistantMessageEvent, Context, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { wrapLeakedThinkingStream } from "@oh-my-pi/pi-ai/utils/leaked-thinking-stream";
 import {
@@ -16,6 +16,7 @@ import {
 	ThinkingLoopDetector,
 	withThinkingLoopGuard,
 } from "@oh-my-pi/pi-ai/utils/thinking-loop";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { isRetryableError } from "@oh-my-pi/pi-utils";
 
@@ -1233,5 +1234,75 @@ describe("thinking-loop retry budget (result path)", () => {
 			waitSpy.mockRestore();
 			clearCustomApis();
 		}
+	});
+});
+
+describe("loopGuard on mapped provider options", () => {
+	// A built-in API, so the request goes through mapOptionsForApi before stream() guards it.
+	const model = buildModel({
+		api: "openai-responses",
+		provider: "loop-guard-test",
+		id: "loop-guard-test-model",
+		name: "Loop guard test model",
+		baseUrl: "https://unused.example.com/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000,
+		maxTokens: 32_768,
+	} satisfies ModelSpec<"openai-responses">);
+	const text = `Healthy lead sentence. ${OBSERVED_KIRO_CYCLE.repeat(6)}`;
+	const fetch = async (): Promise<Response> => {
+		const events: unknown[] = [
+			{
+				type: "response.output_item.added",
+				output_index: 0,
+				item: { type: "message", id: "msg_1", role: "assistant", content: [] },
+			},
+			{ type: "response.content_part.added", part: { type: "output_text", text: "" } },
+		];
+		for (let i = 0; i < text.length; i += 23) {
+			events.push({ type: "response.output_text.delta", delta: text.slice(i, i + 23) });
+		}
+		events.push(
+			{
+				type: "response.output_item.done",
+				output_index: 0,
+				item: { type: "message", id: "msg_1", role: "assistant", content: [{ type: "output_text", text }] },
+			},
+			{
+				type: "response.completed",
+				response: {
+					status: "completed",
+					usage: {
+						input_tokens: 1,
+						output_tokens: 1,
+						total_tokens: 2,
+						input_tokens_details: { cached_tokens: 0 },
+					},
+				},
+			},
+		);
+		return new Response(`${events.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`, {
+			headers: { "content-type": "text/event-stream" },
+		});
+	};
+
+	test("trips on an exact answer-text cycle when loopGuard is unset", async () => {
+		const result = await streamSimple(model, context(), { apiKey: "test", fetch }).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain(THINKING_LOOP_ERROR_MARKER);
+	});
+
+	test.each([
+		["enabled: false", { enabled: false }],
+		["checkAssistantContent: false", { checkAssistantContent: false }],
+	] as const)("returns the full answer when %s", async (_label, loopGuard) => {
+		const result = await streamSimple(model, context(), { apiKey: "test", fetch, loopGuard }).result();
+
+		expect(result.errorMessage).toBeUndefined();
+		expect(result.stopReason).toBe("stop");
+		expect(result.content).toEqual([expect.objectContaining({ type: "text", text })]);
 	});
 });

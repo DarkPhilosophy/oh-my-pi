@@ -250,11 +250,11 @@ Choose the setting by the desired outcome:
 - Interceptor configuration syntax is unchanged. It handles common flat command lists, not full shell parsing: heredocs, parameter expansion, command substitution, backticks, grouping, and malformed quoting only receive the existing whole-input check. This is best-effort routing toward dedicated tools, not a security boundary.
 - `bash.direnv` defaults to `"auto"` and honors direnv's allow list; an unallowed `.envrc` is not executed. Set it to `"off"` to bypass preflight. `bash.direnvLoadTimeoutMs` controls the cold-load budget.
 - Default interceptor rules come from `DEFAULT_BASH_INTERCEPTOR_RULES` in `packages/coding-agent/src/exec/settings.ts`:
-  - `cat|head|tail|less|more` -> `read`
+  - `cat|head|tail|less|more` -> `read` (not `cat` that sends stdout to a file or reads a heredoc, such as `cat > f` or `cat 2>err > f`)
   - `grep|rg|ripgrep|ag|ack` -> `grep`
   - `find|fd|locate` with name/type/glob flags -> `glob`
   - `sed -i`, `perl -i`, `awk -i inplace` -> `edit`
-  - `echo|printf|cat <<` with redirection -> `write`
+  - `echo|printf|cat` whose stdout goes to a file (`echo x > f`, `cat > f`, `cat 2>err > f`, `cat <<EOF > f`) -> `write`; redirects of other fds (`2>err.log`), fd duplication, `/dev` sinks and redirects after `;`, `&&`, `|` or a newline do not count
 - PTY mode is ignored in non-UI contexts and when `PI_NO_PTY=1` (gated by `canUseInteractiveBashPty()`); the tool falls back to non-PTY execution and appends a `pty requested but unavailable in this environment; ran without a terminal` notice.
 - Non-PTY runs layer `NON_INTERACTIVE_ENV` via `buildNonInteractiveEnv()`; PTY runs instead get the shell spawn environment (`getShellConfig().env`) minus `GIT_EDITOR`, `GPG_TTY`, `CI`, and `NO_COLOR`, then `TERM=xterm-256color`, then any direnv-provided values, which win.
 - When the shell minimizer rewrites output inside `executeBash()`, the visible output is replaced with minimized text and a `[raw output: artifact://<id>]` footer may be appended if `onMinimizedSave` persisted the original text.

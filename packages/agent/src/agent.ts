@@ -39,6 +39,7 @@ import {
 	unpairedToolCallTail,
 } from "./agent-loop";
 import type { AppendOnlyContextManager } from "./append-only-context";
+import { agentPauseGate } from "./pause";
 import { isProviderRefusalMessage } from "./replay-policy";
 import { SentToolDefinitions } from "./sent-tool-definitions";
 import { Tokenizer } from "./tokenizer";
@@ -58,6 +59,7 @@ import type {
 	AgentTool,
 	AgentToolContext,
 	AgentTurnEndContext,
+	AsideBoundary,
 	AsideMessage,
 	PrepareQueuedMessages,
 	QueuedMessageQueue,
@@ -481,6 +483,12 @@ export class Agent {
 	#cwdResolver?: () => string | undefined;
 
 	#runningPrompt?: Promise<void>;
+	#isPaused = false;
+
+	/** True while this unfinished turn is safely parked by the process pause gate. */
+	get isPaused(): boolean {
+		return this.#isPaused && agentPauseGate.paused && !this.#abortController?.signal.aborted;
+	}
 	#resolveRunningPrompt?: () => void;
 	#kimiApiFormat?: "openai" | "anthropic";
 	#preferWebsockets?: boolean;
@@ -507,7 +515,7 @@ export class Agent {
 	#onModelCallSystemPrompt?: (systemPrompt: string[]) => void;
 	#beforeModelCall?: AgentBeforeModelCall;
 	#additionalBeforeModelCalls = new Set<AgentBeforeModelCall>();
-	#asideMessageProvider?: () => AsideMessage[] | Promise<AsideMessage[]>;
+	#asideMessageProvider?: (boundary: AsideBoundary) => AsideMessage[] | Promise<AsideMessage[]>;
 	#telemetry?: AgentLoopConfig["telemetry"];
 	#appendOnlyContext?: AppendOnlyContextManager;
 	#beforeQueuedMessageDequeueHooks = new Set<(signal?: AbortSignal) => Promise<void> | void>();
@@ -1212,7 +1220,9 @@ export class Agent {
 	 * aborts foreground tools; an interruptible `wait` may end early through the
 	 * peek hooks. See `AgentLoopConfig.getAsideMessages`.
 	 */
-	setAsideMessageProvider(fn: (() => AsideMessage[] | Promise<AsideMessage[]>) | undefined): void {
+	setAsideMessageProvider(
+		fn: ((boundary: AsideBoundary) => AsideMessage[] | Promise<AsideMessage[]>) | undefined,
+	): void {
 		this.#asideMessageProvider = fn;
 	}
 
@@ -1819,6 +1829,7 @@ export class Agent {
 		this.#state.isStreaming = true;
 		this.#state.streamMessage = null;
 		this.#state.error = undefined;
+		this.#isPaused = false;
 
 		// Clear Cursor tool result buffer at start of each run
 		this.#cursorToolResultBuffer = [];
@@ -1991,6 +2002,9 @@ export class Agent {
 			onAssistantMessageEvent: this.#onAssistantMessageEvent,
 			onHarmonyLeak: this.#onHarmonyLeak,
 			onTurnEnd: (messages, signal, context) => this.#onTurnEnd?.(messages, signal, context),
+			onPauseChange: paused => {
+				this.#isPaused = paused;
+			},
 			getToolChoice,
 			softToolRequirementState: this.#softToolRequirementState,
 			onToolChoiceRejected: () => {
@@ -2020,7 +2034,7 @@ export class Agent {
 			hasBackgroundCompletions: this.hasBackgroundCompletions,
 			hasQueuedAsides: this.hasQueuedAsides,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal ?? loopSignal),
-			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],
+			getAsideMessages: async boundary => (await this.#asideMessageProvider?.(boundary)) ?? [],
 			onBeforeYield: () => this.#onBeforeYield?.(),
 			onDetachedToolUpdate: event => this.emitExternalEvent(event),
 			telemetry: this.#telemetry,
@@ -2241,6 +2255,7 @@ export class Agent {
 				this.#emit({ type: "agent_end", messages: [errorMsg] });
 			}
 		} finally {
+			this.#isPaused = false;
 			this.#restoreUndeliveredQueuedMessages(loopAbortController);
 			resolveRun?.();
 			if (this.#abortController === loopAbortController) {

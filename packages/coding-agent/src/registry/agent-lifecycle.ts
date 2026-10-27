@@ -421,12 +421,12 @@ export class AgentLifecycleManager {
 			}
 			if (this.#releases.get(id)?.ref === ref) continue;
 			if (ref.status === "aborted") ref = await this.#reopen(id, ref);
-			if (ref.session) return ref.session;
 			const inflight = this.#revivals.get(id);
 			if (inflight?.ref === ref) {
 				await inflight.promise;
 				continue;
 			}
+			if (ref.session) return ref.session;
 			const revival = this.#resolveAndRevive(id, ref);
 			const pending: RevivingAgent = { ref, promise: revival };
 			this.#revivals.set(id, pending);
@@ -775,6 +775,13 @@ export class AgentLifecycleManager {
 		clearTimeout(adopted.timer);
 		const timer = setTimeout(() => {
 			adopted.timer = undefined;
+			// A session still owing turns to IRC messages (held by a run publishing
+			// its result, or queued) would drop them when parked. Try again once the
+			// TTL passes anew.
+			if (adopted.ref.session?.ircWakesPending) {
+				this.#armTimer(id, adopted);
+				return;
+			}
 			void this.park(id);
 		}, adopted.idleTtlMs);
 		timer.unref?.();

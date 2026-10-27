@@ -117,6 +117,7 @@ import {
 	shouldDropAutoToolChoiceForReasoning,
 	shouldRetryWithoutStrictTools,
 } from "./openai-shared";
+import { readOpenRouterGenerationError } from "./openrouter-generation";
 
 // OpenAI Responses-specific options
 export interface OpenAIResponsesOptions extends StreamOptions {
@@ -203,6 +204,15 @@ function isOpenAIResponsesReplayUnsafeEvent(event: ResponseStreamEvent): boolean
 }
 
 function isRetryableOpenAIResponsesStreamFailure(error: unknown): boolean {
+	// Terminal malformed output needs the agent's corrective reminder, not an
+	// identical billable replay inside the transport adapter.
+	if (
+		error instanceof AIError.ProviderResponseError &&
+		error.kind === "output" &&
+		AIError.is(AIError.classify(error), AIError.Flag.MalformedFunctionCall)
+	) {
+		return false;
+	}
 	return (
 		AIError.isTransientStreamParseError(error) ||
 		(error instanceof AIError.ProviderResponseError && error.kind === "incomplete-stream") ||
@@ -785,6 +795,9 @@ const streamOpenAIResponsesOnce = (
 					messages: context.messages,
 					sessionId: options?.sessionId ?? routingSessionId,
 					promptCacheSessionId,
+					// The family affinity key rides only an explicit prompt-cache
+					// identity; the sessionId-derived cache-id fallback never does.
+					promptCacheAffinityKey: options?.promptCacheKey ? promptCacheSessionId : undefined,
 				});
 			const premiumRequestsTotal = copilotPremiumRequests;
 			const providerSessionState = getOpenAIResponsesProviderSessionState(model, options?.providerSessionState);
@@ -1130,6 +1143,32 @@ const streamOpenAIResponsesOnce = (
 							"OpenAI responses stream closed before a terminal response event was received",
 							{ provider: model.provider, kind: "incomplete-stream" },
 						);
+					}
+
+					// OpenRouter's Responses translation can hide a native failure behind
+					// "completed". Consult metadata only for truly empty stops, never
+					// for replayable reasoning or provider-hosted tool progress.
+					if (
+						model.compat.isOpenRouterHost &&
+						output.stopReason === "stop" &&
+						output.content.length === 0 &&
+						nativeOutputItems.length === 0 &&
+						!output.stopDetails &&
+						output.responseId
+					) {
+						const nativeError = await readOpenRouterGenerationError({
+							baseUrl: resolvedBaseUrl,
+							headers,
+							responseId: output.responseId,
+							outputTokens: output.usage.output,
+							reasoningTokens: output.usage.reasoningTokens,
+							fetch: options?.fetch,
+							signal: requestSignal,
+						});
+						if (abortTracker.wasCallerAbort()) throw new AIError.AbortError();
+						if (nativeError) {
+							throw new AIError.ProviderResponseError(nativeError, { provider: model.provider, kind: "output" });
+						}
 					}
 
 					if (output.stopReason === "aborted" || output.stopReason === "error") {

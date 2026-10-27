@@ -3,6 +3,8 @@ import * as path from "node:path";
 import { afterAll, afterEach, describe, expect, it } from "bun:test";
 import type { Api, FetchImpl, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { factoryDroidRegistry } from "@oh-my-pi/pi-catalog/compat/factory-droid";
+import { buildFactoryDroidModel } from "@oh-my-pi/pi-catalog/discovery";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -146,6 +148,31 @@ describe("imageGenTool", () => {
 		await expect(imageGenTool.execute("call-registration", { subject: "a cat" }, undefined, ctx)).rejects.toThrow(
 			"provider credentials resolved during execution",
 		);
+	});
+
+	it("generates through a Factory Droid image model chosen for the image role", async () => {
+		const factory = factoryDroidRegistry()
+			.filter(({ spec }) => spec.id === "kimi-k3" || spec.id === "gpt-image-2.5-sunburst")
+			.map(entry => buildModel(buildFactoryDroidModel(entry)));
+		const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+		const fetchMock: FetchImpl = async (input, init) => {
+			requests.push({ url: input.toString(), body: JSON.parse(String(init?.body)) });
+			return new Response(JSON.stringify({ data: [{ b64_json: WEBP_DATA }] }), {
+				headers: { "content-type": "application/json" },
+			});
+		};
+		const ctx = createContext({
+			models: factory,
+			settings: Settings.isolated({ modelRoles: { image: "factory-droid/gpt-image-2.5-sunburst" } }),
+			fetch: fetchMock,
+		});
+		ctx.model = factory.find(model => model.id === "kimi-k3");
+		const result = await imageGenTool.execute("factory", { subject: "a lighthouse" }, undefined, ctx);
+		generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+		expect(requests.map(request => request.url)).toEqual(["https://api.factory.ai/api/llm/o/v1/images/generations"]);
+		expect(requests[0].body.model).toBe("gpt-image-2.5-sunburst");
+		expect(result.details?.provider).toBe("factory-droid");
+		expect(result.details?.imageCount).toBe(1);
 	});
 
 	it("e2e writes OpenAI Responses image_generation WebP output to a temp file", async () => {

@@ -51,6 +51,8 @@ const STARTUP_TIMEOUT_MS = 10_000;
 // generous: a clean interrupt is far preferable to losing the persistent
 // kernel's state, so we only kill as a last-resort recovery path.
 const INTERRUPT_ESCALATION_MS = 5_000;
+/** Bounds interrupt escalation plus the three shutdown grace windows before ACP abandons a session. */
+export const PYTHON_KERNEL_CANCEL_BUDGET_MS = INTERRUPT_ESCALATION_MS + 3 * SHUTDOWN_GRACE_MS;
 
 const PYTHON_RESERVED_PRELUDE_EXPORTS: Record<string, true> = {
 	__omp_tools__: true,
@@ -106,7 +108,7 @@ interface PythonKernelExecuteOptions extends KernelExecuteOptions {
 }
 
 // Cache successful probes per resolved cwd + explicit interpreter: every cell
-// otherwise pays one (or two — backend.isAvailable + ensureKernelAvailable)
+// otherwise pays one (or two — backend.checkAvailability + ensureKernelAvailable)
 // interpreter spawns even when the kernel is already hot. Failures are not
 // cached so installing a Python mid-session is picked up on the next attempt.
 const availabilityCache = new Map<string, Promise<PythonKernelAvailability>>();
