@@ -477,10 +477,23 @@ mod tests {
 	fn pending_tracks_partial_drain_progress() {
 		let (read_fd, write_fd) = pipe_pair();
 		let mut writer = TtyWriter::new(write_fd).unwrap();
-		// Far larger than any kernel pipe buffer, so the pump writes what fits
-		// and then blocks on the remainder with no reader draining.
+		// Far larger than any kernel pipe buffer, so the pump cannot finish
+		// before the reader drains the remaining payload.
 		let total = 1024 * 1024;
 		push(&writer, &vec![b'x'; total]);
+		// A blocking write need not return until its entire chunk fits. Some
+		// Linux pipes hold only 8 KiB, less than one 16 KiB writer chunk.
+		// Drain one chunk before asking for observable accounting progress.
+		let mut first = vec![0u8; MAX_TTY_WRITE_CHUNK_BYTES];
+		let mut consumed = 0;
+		while consumed < first.len() {
+			// SAFETY: read_fd is test-owned and the remaining slice is writable.
+			let n = unsafe {
+				libc::read(read_fd, first[consumed..].as_mut_ptr().cast(), first.len() - consumed)
+			};
+			assert!(n > 0, "failed to drain the first writer chunk");
+			consumed += n as usize;
+		}
 		// Wait until the pump has written at least one chunk, but remains blocked
 		// on the undrained tail. Do not treat one unchanged sample as stability:
 		// under full-suite load the pump thread may not be scheduled before the
@@ -500,7 +513,7 @@ mod tests {
 		// Drain the rest so stop() can join the pump thread.
 		let reader = std::thread::spawn(move || {
 			let mut buf = vec![0u8; 64 * 1024];
-			let mut got = 0usize;
+			let mut got = consumed;
 			while got < total {
 				// SAFETY: buf is a valid out-buffer for read(2).
 				let n = unsafe { libc::read(read_fd, buf.as_mut_ptr().cast(), buf.len()) };

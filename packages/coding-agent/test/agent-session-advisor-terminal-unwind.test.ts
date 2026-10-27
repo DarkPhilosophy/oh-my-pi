@@ -48,9 +48,9 @@ function makeTool(name: string, execute: BoundaryTool["execute"]): BoundaryTool 
 let active: { session: AgentSession; auth: AuthStorage; temp: TempDir } | undefined;
 
 afterEach(async () => {
-	await active?.session.dispose().catch(() => { });
+	await active?.session.dispose().catch(() => {});
 	active?.auth.close();
-	await active?.temp.remove().catch(() => { });
+	await active?.temp.remove().catch(() => {});
 	active = undefined;
 	vi.restoreAllMocks();
 });
@@ -406,22 +406,22 @@ it.each([true, false])("delivers only surviving terminal advice (all dropped: %s
 		handler: async () =>
 			++advisorCalls === 1
 				? {
-					content: [
-						{
-							type: "toolCall",
-							id: "nit-a",
-							name: "advise",
-							arguments: { note: "Completed check A", severity: "nit" },
-						},
-						{
-							type: "toolCall",
-							id: "nit-b",
-							name: "advise",
-							arguments: { note: "Completed check B", severity: "nit" },
-						},
-					],
-					stopReason: "toolUse",
-				}
+						content: [
+							{
+								type: "toolCall",
+								id: "nit-a",
+								name: "advise",
+								arguments: { note: "Completed check A", severity: "nit" },
+							},
+							{
+								type: "toolCall",
+								id: "nit-b",
+								name: "advise",
+								arguments: { note: "Completed check B", severity: "nit" },
+							},
+						],
+						stopReason: "toolUse",
+					}
 				: textResponse("Review complete"),
 	});
 	const judge = vi.fn(async () => ({

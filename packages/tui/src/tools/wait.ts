@@ -288,8 +288,8 @@ function jobsRenderResult(
 	// only when no row identifies that failure; new report capture errors are distinct.
 	const aggregateArtifactError =
 		outputMeta?.artifactError &&
-			(outputMeta.source?.type === "report" ||
-				!jobs.some(job => (job.meta?.artifactError ?? job.artifactError) === outputMeta.artifactError))
+		(outputMeta.source?.type === "report" ||
+			!jobs.some(job => (job.meta?.artifactError ?? job.artifactError) === outputMeta.artifactError))
 			? outputMeta.artifactError
 			: undefined;
 
@@ -418,18 +418,18 @@ function jobsRenderResult(
 							const modelBadge =
 								job.type === "task" && showModelBadge && typeof modelIdentity === "string"
 									? formatFeedModelBadge(
-										modelIdentity,
-										job.resolvedThinkingLevel,
-										job.advisor === true,
-										uiTheme,
-										Math.min(
-											FEED_MODEL_BADGE_WIDTH,
-											Math.max(
-												0,
-												rowWidth - visibleWidth(`${rowPrefix}${displayId}${durationSuffix}`) - 1,
+											modelIdentity,
+											job.resolvedThinkingLevel,
+											job.advisor === true,
+											uiTheme,
+											Math.min(
+												FEED_MODEL_BADGE_WIDTH,
+												Math.max(
+													0,
+													rowWidth - visibleWidth(`${rowPrefix}${displayId}${durationSuffix}`) - 1,
+												),
 											),
-										),
-									)
+										)
 									: "";
 							const modelLead = modelBadge ? `${modelBadge} ` : "";
 							const headRaw = displayId;
@@ -475,40 +475,40 @@ function jobsRenderResult(
 				agents.length === 0
 					? []
 					: renderTreeList<AgentActivitySnapshot>(
-						{
-							items: agents,
-							expanded,
-							maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
-							itemType: "agent",
-							renderItem: (agent, context) => {
-								const rowWidth = Math.max(0, width - (context.prefixWidth ?? 0));
-								const icon = agent.live
-									? formatStatusIcon("running", uiTheme, options.spinnerFrame)
-									: formatStatusIcon("warning", uiTheme);
-								const badge = agent.live
-									? formatBadge("agent", "accent", uiTheme)
-									: formatBadge("agent · no turn", "warning", uiTheme);
-								const id = truncateToWidth(
-									replaceTabs(agent.id).replace(/\s+/g, " "),
-									Math.max(0, rowWidth - visibleWidth(`${icon}  ${badge}`)),
-									Ellipsis.Unicode,
-								);
-								const gist = agent.activity
-									? ` ${uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(agent.activity), LABEL_MAX_WIDTH, Ellipsis.Unicode))}`
-									: "";
-								const parent = agent.parentId ? uiTheme.fg("dim", ` ← ${agent.parentId}`) : "";
-								const age = uiTheme.fg("dim", formatDuration(agent.ageMs));
-								return [
-									truncateToWidth(
-										`${icon} ${uiTheme.fg("muted", id)} ${badge}${gist} ${age}${parent}`,
-										rowWidth,
-										"",
-									),
-								];
+							{
+								items: agents,
+								expanded,
+								maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
+								itemType: "agent",
+								renderItem: (agent, context) => {
+									const rowWidth = Math.max(0, width - (context.prefixWidth ?? 0));
+									const icon = agent.live
+										? formatStatusIcon("running", uiTheme, options.spinnerFrame)
+										: formatStatusIcon("warning", uiTheme);
+									const badge = agent.live
+										? formatBadge("agent", "accent", uiTheme)
+										: formatBadge("agent · no turn", "warning", uiTheme);
+									const id = truncateToWidth(
+										replaceTabs(agent.id).replace(/\s+/g, " "),
+										Math.max(0, rowWidth - visibleWidth(`${icon}  ${badge}`)),
+										Ellipsis.Unicode,
+									);
+									const gist = agent.activity
+										? ` ${uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(agent.activity), LABEL_MAX_WIDTH, Ellipsis.Unicode))}`
+										: "";
+									const parent = agent.parentId ? uiTheme.fg("dim", ` ← ${agent.parentId}`) : "";
+									const age = uiTheme.fg("dim", formatDuration(agent.ageMs));
+									return [
+										truncateToWidth(
+											`${icon} ${uiTheme.fg("muted", id)} ${badge}${gist} ${age}${parent}`,
+											rowWidth,
+											"",
+										),
+									];
+								},
 							},
-						},
-						uiTheme,
-					);
+							uiTheme,
+						);
 
 			const all = [header];
 			if (aggregateArtifactError) {
@@ -737,8 +737,8 @@ function describeMessage(
 		body: compact([
 			ts
 				? row([text([span("received", "dim")]), elapsed(Date.now() - ts), text([span("ago", "dim")])], {
-					gap: "xs",
-				})
+						gap: "xs",
+					})
 				: undefined,
 			bodyText.trim() ? md(bodyText) : undefined,
 		]),

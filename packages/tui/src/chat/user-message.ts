@@ -266,7 +266,12 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 		}
 		const marks = this.#synthetic ? [] : tokenMarks(this.#text, this.#tokens, this.#imageLinks);
 		// Preserve typed line breaks without changing markdown source, copy text or marks.
-		children.push(md(this.#text, { ...(marks.length > 0 ? { marks } : {}), ...(this.#synthetic ? {} : { breaks: "hard" as const }) }));
+		children.push(
+			md(this.#text, {
+				...(marks.length > 0 ? { marks } : {}),
+				...(this.#synthetic ? {} : { breaks: "hard" as const }),
+			}),
+		);
 		const badges: NativeChild[] = [];
 		if (this.#liveSteered) {
 			badges.push(

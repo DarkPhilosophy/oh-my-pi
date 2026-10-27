@@ -193,7 +193,11 @@ describe("settings as a native prefs page", () => {
 		const { selector } = harness();
 		const roles = (n: NativeNode) => (n.c ?? []).map(c => ("k" in c && c.p && "role" in c.p ? c.p.role : undefined));
 		expect(roles(prefs(selector).node)).toContain("omp.prefs.preview.status");
-		expect(prefs(selector).props.sections.flatMap(section => section.rows).some(row => row.id === "status-preview")).toBe(false);
+		expect(
+			prefs(selector)
+				.props.sections.flatMap(section => section.rows)
+				.some(row => row.id === "status-preview"),
+		).toBe(false);
 		send(selector, { type: "action", key: "", act: "page", value: "shell", mods: [] });
 		const shell = prefs(selector);
 		expect(shell.props.page).toBe("shell");

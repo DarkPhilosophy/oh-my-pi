@@ -1040,7 +1040,12 @@ export class AdvisorConfigOverlayComponent implements Component {
 			case "activate": {
 				if (page.index < 0 || this.#mode !== "fields" || !(this.#editor instanceof SelectList)) return;
 				const state = this.#scopes[page.scope];
-				if (state.loading || state.failed || !this.#editor.pickerView().items.some(item => item.value === event.item)) return;
+				if (
+					state.loading ||
+					state.failed ||
+					!this.#editor.pickerView().items.some(item => item.value === event.item)
+				)
+					return;
 				this.#editor.setSelectedValue(event.item);
 				this.#fieldCursor = event.item;
 				this.#focusEditor();
@@ -1506,9 +1511,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 			},
 			{ value: "name", label: "Name", description: displayText(advisor.name) },
 			{ value: "model", label: "Model", description: modelDescription },
-			...(advisor.model?.trim()
-				? [{ value: "resetModel", label: "Reset model to advisor-role default" }]
-				: []),
+			...(advisor.model?.trim() ? [{ value: "resetModel", label: "Reset model to advisor-role default" }] : []),
 			{ value: "reviewMode", label: "Review mode", description: reviewMode },
 			{ value: "reviewInterval", label: "Review interval", description: String(reviewInterval) },
 			{

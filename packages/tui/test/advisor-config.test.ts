@@ -764,7 +764,13 @@ describe("advisor config native page", () => {
 
 	function picker(overlay: AdvisorConfigOverlayComponent) {
 		const slot = overlay.describe(cx)?.c?.[0];
-		if (!slot || typeof slot !== "object" || !("k" in slot) || slot.k !== "col" || slot.p?.role !== "omp.prefs.editor") {
+		if (
+			!slot ||
+			typeof slot !== "object" ||
+			!("k" in slot) ||
+			slot.k !== "col" ||
+			slot.p?.role !== "omp.prefs.editor"
+		) {
 			throw new Error("expected the picker in the native preferences editor region");
 		}
 		const editor = slot.c?.[0];

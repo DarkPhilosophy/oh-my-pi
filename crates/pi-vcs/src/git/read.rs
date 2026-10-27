@@ -1705,7 +1705,7 @@ mod tests {
 		let details = repo.commit_details("HEAD")?;
 		assert_eq!(details.sha, second);
 		assert_eq!(details.parents, vec![first]);
-		assert_eq!(details.author.name, "Test User");
+		assert_eq!(details.author.name, git(dir.path(), &["log", "-1", "--format=%an"])?.trim_end());
 		assert_eq!(details.message, "second subject");
 
 		git(dir.path(), &["remote", "add", "origin", "https://example.test/repo"])?;

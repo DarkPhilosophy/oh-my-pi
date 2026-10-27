@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
@@ -35,6 +35,15 @@ function restoreEnv(name: "SSH_CONNECTION" | "SSH_TTY" | "SSH_CLIENT" | "TMUX", 
 
 describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () => {
 	let harness: ProcessTerminalRenderHarness | undefined;
+
+	beforeEach(() => {
+		// Model a local terminal unless the case explicitly exercises SSH or tmux.
+		delete Bun.env.SSH_CONNECTION;
+		delete Bun.env.SSH_TTY;
+		delete Bun.env.SSH_CLIENT;
+		delete Bun.env.TMUX;
+		Object.defineProperty(TERMINAL, "id", { value: "base", configurable: true });
+	});
 
 	afterEach(() => {
 		harness?.dispose();

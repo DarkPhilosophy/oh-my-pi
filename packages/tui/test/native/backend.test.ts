@@ -59,16 +59,20 @@ describe("native backend", () => {
 	it("does not describe a blocked inline surface and describes the latest state when credit returns", async () => {
 		const stream = new Probe(md("first", { stream: true }));
 		let descriptions = 0;
-		harness = await TspHarness.start(tui => {
-			tui.setFrameProvider({
-				renderFrame: () => ({ viewport: [] }),
-				acknowledgeHistory: () => {},
-				describeSurface: () => {
-					descriptions++;
-					return { main: [stream], dock: [] };
-				},
-			});
-		}, { credits: 1, autoAck: false });
+		harness = await TspHarness.start(
+			tui => {
+				const provider = {
+					renderFrame: () => ({ viewport: [] }),
+					acknowledgeHistory: () => {},
+					describeSurface: () => {
+						descriptions++;
+						return { main: [stream], dock: [] };
+					},
+				};
+				tui.setFrameProvider(provider);
+			},
+			{ credits: 1, autoAck: false },
+		);
 		const h = harness;
 		const before = descriptions;
 		for (const text of ["second", "latest"]) {

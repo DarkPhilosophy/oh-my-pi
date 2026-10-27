@@ -2112,6 +2112,10 @@ mod tests {
 		let identity = |rev: &str| {
 			git(temp.path(), &["log", "-1", "--date=raw", "--format=%an|%ae|%ad|%cn|%ce", rev])
 		};
+		// Explicit GIT_AUTHOR_* / GIT_COMMITTER_* environment values legitimately
+		// override repository config; an amend must preserve the resulting
+		// identity.
+		let original_identity = identity("HEAD");
 
 		fs::write(temp.path().join("a"), "amended\n").unwrap();
 		repo.stage_files(&["a".into()]).unwrap();
@@ -2120,7 +2124,7 @@ mod tests {
 			.unwrap();
 		assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]), amended);
 		git(temp.path(), &["verify-commit", "HEAD"]);
-		assert_eq!(identity("HEAD"), "Test|test@example.com|86400 +0130|Test|test@example.com");
+		assert_eq!(identity("HEAD"), original_identity);
 		assert_eq!(git(temp.path(), &["rev-list", "--count", "HEAD"]), "1");
 
 		let message = "subject ünïcode\n\nbody line\n";

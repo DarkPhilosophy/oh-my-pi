@@ -64,10 +64,13 @@ describe("native composer", () => {
 
 	it("publishes Undo completion over the wire for coalesced and no-op changes", async () => {
 		const editor = composer({ running: false });
-		const h = await TspHarness.start(tui => {
-			tui.addChild(editor);
-			tui.setFocus(editor);
-		}, { features: ["edit", "undo"] });
+		const h = await TspHarness.start(
+			tui => {
+				tui.addChild(editor);
+				tui.setFocus(editor);
+			},
+			{ features: ["edit", "undo"] },
+		);
 		try {
 			const field = h.find(n => n.k === "editor")!;
 			const sf = h.terminal.surface!;
@@ -496,7 +499,9 @@ describe("native queued messages", () => {
 		const original = "prima\r\n  a doua\n\nultima\n";
 		const groups = [{ label: "Steering", messages: [original] }];
 		let edited: readonly string[] = [];
-		const band = new QueuedMessagesBand(groups, "alt+up", () => { edited = groups[0]!.messages; });
+		const band = new QueuedMessagesBand(groups, "alt+up", () => {
+			edited = groups[0]!.messages;
+		});
 		const pill = byRole(band.describe(), "omp.queue.item")!;
 		const message = nodes(pill).find(child => child.k === "text")!;
 		expect(message.p).toMatchObject({ text: "prima\n  a doua\n\nultima\n", wrap: "word" });

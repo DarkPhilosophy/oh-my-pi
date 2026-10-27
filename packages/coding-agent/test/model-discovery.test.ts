@@ -4100,9 +4100,10 @@ describe("ModelRegistry runtime discovery", () => {
 			{ type: "oauth", access: "gho_account_a", refresh: "refresh-a", expires },
 			{ type: "oauth", access: "gho_account_b", refresh: "refresh-b", expires },
 		]);
-		// Discovery's Copilot key is the structured peek of account A.
+		// Discovery keys the cache on the first stored account's stable identity,
+		// not on its rotating bearer token.
 		const accountACacheId = resolveModelCacheProviderId("github-copilot", {
-			apiKey: JSON.stringify({ token: "gho_account_a" }),
+			cacheIdentity: `cred:${authStorage.oauth.accounts("github-copilot")[0]!.credentialId}`,
 		});
 		writeModelCache(accountACacheId, Date.now(), [cachedVariant], true, "", cacheDbPath, [bundledBase]);
 

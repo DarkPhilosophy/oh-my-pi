@@ -6867,6 +6867,7 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 
 export interface AnthropicModelManagerConfig {
 	apiKey?: string;
+	getApiKey?: () => Promise<string | undefined>;
 	baseUrl?: string;
 	fetch?: FetchImpl;
 }
@@ -6874,7 +6875,6 @@ export interface AnthropicModelManagerConfig {
 export function anthropicModelManagerOptions(
 	config?: AnthropicModelManagerConfig,
 ): ModelManagerOptions<"anthropic-messages"> {
-	const apiKey = config?.apiKey;
 	// The registry derives `config.baseUrl` from an existing bundled model, and
 	// bundled Anthropic rows use both `https://api.anthropic.com` and `.../v1`.
 	// Discovery must always hit `/v1/models`, so the `/v1` suffix is enforced on
@@ -6887,8 +6887,10 @@ export function anthropicModelManagerOptions(
 			fetch: () => fetchRevalidatedWellKnownModelsWithTimeout(config?.fetch),
 			map: payload => mapAnthropicModelsDev(payload, baseUrl),
 		},
-		...(apiKey && {
+		...(hasSimpleProviderApiKey(config) && {
 			fetchDynamicModels: async () => {
+				const apiKey = await resolveSimpleProviderApiKey(config);
+				if (!apiKey) return null;
 				const modelsDevModels = await fetchWellKnownModels(config?.fetch)
 					.then(payload => mapAnthropicModelsDev(payload, baseUrl))
 					.catch(() => []);
