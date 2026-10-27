@@ -2962,13 +2962,14 @@ impl<H> WalkContext<'_, H> {
 		V: EntryVisitor,
 		H: FnMut() -> std::result::Result<(), V::Error>,
 	{
-		let mut stack = match self.open_dir(0, root_ignore, false, visitor)? {
+		let mut stack = DirStack(match self.open_dir(0, root_ignore, false, visitor)? {
 			DirOpen::Listed(frame) => vec![frame],
 			DirOpen::Skipped => return Ok(false),
 			DirOpen::Stopped => return Ok(true),
-		};
+		});
 		// A stop or error abandons the walk mid-tree; the context is discarded
 		// with it, so the paths and ancestors entered so far need no unwinding.
+		// `DirStack` releases the abandoned frames deepest-first.
 		while let Some(frame) = stack.last_mut() {
 			let index = frame.next;
 			if index == frame.scratch.entries.len() {
@@ -3318,6 +3319,34 @@ impl<H> WalkContext<'_, H> {
 		} else {
 			EntryStep::Done(post_visit)
 		})
+	}
+}
+
+/// The directories [`WalkContext::walk_tree`] is listing, the deepest last.
+///
+/// Each directory's ignore state can point at its parent directory's. When a
+/// walk stops or fails part way down, the frames are released deepest-first:
+/// releasing the root's frame first would leave the deepest one holding the
+/// whole chain, and freeing that recurses once per level.
+struct DirStack(Vec<DirFrame>);
+
+impl Drop for DirStack {
+	fn drop(&mut self) {
+		while self.0.pop().is_some() {}
+	}
+}
+
+impl std::ops::Deref for DirStack {
+	type Target = Vec<DirFrame>;
+
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+impl std::ops::DerefMut for DirStack {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		&mut self.0
 	}
 }
 
@@ -6370,5 +6399,60 @@ mod tests {
 			("link".to_string(), FileType::Symlink, None, true),
 			("sub".to_string(), FileType::Dir, None, true),
 		]);
+	}
+
+	/// A walk that honors ignore files and stops at the leaf of a chain as
+	/// deep as path syscalls reach, by quitting or by failing, must return
+	/// that result rather than overflow the stack of the thread it runs on
+	/// while it releases each level's ignore state.
+	#[cfg(unix)]
+	#[test]
+	fn stopping_at_the_leaf_of_a_deep_ignore_chain_returns() {
+		struct StopAtLeaf {
+			fail: bool,
+		}
+
+		impl EntryVisitor for StopAtLeaf {
+			type Error = &'static str;
+
+			fn visit(&mut self, entry: Entry<'_>) -> std::result::Result<WalkControl, Self::Error> {
+				if entry.name != OsStr::new("leaf") {
+					Ok(WalkControl::Continue)
+				} else if self.fail {
+					Err("failed at the leaf")
+				} else {
+					Ok(WalkControl::Quit)
+				}
+			}
+		}
+
+		let tree = temp_tree("deep-ignore-chain");
+		let root = fs::canonicalize(tree.path()).expect("temp root should canonicalize");
+		// Stay under PATH_MAX: every level adds "/d".
+		let path_max = usize::try_from(libc::PATH_MAX).expect("PATH_MAX is positive");
+		let depth = (path_max - 96 - root.join("leaf").as_os_str().len()) / 2;
+		let mut dir = root.clone();
+		for _ in 0..depth {
+			dir.push("d");
+			fs::create_dir(&dir).expect("chain level should be created");
+			fs::write(dir.join(".ignore"), "*.log\n").expect("ignore file should be written");
+		}
+		fs::write(dir.join("leaf"), "x").expect("leaf should be written");
+
+		let walk = |fail: bool| {
+			let root = root.clone();
+			std::thread::Builder::new()
+				.stack_size(256 * 1024)
+				.spawn(move || {
+					let options = WalkOptions { use_gitignore: true, ..test_options() };
+					walk_entries(&root, options, &mut StopAtLeaf { fail }, || Ok(()))
+				})
+				.expect("walk thread should spawn")
+				.join()
+				.expect("walk thread should not crash")
+		};
+
+		assert!(matches!(walk(false), Ok(WalkStatus::Stopped)));
+		assert!(matches!(walk(true), Err(WalkError::Interrupted("failed at the leaf"))));
 	}
 }

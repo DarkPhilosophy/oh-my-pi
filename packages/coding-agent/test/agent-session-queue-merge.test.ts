@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -111,6 +111,23 @@ describe("AgentSession queue coalescing", () => {
 			expect(result.before).toEqual(["Expanded first\nExpanded second"]);
 			expect(result.removed).toBe(true);
 			expect(result.after).toEqual([]);
+		});
+		it(`withdraws an owned ${mode} without losing neighboring coalescing submissions`, async () => {
+			const target = await createSession([{ content: ["ok"] }]);
+			const remaining = await duringStream(target, async () => {
+				let owned: readonly AgentMessage[] = [];
+				await target[mode]("before");
+				await target[mode]("owned", undefined, {
+					onPromptQueued: messages => {
+						owned = messages;
+					},
+				});
+				await target[mode]("after");
+				target.dropQueuedMessages(owned);
+				const queue = mode === "steer" ? "steering" : "followUp";
+				return [...target.getQueuedMessages()[queue]];
+			});
+			expect(remaining).toEqual(["before", "after"]);
 		});
 	}
 

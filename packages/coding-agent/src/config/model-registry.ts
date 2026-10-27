@@ -2054,6 +2054,15 @@ export class ModelRegistry {
 		return discovery;
 	}
 
+	/**
+	 * Namespace suffix for the `discovery.advertisedReasoning` opt-out. Rows built
+	 * under one mode must never satisfy the other's cache read: under the
+	 * `offline` strategy nothing else refetches them.
+	 */
+	advertisedReasoningCacheSuffix(providerConfig: DiscoveryProviderConfig): string {
+		return providerConfig.discovery.advertisedReasoning === false ? "advertised-off-context-v5" : "context-v5";
+	}
+
 	#configuredDiscoveryCacheProviderId(providerConfig: DiscoveryProviderConfig): string {
 		if (providerConfig.discovery.type === "ollama") {
 			return resolveOllamaModelCacheProviderId(providerConfig.provider, providerConfig.baseUrl);
@@ -2066,12 +2075,24 @@ export class ModelRegistry {
 			// `top_provider.max_completion_tokens` was read; warm v3 rows kept
 			// the bundled reference's larger output limit and the provider
 			// rejected every request.
+			// context-v5 invalidates rows cached before a row's advertised
+			// reasoning ladder outranked the bundled reference; warm v4 rows kept
+			// `reasoning: false` (ids absent from the catalog) or an inherited
+			// `omitReasoningEffort`, so no effort dial appeared until a refresh.
 			// `injectV1: false` additionally splits off its own namespace: rows
 			// cached from the `/v1`-injected URL can hold a different (smaller)
 			// model set and must never satisfy a bare provider's cache read.
 			return providerConfig.discovery.injectV1 === false
-				? `${providerConfig.provider}:openai-models-list-bare-context-v4`
-				: `${providerConfig.provider}:openai-models-list-context-v4`;
+				? `${providerConfig.provider}:openai-models-list-bare-${this.advertisedReasoningCacheSuffix(providerConfig)}`
+				: `${providerConfig.provider}:openai-models-list-${this.advertisedReasoningCacheSuffix(providerConfig)}`;
+		}
+		if (providerConfig.discovery.type === "proxy") {
+			// proxy-v2 invalidates rows cached before a proxy row's advertised
+			// reasoning ladder was read; warm v1 rows (stored under the bare
+			// provider id) pinned gateway ids at `reasoning: false`. The opt-out
+			// gets its own namespace for the same reason it does above: under the
+			// `offline` strategy nothing else would refetch the other mode's rows.
+			return `${providerConfig.provider}:proxy-v2-${this.advertisedReasoningCacheSuffix(providerConfig)}`;
 		}
 		if (providerConfig.discovery.type === "litellm") {
 			// rich-v6 invalidates rows written before `mode: decisions` groups moved
@@ -3455,6 +3476,7 @@ export class ModelRegistry {
 			accountIds: accountAccess && Object.keys(accountAccess),
 			forceRefresh: options?.forceRefresh,
 			refreshReason: options?.refreshReason,
+			rejectedAccessToken: options?.rejectedAccessToken,
 			signal: options?.signal,
 		});
 	}
@@ -3525,25 +3547,32 @@ export class ModelRegistry {
 	}
 
 	/**
-	 * Remove custom API/OAuth registrations for a specific extension source.
+	 * Remove custom API/OAuth registrations for one or more extension sources.
+	 * The model catalog is rebuilt once, however many sources are cleared.
 	 */
-	clearSourceRegistrations(sourceId: string): void {
-		unregisterCustomApis(sourceId);
-		unregisterOAuthProviders(sourceId);
-		const sourceProviders = this.#runtimeProvidersBySource.get(sourceId);
-		if (!sourceProviders || sourceProviders.size === 0) {
-			return;
-		}
-		this.#ensureFullSnapshot();
-		this.#runtimeProvidersBySource.delete(sourceId);
-		for (const providerName of sourceProviders) {
-			if (this.#runtimeProviderSourceByName.get(providerName) !== sourceId) {
+	clearSourceRegistrations(sourceIds: string | Iterable<string>): void {
+		let cleared = false;
+		for (const sourceId of typeof sourceIds === "string" ? [sourceIds] : sourceIds) {
+			unregisterCustomApis(sourceId);
+			unregisterOAuthProviders(sourceId);
+			const sourceProviders = this.#runtimeProvidersBySource.get(sourceId);
+			if (!sourceProviders || sourceProviders.size === 0) {
 				continue;
 			}
-			this.#runtimeProviderSourceByName.delete(providerName);
-			this.#clearRuntimeProviderState(providerName);
+			this.#ensureFullSnapshot();
+			this.#runtimeProvidersBySource.delete(sourceId);
+			for (const providerName of sourceProviders) {
+				if (this.#runtimeProviderSourceByName.get(providerName) !== sourceId) {
+					continue;
+				}
+				this.#runtimeProviderSourceByName.delete(providerName);
+				this.#clearRuntimeProviderState(providerName);
+			}
+			cleared = true;
 		}
-		this.#reloadStaticModels({ force: true, preserveRuntimeDiscovery: true });
+		if (cleared) {
+			this.#reloadStaticModels({ force: true, preserveRuntimeDiscovery: true });
+		}
 	}
 
 	/**
@@ -3570,11 +3599,9 @@ export class ModelRegistry {
 	 */
 	syncExtensionSources(activeSourceIds: string[]): void {
 		const activeSources = new Set(activeSourceIds);
-		for (const sourceId of this.#registeredProviderSources) {
-			if (activeSources.has(sourceId)) {
-				continue;
-			}
-			this.clearSourceRegistrations(sourceId);
+		const inactiveSources = [...this.#registeredProviderSources].filter(sourceId => !activeSources.has(sourceId));
+		this.clearSourceRegistrations(inactiveSources);
+		for (const sourceId of inactiveSources) {
 			this.#registeredProviderSources.delete(sourceId);
 		}
 	}

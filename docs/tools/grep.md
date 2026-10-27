@@ -115,7 +115,7 @@ The tool returns a single text block in `content[0].text` plus structured `detai
 5. **Internal URL paths**
    - Native grep walks and reads them through the URL filesystem (`skill://<name>` searches the skill directory; `omp://` walks every embedded documentation file, so it works as a docs search root). Hits are named by full URL.
    - URL globs split into base URL + glob (`local://notes/**/*.md`, `local://*.md`).
-   - A directory resource the filesystem cannot list (a remote `ssh://` directory) fails with `… lists only through the read tool` instead of searching its listing text.
+   - Remote `ssh://` directories expose structured entries through the URL filesystem, so directory and glob scopes search real remote file contents and retain `ssh://` identities. Listing responses above 1 MiB are refused rather than silently truncated; the existing 1 MiB UTF-8 per-file limit still applies.
    - Sources from immutable schemes suppress editable hashline anchors; `local://` hits keep them.
 
 ## Side Effects
@@ -149,7 +149,7 @@ The tool returns a single text block in `content[0].text` plus structured `detai
 - `Skip must be a non-negative number` for negative or non-finite `skip`.
 - `Search scope entries must be non-empty paths or globs` when any normalized `path` entry is empty.
 - `Cannot search <url>: <reason>` when an internal URL (or a URL glob's base) cannot be stat'ed through the URL filesystem: the handler's diagnosis (`Artifact 9 not found. Available: …`, `skill:// URL requires a skill name` for `skill://*/SKILL.md`) or the tier refusal (`ssh:// access needs exec approval; …`).
-- `… lists only through the read tool` (from native grep) for a directory resource with no local path (e.g. a remote `ssh://` directory).
+- `… lists only through the read tool` (from native grep) for a directory resource with neither structured entries nor a local path.
 - `Cannot search external URL: ... Use \`read\` to fetch web content, then search the returned text.` for non-fetchable external URL schemes (`ftp`/`ws`/`wss`) or declined fetches.
 - Line-range selector errors include `Line-range selector requires a single file, not a glob: ...`, `Line-range selector requires a single file: ... is a directory`, and `Path not found for line-range selector: ...`.
 - `Cannot search archive member(s): ...` when all archive selectors are unreadable, binary, or non-UTF-8.

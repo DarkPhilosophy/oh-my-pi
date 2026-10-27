@@ -759,12 +759,15 @@ export function googleStreamChunkError(error: NonNullable<GenerateContentRespons
 		error.message && error.status
 			? `${error.message} (${error.status})`
 			: error.message || error.status || "unknown error";
-	const message = `Google API stream error: ${detail}`;
+	const residue =
+		Array.isArray(error.details) && error.details.length > 0
+			? ` ${JSON.stringify({ error: { status: error.status, details: error.details } })}`
+			: "";
+	const message = `Google API stream error: ${detail}${residue}`;
 	return typeof error.code === "number" && error.code >= 400
 		? new AIError.GoogleApiError(message, error.code)
 		: new AIError.ProviderResponseError(message, { provider, kind: "output" });
 }
-
 /**
  * Drives the chunked `generateContentStream` iterator into an `AssistantMessage` and
  * the corresponding `AssistantMessageEventStream`. Shared between `streamGoogle` and

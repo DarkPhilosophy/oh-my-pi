@@ -407,7 +407,7 @@ export type QueuedMessageQueue = "steering" | "followUp";
 
 export type CacheWarmingMode = "off" | "streaming" | "idle";
 
-/** `set_event_filter` projection: `delta` drops the accumulated snapshots from `message_update`. */
+/** `set_event_filter` projection: `delta` replaces the accumulated snapshots with the block a start/end event touches. */
 export type MessageUpdates = "full" | "delta";
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
@@ -643,6 +643,14 @@ export interface BranchMessage {
 export interface BranchResult {
 	text: string;
 	cancelled: boolean;
+}
+
+export interface NavigateTreeResult {
+	cancelled: boolean;
+	/** Only ever `true`: `abort_branch_summary` stopped the summary; nothing moved. */
+	aborted?: boolean;
+	/** The target was a user message: its text, for the editor; the leaf moved to its parent. */
+	editorText?: string;
 }
 
 export interface TokenUsage {
@@ -1173,6 +1181,28 @@ export interface LiveEndEvent {
 	error?: string;
 }
 
+/** State of one draft-only microphone capture. */
+export interface DictationStateEvent {
+	type: "dictation_state";
+	captureId: string;
+	state: "starting" | "recording" | "transcribing";
+}
+
+/** Full accumulated draft preview; replaces the previous preview for this capture. */
+export interface DictationTranscriptEvent {
+	type: "dictation_transcript";
+	captureId: string;
+	text: string;
+}
+
+/** Exactly one terminal frame per capture; text is the accumulated result. */
+export interface DictationEndEvent {
+	type: "dictation_end";
+	captureId: string;
+	text: string;
+	error?: string;
+}
+
 /** Text appended to the running side question's latest answer. */
 export interface BtwDeltaEvent {
 	type: "btw_delta";
@@ -1270,6 +1300,7 @@ export interface InputUiRequest {
 	title: string;
 	placeholder?: string;
 	timeout?: number;
+	secret?: boolean;
 }
 
 export interface EditorUiRequest {
@@ -1501,7 +1532,7 @@ export interface HostUriSchemeDefinition {
 }
 
 /** Unsolicited outbound frame (everything except responses and host tool/URI requests), discriminated by `type`. */
-export type RpcNotification = ReadyEvent | PromptResultEvent | SessionSettledEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent;
+export type RpcNotification = ReadyEvent | PromptResultEvent | SessionSettledEvent | ExtensionError | ExtensionUiRequest | AvailableCommandsUpdateEvent | SubagentLifecycleEvent | SubagentProgressEvent | SubagentEvent | LivePhaseEvent | LiveLevelsEvent | LiveTranscriptEvent | LiveEndEvent | DictationStateEvent | DictationTranscriptEvent | DictationEndEvent | BtwDeltaEvent | BtwRecordEvent | CommandOutputEvent | SessionInfoUpdateEvent | ConfigUpdateEvent | RpcFrameErrorEvent | RpcAgentEvent;
 
 /** Any frame the server writes to stdout (after reassembling `rpc_chunk` sequences), discriminated by `type`. */
 export type RpcServerFrame = RpcResponse | RpcHostRequest | RpcNotification;
@@ -1710,6 +1741,14 @@ export interface LiveMuteResult {
 	muted: boolean;
 }
 
+export interface DictationStartParams {
+	captureId: string;
+}
+
+export interface DictationStopResult {
+	text: string;
+}
+
 export interface SetModelParams {
 	provider: string;
 	modelId: string;
@@ -1787,6 +1826,19 @@ export interface BranchParams {
 
 export interface ForkParams {
 	entryId?: string;
+}
+
+export interface NavigateTreeParams {
+	entryId: string;
+	/** Summarize the abandoned branch at the target. */
+	summarize?: boolean;
+	/** Instructions for the summarizer. */
+	customInstructions?: string;
+}
+
+export interface SetLabelParams {
+	entryId: string;
+	label?: string;
 }
 
 export interface GetBranchMessagesResult {
@@ -1921,6 +1973,8 @@ export interface RpcWireCommands {
 	live_start: { params: LiveStartParams; result: LiveStartResult };
 	live_stop: { params: undefined; result: undefined };
 	live_mute: { params: LiveMuteParams; result: LiveMuteResult };
+	dictation_start: { params: DictationStartParams; result: undefined };
+	dictation_stop: { params: undefined; result: DictationStopResult };
 	set_model: { params: SetModelParams; result: ModelInfo };
 	cycle_model: { params: CycleModelParams; result: ModelCycleResult | null };
 	get_available_models: { params: undefined; result: GetAvailableModelsResult };
@@ -1942,6 +1996,9 @@ export interface RpcWireCommands {
 	switch_session: { params: SwitchSessionParams; result: CancellationResult };
 	branch: { params: BranchParams; result: BranchResult };
 	fork: { params: ForkParams; result: CancellationResult };
+	navigate_tree: { params: NavigateTreeParams; result: NavigateTreeResult };
+	abort_branch_summary: { params: undefined; result: undefined };
+	set_label: { params: SetLabelParams; result: undefined };
 	get_branch_messages: { params: undefined; result: GetBranchMessagesResult };
 	get_last_assistant_text: { params: undefined; result: GetLastAssistantTextResult };
 	set_session_name: { params: SetSessionNameParams; result: undefined };

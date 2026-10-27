@@ -5141,10 +5141,17 @@ export class Markdown implements Component {
 
 			// Process item tokens; nested-list lines arrive structurally tagged and
 			// already carry their own full indent.
-			// Framed code blocks must fit inside the hang, not the full list
-			// width, or the right border lands under the bullet rail.
+			// Tables and framed blocks fit inside the bullet hang; nested lists retain the global width.
 			const itemWidth = Math.max(1, width - visibleWidth(firstPrefix));
-			const itemLines = this.#renderListItem(item.tokens || [], depth, itemWidth, styleContext, itemWidth, width);
+			const itemLines = this.#renderListItem(
+				item.tokens || [],
+				depth,
+				itemWidth,
+				itemWidth,
+				styleContext,
+				itemWidth,
+				width,
+			);
 			if (itemLines.length > 0) {
 				const firstLine = itemLines[0]!;
 				if (firstLine.nested) {
@@ -5195,13 +5202,15 @@ export class Markdown implements Component {
 		tokens: Token[],
 		parentDepth: number,
 		width: number,
+		contentWidth: number,
 		styleContext?: InlineStyleContext,
 		frameWidth: number = width,
 		nestedWidth: number = width,
 	): RenderedListItemLine[] {
 		const lines: RenderedListItemLine[] = [];
 
-		for (const token of tokens) {
+		for (let i = 0; i < tokens.length; i++) {
+			const token = tokens[i]!;
 			this.#advanceCopySourceCursor(token);
 			if (token.type === "list") {
 				// Nested list - render with one additional indent level
@@ -5286,6 +5295,10 @@ export class Markdown implements Component {
 				while (renderedQuoteLines.length > 0 && renderedQuoteLines.at(-1)!.text === "") renderedQuoteLines.pop();
 				for (const line of this.#applyQuoteBorder(renderedQuoteLines, frameWidth)) {
 					lines.push({ ...line, nested: false });
+				}
+			} else if (token.type === "table") {
+				for (const row of this.#renderTable(token as TableToken, contentWidth, tokens[i + 1]?.type, styleContext)) {
+					lines.push({ text: row, nested: false });
 				}
 			} else if (isMathToken(token)) {
 				// Display math block inside a list item: stack fractions / matrix rows.

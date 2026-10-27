@@ -107,6 +107,18 @@ export const frameDefs = {
 		{ type: "'live_end'", "error?": "string" },
 		"Sent exactly once when a live session ends; `error` carries the failure cause.",
 	),
+	DictationStateEvent: doc(
+		{ type: "'dictation_state'", captureId: "string", state: "'starting' | 'recording' | 'transcribing'" },
+		"State of one draft-only microphone capture.",
+	),
+	DictationTranscriptEvent: doc(
+		{ type: "'dictation_transcript'", captureId: "string", text: "string" },
+		"Full accumulated draft preview; replaces the previous preview for this capture.",
+	),
+	DictationEndEvent: doc(
+		{ type: "'dictation_end'", captureId: "string", text: "string", "error?": "string" },
+		"Exactly one terminal frame per capture; text is the accumulated result.",
+	),
 	BtwDeltaEvent: doc(
 		{ type: "'btw_delta'", recordId: "string", delta: "string" },
 		"Text appended to the running side question's latest answer.",
@@ -168,6 +180,7 @@ export const frameDefs = {
 		title: "string",
 		"placeholder?": "string",
 		"timeout?": "number.integer",
+		"secret?": "boolean",
 	},
 	EditorUiRequest: {
 		type: UI,

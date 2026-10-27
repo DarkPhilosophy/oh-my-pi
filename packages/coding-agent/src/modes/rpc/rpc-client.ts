@@ -32,6 +32,7 @@ import type {
 	RpcBtwRecordFrame,
 	RpcAvailableSlashCommand,
 	RpcCommand,
+	RpcDictationFrame,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
 	RpcHandoffResult,
@@ -41,6 +42,7 @@ import type {
 	RpcHostToolResult,
 	RpcHostToolUpdate,
 	RpcLiveFrame,
+	RpcNavigateTreeResult,
 	RpcOpenSessionResult,
 	RpcPromptResultFrame,
 	RpcRemoveQueuedMessageResult,
@@ -116,6 +118,7 @@ export type RpcAvailableCommandsUpdateListener = (commands: RpcAvailableSlashCom
 export type RpcPromptResultListener = (result: RpcPromptResultFrame) => void;
 export type RpcSessionSettledListener = () => void;
 export type RpcLiveListener = (frame: RpcLiveFrame) => void;
+export type RpcDictationListener = (frame: RpcDictationFrame) => void;
 
 export interface RpcClientToolContext<TDetails = unknown> {
 	toolCallId: string;
@@ -249,6 +252,16 @@ function isRpcLiveFrame(value: unknown): value is RpcLiveFrame {
 	return isRecord(value) && typeof value.type === "string" && Object.hasOwn(LIVE_FRAME_TYPES, value.type);
 }
 
+const DICTATION_FRAME_TYPES: Record<string, true> = {
+	dictation_state: true,
+	dictation_transcript: true,
+	dictation_end: true,
+};
+
+function isRpcDictationFrame(value: unknown): value is RpcDictationFrame {
+	return isRecord(value) && typeof value.type === "string" && Object.hasOwn(DICTATION_FRAME_TYPES, value.type);
+}
+
 function isRpcAvailableCommandsUpdateFrame(value: unknown): value is RpcAvailableCommandsUpdateFrame {
 	if (!isRecord(value)) return false;
 	return value.type === "available_commands_update" && Array.isArray(value.commands);
@@ -335,6 +348,7 @@ export class RpcClient {
 	#promptResultListeners = new Set<RpcPromptResultListener>();
 	#sessionSettledListeners = new Set<RpcSessionSettledListener>();
 	#liveListeners = new Set<RpcLiveListener>();
+	#dictationListeners = new Set<RpcDictationListener>();
 	/** `promptAndWait` completions keyed by request id; registered before the prompt is sent. */
 	#promptResultWaiters = new Map<string, (result: RpcPromptResultFrame) => void>();
 	/** Same-id failures that arrive after the success ack removed the pending request. */
@@ -412,6 +426,7 @@ export class RpcClient {
 
 			this.#process = null;
 			this.#abortController.abort(error);
+			this.#rejectPromptWaiters(error);
 			const pendingRequests = Array.from(this.#pendingRequests.values());
 			this.#pendingRequests.clear();
 			for (const pendingCall of this.#pendingHostToolCalls.values()) pendingCall.controller.abort(error);
@@ -548,6 +563,7 @@ export class RpcClient {
 		}
 		this.#abortController.abort(error);
 		this.#process = null;
+		this.#rejectPromptWaiters(error);
 		for (const request of this.#pendingRequests.values()) request.reject(error);
 		this.#pendingRequests.clear();
 		for (const pendingCall of this.#pendingHostToolCalls.values()) {
@@ -555,6 +571,16 @@ export class RpcClient {
 		}
 		this.#pendingHostToolCalls.clear();
 		return this.#waitForExit(child);
+	}
+
+	/** Fail prompts that were acknowledged but whose `prompt_result` can no longer arrive. */
+	#rejectPromptWaiters(error: Error): void {
+		for (const [id, reject] of this.#promptErrorWaiters) {
+			// Still-unacknowledged prompts fail through their pending request instead.
+			if (!this.#pendingRequests.has(id)) reject(error);
+		}
+		this.#promptErrorWaiters.clear();
+		this.#promptResultWaiters.clear();
 	}
 
 	/**
@@ -670,6 +696,14 @@ export class RpcClient {
 		this.#liveListeners.add(listener);
 		return () => {
 			this.#liveListeners.delete(listener);
+		};
+	}
+
+	/** Subscribe to draft-only dictation state, full preview, and terminal frames. */
+	onDictation(listener: RpcDictationListener): () => void {
+		this.#dictationListeners.add(listener);
+		return () => {
+			this.#dictationListeners.delete(listener);
 		};
 	}
 
@@ -863,6 +897,26 @@ export class RpcClient {
 	/** Set microphone mute, or toggle it when `muted` is omitted. Fails without an active session. */
 	async liveMute(muted?: boolean): Promise<{ muted: boolean }> {
 		const response = await this.#send({ type: "live_mute", muted });
+		return this.#getData(response);
+	}
+
+	/**
+	 * Start draft-only dictation; resolves once recording, with frames delivered to onDictation.
+	 * The deadline defaults to 10 minutes for cold model initialization. A timeout does not
+	 * cancel the server operation; call dictationStop() to stop a pending or active capture.
+	 */
+	async dictationStart(captureId: string, timeoutMs = 600_000): Promise<void> {
+		const response = await this.#send({ type: "dictation_start", captureId }, timeoutMs);
+		this.#getData(response);
+	}
+
+	/**
+	 * Stop and flush dictation, returning the accumulated draft. The deadline defaults to
+	 * 10 minutes for transcription; a timeout does not cancel the server operation, and
+	 * its terminal transcript can still be received via onDictation().
+	 */
+	async dictationStop(timeoutMs = 600_000): Promise<{ text: string }> {
+		const response = await this.#send({ type: "dictation_stop" }, timeoutMs);
 		return this.#getData(response);
 	}
 
@@ -1148,6 +1202,25 @@ export class RpcClient {
 		return this.#getData(response);
 	}
 
+	/** Move the leaf to `entryId` in the same session file, optionally summarizing the branch it leaves. */
+	async navigateTree(
+		entryId: string,
+		options: { summarize?: boolean; customInstructions?: string } = {},
+	): Promise<RpcNavigateTreeResult> {
+		// A branch summary is a model call; it ends early only through `abortBranchSummary`.
+		return this.#getData(await this.#send({ type: "navigate_tree", entryId, ...options }, 600_000));
+	}
+
+	/** Stop a running `navigateTree` summary; that navigation resolves `{ cancelled: true, aborted: true }`. */
+	async abortBranchSummary(): Promise<void> {
+		this.#getData(await this.#send({ type: "abort_branch_summary" }));
+	}
+
+	/** Set an entry's label, or clear it with `undefined`. */
+	async setLabel(entryId: string, label: string | undefined): Promise<void> {
+		this.#getData(await this.#send({ type: "set_label", entryId, label }));
+	}
+
 	/**
 	 * Get messages available for branching.
 	 */
@@ -1264,7 +1337,10 @@ export class RpcClient {
 							onOpenUrl?.(req.url, req.instructions, req.launchUrl);
 							return;
 						}
-						if (req.method !== "input" || !onManualCodeInput) return;
+						// Provider login rejects secret prompts on the server, so any `secret: true`
+						// input frame is an unrelated concurrent extension dialog and must not be
+						// intercepted as unmasked OAuth code input.
+						if (req.method !== "input" || req.secret || !onManualCodeInput) return;
 						// The prompt can outlive the agent (e.g. a broken stdin pipe stops the client); drop the reply
 						// instead of throwing "Client not started" out of a detached promise chain.
 						void Promise.resolve(onManualCodeInput({ title: req.title, placeholder: req.placeholder })).then(
@@ -1501,6 +1577,13 @@ export class RpcClient {
 
 		if (isRpcLiveFrame(data)) {
 			for (const listener of this.#liveListeners) {
+				listener(data);
+			}
+			return;
+		}
+
+		if (isRpcDictationFrame(data)) {
+			for (const listener of this.#dictationListeners) {
 				listener(data);
 			}
 			return;

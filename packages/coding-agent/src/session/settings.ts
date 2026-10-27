@@ -31,6 +31,25 @@ const EMPTY_NUMBER_RECORD: Record<string, number> = {};
 const EMPTY_STRING_ARRAYS_RECORD: Record<string, string[]> = {};
 const DEFAULT_TOOL_CALL_LOOP_EXEMPT_TOOLS: string[] = ["wait"];
 
+/** Scope of the resume picker's current-folder list. */
+export const cfgSessionWorktreeScope = register({
+	id: "session.worktreeScope",
+	type: "enum",
+	values: ["directory", "repo"] as const,
+	default: "repo",
+	ui: {
+		tab: "interaction",
+		group: "Startup & Updates",
+		label: "Resume Worktree Scope",
+		description:
+			"Choose whether the resume picker's current folder includes sessions from other repository worktrees",
+		options: [
+			{ value: "directory", label: "This Directory", description: "Only sessions saved for this directory" },
+			{ value: "repo", label: "Repository Worktrees", description: "Also include sessions from sibling worktrees" },
+		],
+	},
+});
+
 // Power assertions: macOS IOKit, Linux login1/ScreenSaver, Windows execution state.
 export const cfgPowerSleepPrevention = register({
 	id: "power.sleepPrevention",

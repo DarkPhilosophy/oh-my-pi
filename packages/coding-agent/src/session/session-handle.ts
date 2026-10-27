@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { isRpcSessionSettled } from "../modes/rpc/rpc-session-settle";
+import { isSessionSettled } from "./session-settle";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import type { DaemonClient } from "../daemon/client";
@@ -214,7 +214,7 @@ function stateFromLocal(session: AgentSession): RpcSessionState {
 			liveSteered: queued.liveSteered,
 		},
 		hasPendingAsyncWork: session.hasPendingAsyncWork(),
-		isSettled: isRpcSessionSettled(session),
+		isSettled: isSessionSettled(session),
 		todoPhases: session.getTodoPhases(),
 		contextUsage: session.getContextUsage(),
 	});

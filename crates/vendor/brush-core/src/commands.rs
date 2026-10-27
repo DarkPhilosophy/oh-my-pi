@@ -640,9 +640,11 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	}
 
 	async fn execute_via_builtin(
-		self,
+		mut self,
 		builtin: builtins::Registration<SE>,
 	) -> Result<ExecutionSpawnResult, error::Error> {
+		// Only an external command's child can make deferred redirections.
+		interp::materialize_deferred_redirects(&self.shell, &mut self.params).await?;
 		match self.shell {
 			ShellForCommand::OwnedShell { target, .. } => {
 				Ok(Self::execute_via_builtin_in_owned_shell(
@@ -743,9 +745,11 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	}
 
 	async fn execute_via_function(
-		self,
+		mut self,
 		func_registration: functions::Registration,
 	) -> Result<ExecutionSpawnResult, error::Error> {
+		// Only an external command's child can make deferred redirections.
+		interp::materialize_deferred_redirects(&self.shell, &mut self.params).await?;
 		let mut params = self.params;
 		params.disable_command_output_marking();
 
@@ -855,10 +859,13 @@ pub(crate) async fn execute_external_command(
 		.collect::<Vec<_>>();
 
 	// Before we lose ownership of the open files, figure out if stdin will be a
-	// terminal.
-	let child_stdin_is_terminal = context
-		.try_fd(openfiles::OpenFiles::STDIN_FD)
-		.is_some_and(|f| f.is_terminal());
+	// terminal. A deferred redirection of fd 0 is made in the child before the
+	// command runs (see `interp::DeferredRedirect`), so what this process holds
+	// there, which can still be its terminal, is not the command's input.
+	let child_stdin_is_terminal = !context.params.sets_deferred(openfiles::OpenFiles::STDIN_FD)
+		&& context
+			.try_fd(openfiles::OpenFiles::STDIN_FD)
+			.is_some_and(|f| f.is_terminal());
 
 	// Figure out if we should be setting up a new process group.
 	let new_pg = matches!(context.params.process_group_policy, ProcessGroupPolicy::NewProcessGroup);
@@ -869,14 +876,26 @@ pub(crate) async fn execute_external_command(
 	// command) unless the caller specified an explicit override.
 	let argv0 = argv0_override.unwrap_or(context.command_name.as_str());
 	#[allow(unused_mut, reason = "only mutated on unix platforms")]
-	let mut cmd = compose_std_command(
-		&context,
-		executable_path,
-		argv0,
-		cmd_args.as_slice(),
-		false, /* empty environment? */
-	)
-	.await?;
+	let mut cmd = if context.params.deferred_redirects().is_empty() {
+		compose_std_command(
+			&context,
+			executable_path,
+			argv0,
+			cmd_args.as_slice(),
+			false, /* empty environment? */
+		)
+		.await?
+	} else {
+		// Redirections to a FIFO left for the child (see
+		// `interp::DeferredRedirect`): `/bin/sh` makes them and then execs the
+		// command in place, so the pid the shell tracks is the command's. Its
+		// argv[0] is then the resolved path.
+		let script = interp::deferred_redirect_script(context.params.deferred_redirects());
+		let mut trampoline_args = vec!["-c".to_owned(), script, "sh".to_owned()];
+		trampoline_args.push(executable_path.to_owned());
+		trampoline_args.extend(cmd_args.iter().map(|arg| (*arg).clone()));
+		compose_std_command(&context, "/bin/sh", "sh", trampoline_args.as_slice(), false).await?
+	};
 	let mut marker_output = prepare_output_markers(&context, executable_path, cmd_args.as_slice());
 
 

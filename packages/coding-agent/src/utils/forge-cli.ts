@@ -54,6 +54,8 @@ export interface ForgeCliResult {
 	exitCode: number;
 	stdout: string;
 	stderr: string;
+	/** True when stdout exceeded the subprocess capture byte cap. */
+	stdoutTruncated?: boolean;
 }
 
 /** Static description of a forge CLI binary and how to spawn it. */
@@ -79,7 +81,12 @@ export const FORGE_NON_INTERACTIVE_ENV: Record<string, string | undefined> = {
 
 const OUTPUT_LIMIT_BYTES = 8 * 1024 * 1024;
 
-async function readCappedText(stream: ReadableStream<Uint8Array>, bin: string): Promise<string> {
+interface CapturedForgeText {
+	text: string;
+	truncated: boolean;
+}
+
+async function readCappedText(stream: ReadableStream<Uint8Array>, bin: string): Promise<CapturedForgeText> {
 	const reader = stream.getReader();
 	const chunks: Uint8Array[] = [];
 	let captured = 0;
@@ -99,7 +106,8 @@ async function readCappedText(stream: ReadableStream<Uint8Array>, bin: string): 
 		reader.releaseLock();
 	}
 	const text = Buffer.concat(chunks).toString("utf8");
-	return total > OUTPUT_LIMIT_BYTES ? `${text}\n[${bin} subprocess output truncated after 8 MiB]\n` : text;
+	const truncated = total > OUTPUT_LIMIT_BYTES;
+	return { text: truncated ? `${text}\n[${bin} subprocess output truncated after 8 MiB]\n` : text, truncated };
 }
 
 /** Run a forge CLI command with bounded capture and a deadline. Does not throw on non-zero exit. */
@@ -135,8 +143,9 @@ export async function runForgeCli(
 		throwIfAborted(signal);
 		return {
 			exitCode: exitCode ?? 0,
-			stdout: trimOutput ? stdout.trim() : stdout,
-			stderr: trimOutput ? stderr.trim() : stderr,
+			stdout: trimOutput ? stdout.text.trim() : stdout.text,
+			stderr: trimOutput ? stderr.text.trim() : stderr.text,
+			stdoutTruncated: stdout.truncated,
 		};
 	} catch (error) {
 		if (signal?.aborted) throw new ToolAbortError();

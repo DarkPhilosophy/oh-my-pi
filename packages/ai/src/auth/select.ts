@@ -775,7 +775,12 @@ export class CredentialSelector {
 					preflightFailures.add(candidate);
 					return;
 				}
-				const syncedPeerCredential = !authCredentialEquals(beforeSync, candidate.selection.credential);
+				// A peer row is a replacement only when its access token is not the one the
+				// provider rejected: a peer may change just the expiry, metadata or refresh token.
+				const rejectedAccess = force ? options?.rejectedAccessToken : undefined;
+				const syncedPeerCredential =
+					!authCredentialEquals(beforeSync, candidate.selection.credential) &&
+					(rejectedAccess === undefined || candidate.selection.credential.access !== rejectedAccess);
 				const hasFreshAccess = Date.now() + OAUTH_REFRESH_SKEW_MS < candidate.selection.credential.expires;
 				if ((!force || syncedPeerCredential) && hasFreshAccess) return;
 				const latestCredential = this.#deps.pool.credentials(provider)[candidate.selection.index];
@@ -802,6 +807,7 @@ export class CredentialSelector {
 						credentialId,
 						options?.signal,
 						force ? options?.refreshReason : undefined,
+						rejectedAccess,
 					);
 					const beforeRefresh = candidate.selection.credential;
 					const updated = mergeRefreshedCredential(beforeRefresh, refreshedCredentials);

@@ -7,6 +7,7 @@ import { Settings } from "../../src/config/settings";
 import { AsyncJobManager } from "../../src/async/job-manager";
 import { ProcProtocolHandler } from "../../src/internal-urls/proc-protocol";
 import { parseInternalUrl } from "../../src/internal-urls/parse";
+import { InternalUrlRouter } from "../../src/internal-urls/router";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import { SessionManager } from "../../src/session/session-manager";
 import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
@@ -212,7 +213,7 @@ describe("proc:// background jobs", () => {
 			expect(running.content).toContain("building 50%");
 			expect(running.details?.proc?.job).toMatchObject({ id, status: "running" });
 			await expect(protocol.write(parseInternalUrl(`proc://${id}`), "input", { session })).rejects.toThrow(
-				"stdin is only available for services",
+				"in-process job",
 			);
 			await expect(protocol.resolve(parseInternalUrl(`proc://${id}/kill`), { session })).rejects.toThrow(
 				"write-only",
@@ -235,6 +236,94 @@ describe("proc:// background jobs", () => {
 		} finally {
 			await manager.dispose();
 		}
+	});
+
+	it.each([false, true])(
+		"rejects service-only controls for known jobs without claiming they are missing (launch: %s)",
+		async launch => {
+			const client: DaemonBrokerClient = {
+				projectDir: process.cwd(),
+				onCompletion: () => () => {},
+				close() {},
+				async request(operation: DaemonOperation): Promise<DaemonRpcResult> {
+					if (operation.op === "list") return { op: "list", daemons: [] };
+					throw new Error(`Unexpected broker op ${operation.op}`);
+				},
+			};
+			const broker = vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
+			const manager = new AsyncJobManager({});
+			const pending = Promise.withResolvers<string>();
+			const id = manager.register(
+				"bash",
+				"running command",
+				async ({ signal }) => {
+					signal.addEventListener("abort", () => pending.resolve("cancelled"), { once: true });
+					return pending.promise;
+				},
+				{ id: "bg_12", ownerId: "Main" },
+			);
+			const session = toolSession(process.cwd(), manager, { launch });
+			const protocol = new ProcProtocolHandler();
+			try {
+				for (const [suffix, content] of [
+					["/mode", "persist"],
+					["", "input"],
+				]) {
+					const message = await rejectionMessage(
+						protocol.write(parseInternalUrl(`proc://${id}${suffix}`), content, { session }),
+					);
+					expect(message).toContain(`${id} is an in-process job`);
+					expect(message).toContain("stdin and persist/session/detached modes are services-only");
+					expect(message).toContain("Start long-lived work as a named service");
+					expect(message).toContain("lifetime controls");
+					expect(message).toContain(JSON.stringify({ path: `proc://${id}/kill` }));
+					expect(message).not.toContain("not found");
+
+					const missing = await rejectionMessage(
+						protocol.write(parseInternalUrl(`proc://missing-job${suffix}`), content, { session }),
+					);
+					expect(missing).toContain("not found: missing-job");
+					expect(missing).not.toContain("in-process");
+				}
+				expect(manager.getJob(id)?.status).toBe("running");
+				expect(manager.isJobResultConsumed(id)).toBeFalse();
+				if (!launch) expect(broker).not.toHaveBeenCalled();
+			} finally {
+				broker.mockRestore();
+				await manager.dispose();
+			}
+		},
+	);
+
+	it("reports unknown ids as missing for both service-only write operations", async () => {
+		const protocol = new ProcProtocolHandler();
+		const session = toolSession(process.cwd(), undefined, { launch: false });
+		for (const [suffix, content] of [
+			["/mode", "persist"],
+			["", "input"],
+		]) {
+			const message = await rejectionMessage(
+				protocol.write(parseInternalUrl(`proc://missing-job${suffix}`), content, { session }),
+			);
+			expect(message).toContain("not found: missing-job");
+			expect(message).not.toContain("in-process");
+		}
+	});
+
+	it("advertises stdin and modes as service-only while kill remains available for jobs and agents", async () => {
+		const help = new InternalUrlRouter()
+			.describe({ skillUriAccess: false, ruleCount: 0, securityEnabled: false, settingsApproval: false })
+			.find(line => line.startsWith("`proc://`"));
+		expect(help).toMatch(/stdin[^;]*services.only/);
+		expect(help).toMatch(/\/mode[^;]*services.only/);
+		expect(help).toMatch(/\/kill[^;]*jobs, agents, and services/);
+		expect(help).toContain("named service");
+
+		const protocol = new ProcProtocolHandler();
+		const session = toolSession(process.cwd(), undefined, { launch: false });
+		expect(await rejectionMessage(protocol.write(parseInternalUrl("proc://"), "", { session }))).toContain(
+			"stdin and modes are services-only",
+		);
 	});
 
 	it("answers a read of a write-only action with the write that performs it, leaving the job running", async () => {
@@ -261,6 +350,7 @@ describe("proc:// background jobs", () => {
 			expect(mode).toContain("call write with");
 			expect(mode).toContain('"path":"proc://bg_12/mode"');
 			expect(mode).toContain("persist, session, or detached");
+			expect(mode).toContain("services-only");
 		} finally {
 			await manager.dispose();
 		}
@@ -285,9 +375,9 @@ describe("proc:// background jobs", () => {
 					path: `proc://${id}`,
 					content: '</antml>\n<parameter name="i">Cancelling background test run',
 				}),
-			).rejects.toThrow("stdin is only available for services");
+			).rejects.toThrow("in-process job");
 			await expect(write.execute("empty-stdin", { path: `proc://${id}`, content: "" })).rejects.toThrow(
-				"stdin is only available for services",
+				"in-process job",
 			);
 			await expect(
 				write.execute("missing-stdin", write.parameters.assert({ path: `proc://${id}` })),
@@ -384,6 +474,18 @@ describe("proc:// background jobs", () => {
 		session.agentRegistry = registry;
 		const write = new WriteTool(session);
 		try {
+			for (const [suffix, content] of [
+				["/mode", "persist"],
+				["", "input"],
+			]) {
+				const message = await rejectionMessage(
+					write.execute("service-only", { path: `proc://Worker${suffix}`, content }),
+				);
+				expect(message).toContain("Worker is an in-process agent");
+				expect(message).toContain("stdin and persist/session/detached modes are services-only");
+				expect(message).toContain("named service");
+				expect(registry.get("Worker")?.status).toBe("running");
+			}
 			const denied = await write.execute("foreign", { path: "proc://Foreign/kill" });
 			expect(denied.details?.proc).toMatchObject({ cancelled: [{ id: "Foreign", status: "not_found" }] });
 			expect(registry.get("Foreign")?.status).toBe("running");
@@ -402,6 +504,17 @@ describe("proc:// background jobs", () => {
 			manager.evictCompletedJobs({ ownerId: "Main" });
 			const running = await protocol.resolve(parseInternalUrl("proc://Quick"), { session });
 			expect(running.details?.proc?.job).toMatchObject({ id: "Quick-2", status: "running" });
+			for (const [suffix, content] of [
+				["/mode", "persist"],
+				["", "input"],
+			]) {
+				const message = await rejectionMessage(
+					protocol.write(parseInternalUrl(`proc://Quick${suffix}`), content, { session }),
+				);
+				expect(message).toContain("Quick is an in-process job");
+				expect(message).toContain("services-only");
+				expect(manager.getJob("Quick-2")?.status).toBe("running");
+			}
 
 			const killed = await protocol.write(parseInternalUrl("proc://Quick/kill"), "", { session });
 			await manager.getJob("Quick-2")?.promise;
@@ -648,6 +761,16 @@ describe("bash services via proc://", () => {
 			expect(
 				await rejectionMessage(proc.write(parseInternalUrl("proc://echo-service/kill"), "", { session })),
 			).toContain("both job echo-service and service echo-service");
+			for (const [suffix, content] of [
+				["/mode", "persist"],
+				["", "input"],
+			]) {
+				expect(
+					await rejectionMessage(
+						proc.write(parseInternalUrl(`proc://echo-service${suffix}`), content, { session }),
+					),
+				).toContain("both job echo-service and service echo-service");
+			}
 			manager.cancel(collisionId, { ownerId: "Main" });
 			await manager.getJob(collisionId)?.promise;
 			await manager.dispose({ timeoutMs: 1_000 });

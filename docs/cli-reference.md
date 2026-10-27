@@ -318,3 +318,19 @@ Run `omp <command> --help` for each command's own flags and examples.
 > `packages/coding-agent/src/cli-commands.ts`.
 
 `__complete` is an internal, hidden subcommand used by shell completion scripts.
+
+### Worktree clones
+
+When `worktree.clone` is enabled, `omp worktree add` and other clone-first
+worktree callers carry relocatable ignored caches such as `node_modules`.
+Directories containing `pyvenv.cfg` or `CMakeCache.txt` are not carried, even
+when they are nested or ignore themselves. Recreate Python environments and
+CMake build trees in the new worktree so their absolute paths name the new
+checkout. Tracked files inside excluded directories are restored from Git;
+when keeping changes, their live source contents and staged state are preserved.
+
+Clean clones also discard carried files that are untracked under the target
+commit's own ignore rules, after its tree and index have been written. Caches
+ignored by the target remain, even if the source did not ignore them. Nested
+repositories are preserved and symlinks are not followed. This target-ignore
+cleanup is skipped when keeping the source's uncommitted changes.

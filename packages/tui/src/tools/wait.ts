@@ -90,6 +90,12 @@ export interface JobSnapshot {
 	 * on collision, else the job id itself. See {@link AsyncJob.agentId}.
 	 */
 	agentUrlId?: string;
+	/**
+	 * Whether this job's turn published `<agentUrlId>.md`. False where the job
+	 * body reported that it wrote none, so `agent://` still holds an earlier
+	 * turn's output; undefined where the body does not report it.
+	 */
+	agentOutputPublished?: boolean;
 }
 
 /** Outcome of cancelling one background job. */

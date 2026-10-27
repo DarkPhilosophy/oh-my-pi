@@ -73,7 +73,7 @@ describe("issue #4806 command output during streaming", () => {
 		streamedReply.isTranscriptBlockFinalized = () => false;
 		mode.chatContainer.addChild(streamedReply);
 
-		mode.handleToolsCommand();
+		mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 
 		// Queued while the reply streams: mounting above the block that started
 		// before the command would read as if it had been typed earlier.
@@ -97,7 +97,7 @@ describe("issue #4806 command output during streaming", () => {
 	});
 
 	it("keeps mid-turn slash-command output through a transcript rebuild", () => {
-		mode.handleToolsCommand();
+		mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 		mode.mountQueuedCommandOutput();
 
 		// Compaction/auto-compaction rebuilds replay only state.messages, which
@@ -126,7 +126,7 @@ describe("issue #4806 command output during streaming", () => {
 		try {
 			mode.chatContainer.addChild(pendingTool);
 			mode.pendingTools.set("live-anchor", pendingTool);
-			mode.handleToolsCommand();
+			mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children[mode.chatContainer.children.length - 1]!;
 
@@ -179,7 +179,7 @@ describe("issue #4806 command output during streaming", () => {
 		try {
 			mode.chatContainer.addChild(pendingTool);
 			mode.pendingTools.set("command-anchor", pendingTool);
-			mode.handleToolsCommand();
+			mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children[mode.chatContainer.children.length - 1]!;
 			expect(mode.chatContainer.children.indexOf(commandPanel)).toBeGreaterThan(
@@ -266,7 +266,7 @@ describe("issue #4806 command output during streaming", () => {
 		try {
 			mode.chatContainer.addChild(pendingTool);
 			mode.pendingTools.set("compacted-command-anchor", pendingTool);
-			mode.handleToolsCommand();
+			mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children.find(child =>
 				Bun.stripANSI(child.render(120).join("\n")).includes("Available Tools"),
@@ -378,7 +378,7 @@ describe("issue #4806 command output during streaming", () => {
 			mode.chatContainer.addChild(settledTool);
 			mode.pendingTools.set("preserved-pending-anchor", pendingTool);
 			mode.pendingTools.set("replayed-later-sibling", settledTool);
-			mode.handleToolsCommand();
+			mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children.find(child =>
 				Bun.stripANSI(child.render(120).join("\n")).includes("Available Tools"),
@@ -476,7 +476,7 @@ describe("issue #4806 command output during streaming", () => {
 			mode.chatContainer.addChild(earlierTool);
 			mode.chatContainer.addChild(pendingTool);
 			mode.pendingTools.set("exact-tool-anchor", pendingTool);
-			mode.handleToolsCommand();
+			mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 			mode.mountQueuedCommandOutput();
 			const commandPanel = mode.chatContainer.children.find(child =>
 				Bun.stripANSI(child.render(120).join("\n")).includes("Available Tools"),
@@ -552,7 +552,7 @@ describe("issue #4806 command output during streaming", () => {
 	});
 
 	it("drops slash-command output mounted for a previous session", async () => {
-		mode.handleToolsCommand();
+		mode.presentCommandOutput(new Text("Available Tools", 0, 0));
 		mode.mountQueuedCommandOutput();
 		const previousSessionId = session.sessionManager.getSessionId();
 

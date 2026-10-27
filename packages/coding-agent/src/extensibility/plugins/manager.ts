@@ -512,8 +512,6 @@ export class PluginManager {
 			validatePackageName(spec.packageName);
 		}
 
-		await this.#ensurePackageJson();
-
 		if (options.dryRun) {
 			return {
 				name: spec.packageName,
@@ -524,6 +522,9 @@ export class PluginManager {
 				enabled: true,
 			};
 		}
+
+		await this.#ensurePackageJson();
+
 		const pkgJsonPath = getPluginsPackageJson();
 		const packageJsonBefore = await Bun.file(pkgJsonPath).text();
 		// Snapshot bun's lockfile so the rollback path can restore the pin. Every
@@ -740,19 +741,7 @@ export class PluginManager {
 	 * `bun.lock` resolution.
 	 */
 	async upgrade(name: string): Promise<{ from: string | undefined; plugin: InstalledPlugin; changed: boolean }> {
-		validatePackageName(name);
-		const deps = await this.#readDeps(getPluginsPackageJson());
-		const config = await this.#ensureConfigLoaded();
-		const recorded = deps[name];
-		if (recorded === undefined) {
-			if (config.plugins[name]) {
-				throw new Error(`${name} is linked from a local path; there is nothing to upgrade`);
-			}
-			throw new Error(`${name} is not installed`);
-		}
-		if (/^(file|link|workspace|portal):/i.test(recorded)) {
-			throw new Error(`${name} is installed from a local path (${recorded}); there is nothing to upgrade`);
-		}
+		const { recorded, config } = await this.#resolveUpgradeSource(name);
 
 		const previous = config.plugins[name];
 		let from = previous?.version;
@@ -774,6 +763,28 @@ export class PluginManager {
 		const resolutionAfter = await readBunLockResolution(name);
 		const changed = from !== plugin.version || resolutionBefore !== resolutionAfter;
 		return { from, plugin, changed };
+	}
+
+	/** Throws the error `upgrade(name)` would throw before it changes anything (unknown, linked or local plugin). */
+	async validateUpgrade(name: string): Promise<void> {
+		await this.#resolveUpgradeSource(name);
+	}
+
+	async #resolveUpgradeSource(name: string): Promise<{ recorded: string; config: PluginRuntimeConfig }> {
+		validatePackageName(name);
+		const deps = await this.#readDeps(getPluginsPackageJson());
+		const config = await this.#ensureConfigLoaded();
+		const recorded = deps[name];
+		if (recorded === undefined) {
+			if (config.plugins[name]) {
+				throw new Error(`${name} is linked from a local path; there is nothing to upgrade`);
+			}
+			throw new Error(`${name} is not installed`);
+		}
+		if (/^(file|link|workspace|portal):/i.test(recorded)) {
+			throw new Error(`${name} is installed from a local path (${recorded}); there is nothing to upgrade`);
+		}
+		return { recorded, config };
 	}
 
 	/**

@@ -86,6 +86,12 @@ fn build_line_map(previous: &str, current: &str) -> HashMap<u32, u32> {
 	map
 }
 
+/// The map from `previous`'s line numbers to `current`'s that recovery remaps
+/// anchors with: only lines an intervening change left untouched.
+pub(crate) fn current_line_map(previous: &str, current: &str) -> HashMap<u32, u32> {
+	build_line_map(previous, current)
+}
+
 fn duplicated_values(lines: &[&str]) -> HashSet<String> {
 	let mut seen = HashSet::new();
 	let mut duplicated = HashSet::new();

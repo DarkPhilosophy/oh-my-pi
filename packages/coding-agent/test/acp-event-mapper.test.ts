@@ -1027,6 +1027,22 @@ describe("ACP event mapper", () => {
 		expect("content" in update).toBe(false);
 	});
 
+	it("names the tool so clients can label kind-other calls such as task", () => {
+		const update = buildToolCallStartUpdate({
+			toolCallId: "toolu_task",
+			toolName: "task",
+			args: { tasks: [] },
+			intent: "Waiting for agents",
+		});
+
+		expect(update).toMatchObject({
+			sessionUpdate: "tool_call",
+			name: "task",
+			title: "Waiting for agents",
+			kind: "other",
+		});
+	});
+
 	it("keeps object replay arguments unchanged and builds command content", () => {
 		const rawArgs = { command: "bun test", cwd: "/repo" };
 		const replayArgs = normalizeReplayToolArguments(rawArgs);

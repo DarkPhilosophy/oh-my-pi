@@ -3851,6 +3851,19 @@ describe("ACP agent", () => {
 			});
 		});
 
+		it("refuses secret input requests without emitting a plaintext form elicitation", async () => {
+			const { connection, calls } = createElicitConnection(async () => ({
+				action: "accept",
+				content: { value: "shh" },
+			}));
+			const ctx = createAcpExtensionUiContext(connection, () => "session-secret-input", FORM_CAPABILITIES);
+
+			const result = await ctx.input("API key", "sk-...", { secret: true });
+
+			expect(result).toBeUndefined();
+			expect(calls).toHaveLength(0);
+		});
+
 		it("translates editor to a string elicitation with the prefill as default", async () => {
 			const { connection, calls } = createElicitConnection(async () => ({
 				action: "accept",

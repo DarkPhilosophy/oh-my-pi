@@ -958,6 +958,7 @@ fn parse_one_hunk(
 	lines: &[&str],
 	line_number: u32,
 	allow_missing_context: bool,
+	recover_line_numbers: bool,
 ) -> Result<ParseHunkResult, EditError> {
 	if lines.is_empty() {
 		return Err(parse_error("Diff does not contain any lines", line_number));
@@ -1134,7 +1135,9 @@ fn parse_one_hunk(
 			line_number + u32::try_from(start_index).unwrap_or(u32::MAX),
 		));
 	}
-	strip_line_number_prefixes(&mut hunk);
+	if recover_line_numbers {
+		strip_line_number_prefixes(&mut hunk);
+	}
 	Ok(ParseHunkResult { hunk, lines_consumed: parsed_lines + start_index })
 }
 
@@ -1192,8 +1195,17 @@ fn is_unified_diff_metadata_line(line: &str) -> bool {
 		.any(|prefix| line.starts_with(prefix))
 }
 
-/// Parse a diff body into hunks.
+/// Parse JSON patch hunks, recovering numbered read output when present.
 pub fn parse_diff_hunks(diff: &str) -> Result<Vec<DiffHunk>, EditError> {
+	parse_hunks(diff, true)
+}
+
+/// Codex `apply_patch` preserves numeric prefixes as literal content.
+pub(crate) fn parse_apply_patch_hunks(diff: &str) -> Result<Vec<DiffHunk>, EditError> {
+	parse_hunks(diff, false)
+}
+
+fn parse_hunks(diff: &str, recover_line_numbers: bool) -> Result<Vec<DiffHunk>, EditError> {
 	let multi_file_count = count_multi_file_markers(diff);
 	if multi_file_count > 1 {
 		return Err(EditError::Apply(format!(
@@ -1220,8 +1232,12 @@ pub fn parse_diff_hunks(diff: &str) -> Result<Vec<DiffHunk>, EditError> {
 		if trimmed.starts_with("@@") && lines[index + 1..].iter().all(|next| next.trim().is_empty()) {
 			break;
 		}
-		let parsed =
-			parse_one_hunk(&lines[index..], u32::try_from(index + 1).unwrap_or(u32::MAX), true)?;
+		let parsed = parse_one_hunk(
+			&lines[index..],
+			u32::try_from(index + 1).unwrap_or(u32::MAX),
+			true,
+			recover_line_numbers,
+		)?;
 		hunks.push(parsed.hunk);
 		index += parsed.lines_consumed;
 	}

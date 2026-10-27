@@ -69,6 +69,17 @@ export interface PdfImageReadTarget {
 	page: number;
 }
 
+/** A page read's physical PDF input, separate from its public read identity. */
+export interface PdfPageReadOptions {
+	readPath: string;
+	absolutePdfPath: string;
+	page: number;
+	pdfFileSize: number;
+	question?: string;
+	suffixResolution?: { from: string; to: string };
+	signal?: AbortSignal;
+}
+
 /** Parse a former PDF image-member path as a Chromium page screenshot request. */
 export function splitPdfImageReadPath(readPath: string): PdfImageReadTarget | null {
 	const match = PDF_IMAGE_MEMBER_RE.exec(readPath);

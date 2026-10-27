@@ -1002,6 +1002,36 @@ pub fn unseen_lines_message(
 	)
 }
 
+/// [`unseen_lines_message`]'s fallback for a stale tag.
+///
+/// The inline reveal cannot carry the lines (one is over the column cap, or
+/// there are more than the reveal cap), so they must be read. The file changed
+/// since the tag, so a read at the tag's numbers shows other rows; the read and
+/// the re-issued edit use the lines' current numbers and the file's current
+/// tag.
+pub fn stale_unseen_lines_message(
+	section_path: &str,
+	unseen_lines: &[u32],
+	tag: &str,
+	live_lines: &[u32],
+	live_tag: &str,
+	raw: bool,
+) -> String {
+	let ranges = format_line_ranges(unseen_lines);
+	let live_ranges = format_line_ranges(live_lines);
+	let selector = live_ranges.replace(", ", ",");
+	let raw = if raw { ":raw" } else { "" };
+	let live_header =
+		format!("{HL_FILE_PREFIX}{section_path}{HL_FILE_HASH_SEP}{live_tag}{HL_FILE_SUFFIX}");
+	format!(
+		"This edit anchors to lines {ranges} of {section_path} that \
+		 {HL_FILE_PREFIX}{section_path}{HL_FILE_HASH_SEP}{tag}{HL_FILE_SUFFIX} never displayed in \
+		 full. The file has changed since that tag: those lines are now lines {live_ranges}, under \
+		 {live_header}. Read `{section_path}:{selector}{raw}` for their full content, then re-issue \
+		 the edit under {live_header} with current line numbers."
+	)
+}
+
 /// Op kind of a deferred block edit, for [`block_single_line_message`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockOp {

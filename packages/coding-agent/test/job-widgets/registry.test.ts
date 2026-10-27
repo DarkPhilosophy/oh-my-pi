@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager, type AsyncJob } from "../../src/async/job-manager";
 import { type JobWidgetAuthorRequest, JobWidgets, TextTap } from "../../src/job-widgets";
 
@@ -69,7 +69,7 @@ function startTask(manager: AsyncJobManager, id: string) {
 	return { job: manager.getJob(id) as AsyncJob, tools, brief };
 }
 
-function setup(options: { maxInFlight?: number } = {}) {
+function setup(options: { maxInFlight?: number; enabled?: () => boolean; refreshMs?: number } = {}) {
 	const manager = new AsyncJobManager({});
 	managers.push(manager);
 	// Jobs stamp their start with the real clock; the registry's clock runs ahead of it on demand.
@@ -104,6 +104,86 @@ describe("job widget registry", () => {
 		const view = widgets.view(job);
 		// Lines read before the spec existed still feed it: the source is reread from its start.
 		expect(view).toMatchObject({ title: "load test", state: "live", headline: { text: "52 req/s" } });
+	});
+
+	it("stops requesting specs for a previously shown job after widgets are disabled", () => {
+		vi.useFakeTimers();
+		try {
+			let enabled = true;
+			const { manager, widgets, calls, advance } = setup({ enabled: () => enabled, refreshMs: 10 });
+			const { job, tap } = startJob(manager, "bench");
+			tap.append("req 1 rps=40\nreq 2 rps=48\nreq 3 rps=52\n");
+			widgets.view(job);
+			const unsubscribe = widgets.subscribe(() => {});
+			enabled = false;
+			advance(15_000);
+			vi.advanceTimersByTime(20);
+			expect(calls).toHaveLength(0);
+			expect(widgets.view(job)).toBeUndefined();
+			unsubscribe();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("stops the background timer while widgets are disabled, and resumes on re-enable", () => {
+		vi.useFakeTimers();
+		try {
+			let enabled = true;
+			const { manager, widgets, calls, advance } = setup({ enabled: () => enabled, refreshMs: 10 });
+			const { job, tap } = startJob(manager, "bench");
+			tap.append("req 1 rps=40\nreq 2 rps=48\nreq 3 rps=52\n");
+			widgets.view(job);
+			const unsubscribe = widgets.subscribe(() => {});
+			enabled = false;
+			advance(15_000);
+			vi.advanceTimersByTime(1_000);
+			expect(calls).toHaveLength(0);
+			// The TUI repaints after the setting flips back; that restarts the timer.
+			enabled = true;
+			widgets.view(job);
+			vi.advanceTimersByTime(20);
+			expect(calls).toHaveLength(1);
+			calls[0].answer.resolve(REQ_SPEC);
+			unsubscribe();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("aborts an in-flight spec request when widgets are disabled", async () => {
+		let enabled = true;
+		const signals: AbortSignal[] = [];
+		const answers: PromiseWithResolvers<unknown>[] = [];
+		const manager = new AsyncJobManager({});
+		managers.push(manager);
+		const widgets = new JobWidgets({
+			enabled: () => enabled,
+			authorAfterMs: 0,
+			minIngestMs: 0,
+			author: (_request, signal) => {
+				const answer = Promise.withResolvers<unknown>();
+				answers.push(answer);
+				signals.push(signal);
+				return answer.promise;
+			},
+		});
+		const { job, tap } = startJob(manager, "bench");
+		tap.append("req 1 rps=40\nreq 2 rps=48\nreq 3 rps=52\n");
+		widgets.view(job);
+		expect(signals).toHaveLength(1);
+
+		enabled = false;
+		expect(widgets.view(job)).toBeUndefined();
+		expect(signals[0]?.aborted).toBe(true);
+		answers[0]?.resolve(REQ_SPEC);
+		await settle();
+		enabled = true;
+		expect(widgets.view(job)?.state).toBe("authoring");
+		expect(signals).toHaveLength(2);
+		answers[1]?.resolve({ skip: "no metric to chart" });
+		await settle();
+		expect(widgets.view(job)?.state).toBe("fallback");
 	});
 
 	it("retries a rejected spec once per attempt with the errors, and stops after three attempts", async () => {

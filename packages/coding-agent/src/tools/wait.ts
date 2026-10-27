@@ -99,6 +99,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 	readonly parameters = waitSchema;
 	readonly strict = true;
 	readonly interruptible = true;
+	readonly handlesToolInterrupt = true;
 	readonly approval = "read";
 	readonly loadMode = "essential";
 	readonly intent = "optional";

@@ -99,7 +99,12 @@ export class JobWidgets implements JobWidgetRegistry {
 	}
 
 	view(job: AsyncJob): JobWidgetView | undefined {
-		if (this.#disposed || !job.widgetInputs || !this.#enabled()) return undefined;
+		if (this.#disposed || !job.widgetInputs) return undefined;
+		if (!this.#enabled()) {
+			this.#entries.get(job.id)?.request?.abort();
+			this.#syncTimer();
+			return undefined;
+		}
 		let entry = this.#entries.get(job.id);
 		if (!entry || entry.job !== job) {
 			entry?.request?.abort();
@@ -201,7 +206,7 @@ export class JobWidgets implements JobWidgetRegistry {
 	 * knows whether some output of its work shows progress.
 	 */
 	#maybeAuthor(entry: WidgetEntry, brief: JobWidgetBrief, now: number): void {
-		if (!this.#author || entry.request || entry.authorUnavailable || !entry.shown) return;
+		if (!this.#enabled() || !this.#author || entry.request || entry.authorUnavailable || !entry.shown) return;
 		if (entry.attempts >= this.#options.maxAttempts || this.#inFlight >= this.#options.maxInFlight) return;
 		if (now - entry.job.startTime < this.#options.authorAfterMs) return;
 		if (brief.kind === "task" && !brief.watch) return;
@@ -249,7 +254,7 @@ export class JobWidgets implements JobWidgetRegistry {
 		try {
 			for (let round = 0; round < 2 && !spec; round++) {
 				const answer = await author(request, controller.signal);
-				if (controller.signal.aborted) return;
+				if (controller.signal.aborted || !this.#enabled()) return;
 				if (answer === undefined) {
 					entry.authorUnavailable = true;
 					break;
@@ -275,7 +280,7 @@ export class JobWidgets implements JobWidgetRegistry {
 			this.#inFlight -= 1;
 			if (entry.request === controller) entry.request = undefined;
 		}
-		if (controller.signal.aborted || this.#entries.get(entry.job.id) !== entry) return;
+		if (controller.signal.aborted || !this.#enabled() || this.#entries.get(entry.job.id) !== entry) return;
 		if (spec) this.#install(entry, spec, brief);
 		if (this.#recompute(entry, brief)) this.#notify();
 		this.#syncTimer();
@@ -312,7 +317,7 @@ export class JobWidgets implements JobWidgetRegistry {
 	}
 
 	#syncTimer(): void {
-		const wanted = !this.#disposed && this.#listeners.size > 0 && this.#hasLiveWidgets();
+		const wanted = !this.#disposed && this.#enabled() && this.#listeners.size > 0 && this.#hasLiveWidgets();
 		if (wanted && !this.#timer) {
 			this.#timer = setInterval(() => this.#tick(), this.#options.refreshMs);
 			this.#timer.unref();
@@ -323,6 +328,11 @@ export class JobWidgets implements JobWidgetRegistry {
 	}
 
 	#tick(): void {
+		if (!this.#enabled()) {
+			for (const entry of this.#entries.values()) entry.request?.abort();
+			this.#syncTimer();
+			return;
+		}
 		let changed = false;
 		for (const entry of this.#entries.values()) {
 			if (!entry.shown || entry.frozen) continue;

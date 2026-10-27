@@ -21,7 +21,11 @@ import type { CompactionQueuedMessage, InteractiveModeContext } from "@oh-my-pi/
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "@oh-my-pi/pi-coding-agent/session/messages";
+import {
+	SKILL_PROMPT_MESSAGE_TYPE,
+	type SkillPromptDetails,
+	USER_INTERRUPT_LABEL,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Container } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -51,7 +55,13 @@ type PromptCustomMessage = Mock<
 			attribution?: string;
 			details: SkillPromptDetails;
 		},
-		options?: { streamingBehavior?: "steer" | "followUp"; queueChipText?: string; queueOnly?: boolean },
+		options?: {
+			streamingBehavior?: "steer" | "followUp";
+			queueChipText?: string;
+			queueOnly?: boolean;
+			onPromptQueued?: (queued: readonly unknown[]) => void;
+			onPromptAdmitted?: () => void;
+		},
 	) => Promise<void>
 >;
 
@@ -455,7 +465,7 @@ describe("compaction skill re-invocation", () => {
 				prompt,
 				steer,
 				followUp,
-				clearQueue: vi.fn(),
+				dropQueuedMessages: vi.fn(),
 			},
 		} as unknown as InteractiveModeContext;
 		return { ctx, promptCustomMessage, promptCustomMessageCalled, prompt, steer, followUp, armLoopAutoSubmit };
@@ -511,9 +521,12 @@ describe("compaction skill re-invocation", () => {
 		expect(renderedText.text).toContain("arg1 arg2");
 		expect(message.content[1]).toEqual(image);
 		expect(message.details).toMatchObject({ name: "test-skill", args: "arg1 arg2", lineCount: 1 });
+		// The flush also passes its own admission callbacks; the skill prompt is sent, not queue-only.
 		expect(options).toEqual({
 			streamingBehavior: "followUp",
 			queueChipText: "/skill:test-skill arg1 arg2",
+			onPromptQueued: expect.any(Function),
+			onPromptAdmitted: expect.any(Function),
 		});
 		expect(prompt).not.toHaveBeenCalled();
 		expect(steer).not.toHaveBeenCalled();
@@ -682,7 +695,7 @@ describe("AgentSession derived queued custom display", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 
-	it("never restores a visible agent-authored custom steer; preserves on dequeue, drops on interrupt", async () => {
+	it("never restores a visible agent-authored custom steer; preserves on dequeue, records on interrupt", async () => {
 		fixture = await createRealSession();
 		const { session } = fixture;
 		// An IRC aside / extension/hook notice: visible, but agent-authored — editing it
@@ -706,9 +719,11 @@ describe("AgentSession derived queued custom display", () => {
 		// ...plain dequeue restores nothing but PRESERVES the extension steer (not lost)...
 		expect(session.clearQueue().steering).toEqual([]);
 		expect(session.agent.peekSteeringQueue()).toHaveLength(1);
-		// ...and only Esc+abort drops it (no auto-resume leftover).
+		// ...and Esc+abort records it in the transcript instead (no auto-resume leftover, not lost).
 		expect(session.clearQueue({ forInterrupt: true }).steering).toEqual([]);
+		await session.abort({ reason: USER_INTERRUPT_LABEL });
 		expect(session.agent.hasQueuedMessages()).toBe(false);
+		expect(session.agent.state.messages).toMatchObject([{ role: "custom", content: "peer pinged you" }]);
 	});
 
 	it("counts a queued advisor card as pending work but keeps it out of chips and restore", async () => {

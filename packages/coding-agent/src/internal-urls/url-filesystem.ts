@@ -63,7 +63,7 @@ export class UrlFsError extends Error {
 	}
 }
 
-/** A URL split at its mount root, with `.`/`..`/empty segments resolved lexically. */
+/** A URL split at its mount root; remote paths keep their server-side path semantics. */
 interface UrlPath {
 	scheme: string;
 	/** `scheme://` when the authority is a path segment (local://), else `scheme://<authority>`. */
@@ -76,6 +76,12 @@ function parseUrlPath(input: string, spec: SchemeSpec): UrlPath {
 	const match = URL_PATH_RE.exec(input);
 	if (!match) throw new UrlFsError("EINVAL", `Not a URL path: ${input}`);
 	const scheme = match[1].toLowerCase();
+	if (spec.backing === "remote" && !spec.pathAuthority) {
+		// Remote .. may cross a symlink or the /~/ account-home boundary. It
+		// cannot be collapsed locally, and must never pop the URL authority.
+		const [authority, ...segments] = match[2].split("/");
+		return { scheme, root: `${scheme}://${authority}`, segments };
+	}
 	// The authority takes part in `..` resolution: `skill://a/..` is `skill://`.
 	const segments: string[] = [];
 	for (const part of match[2].split("/")) {
@@ -437,6 +443,10 @@ export class InternalUrlFilesystem {
 		if (!node.directory) throw new UrlFsError("ENOTDIR", `Not a directory: ${node.url}`);
 		if (node.entries) return { entries: Array.from(node.entries, ([name, fileType]) => ({ name, fileType })) };
 		if (node.sourcePath) return { local: node.sourcePath };
+		const handler = this.#router.getHandler(schemeOf(node.url));
+		if (handler?.readDirectory) {
+			return { entries: await handler.readDirectory(parseInternalUrl(node.url), this.#context) };
+		}
 		throw new UrlFsError("ENOTSUP", `${node.url} lists only through the read tool`);
 	}
 
@@ -584,13 +594,19 @@ export class InternalUrlFilesystem {
 		} catch (error) {
 			// A symlink holding a URL looks dangling to the host; follow it through this filesystem.
 			if (!(error instanceof UrlContainmentError)) throw error;
+			if (this.#context.containSkillPaths && schemeOf(url) === "skill") throw error;
 			const redirected = await this.#urlSymlinkTarget(route, target);
 			if (redirected === undefined) throw error;
 			return this.#node(redirected, follow, create, hops + 1);
 		}
 		if (located !== null) return { kind: "host", url, spec, path: located };
 		const redirected = await this.#urlSymlinkTarget(route, target);
-		if (redirected !== undefined) return this.#node(redirected, follow, create, hops + 1);
+		if (redirected !== undefined) {
+			if (this.#context.containSkillPaths && schemeOf(url) === "skill") {
+				throw new UrlContainmentError(`Skill link resolves outside its filesystem root: ${url}`);
+			}
+			return this.#node(redirected, follow, create, hops + 1);
+		}
 		if (create) throw this.#readOnly({ url, spec });
 		// No backing file (agent://<id>/<json-path>) or a missing entry: the handler renders it or reports why not.
 		return this.#virtualNode(route, target, url);

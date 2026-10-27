@@ -130,6 +130,7 @@ function makeHarness(options: { renderInitialMessages?: () => void | Promise<voi
 		updateEditorBorderColor() {},
 		setTerminalTitleState() {},
 		setRunStatus() {},
+		syncIdleMaintenanceView() {},
 		ui: { requestRender() {}, requestComponentRender() {} },
 		showStatus() {},
 		collabGuest: undefined,

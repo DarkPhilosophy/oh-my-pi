@@ -14,7 +14,8 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import { stripRawHttpRequestDiagnostics } from "@oh-my-pi/pi-ai/utils/http-inspector";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { CostCapRefusal } from "../../session/cost-gate";
-import { isRpcSessionSettled, type RpcScheduledTurnProbe, type RpcSettleSession } from "./rpc-session-settle";
+import { isSessionSettled, type SessionSettleState } from "../../session/session-settle";
+import type { RpcScheduledTurnProbe } from "./rpc-session-settle";
 import type { RpcPromptError, RpcPromptResultFrame, RpcPromptStatus } from "./rpc-types";
 
 /** A prompt accepted by RPC mode whose `prompt_result` is still owed; see {@link RpcPromptResults.begin}. */
@@ -55,7 +56,7 @@ interface OpenPrompt {
 export class RpcPromptResults {
 	#agentStarts = 0;
 	#open = new Map<RpcPromptTicket, OpenPrompt>();
-	readonly #session: RpcSettleSession;
+	readonly #session: SessionSettleState;
 	readonly #output: (frame: RpcPromptResultFrame) => void;
 	readonly #scheduledTurn: RpcScheduledTurnProbe | undefined;
 	readonly #costCapRefusal: (() => CostCapRefusal | undefined) | undefined;
@@ -70,7 +71,7 @@ export class RpcPromptResults {
 	 *   dispatch): no `agent_end` follows, so the host re-checks session settlement here.
 	 */
 	constructor(
-		session: RpcSettleSession,
+		session: SessionSettleState,
 		output: (frame: RpcPromptResultFrame) => void,
 		scheduledTurn?: RpcScheduledTurnProbe,
 		hooks?: { costCapRefusal?: () => CostCapRefusal | undefined; settledWithoutRun?: () => void },
@@ -185,7 +186,7 @@ export class RpcPromptResults {
 				id: ticket.id,
 				agentInvoked,
 				status: outcome.status,
-				sessionSettled: isRpcSessionSettled(this.#session, this.#scheduledTurn),
+				sessionSettled: isSessionSettled(this.#session, this.#scheduledTurn),
 			};
 			if (outcome.error) frame.error = outcome.error;
 			this.#output(frame);

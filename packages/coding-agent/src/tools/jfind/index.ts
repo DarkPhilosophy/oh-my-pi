@@ -87,7 +87,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 		// Host paths stay native; internal URLs (`local://`, `omp://`, …) are
 		// listed, scanned, and read in place through the URL filesystem.
 		const filesystem = new InternalUrlFilesystem({
-			context: sessionResolveContext(this.session, { signal }),
+			context: sessionResolveContext(this.session, { signal, containSkillPaths: true }),
 			tier: resolveToolTier(this, params),
 		});
 		const root = await resolveSearchRoot(filesystem, rawScopeInput, cwd);

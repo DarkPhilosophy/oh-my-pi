@@ -99,6 +99,13 @@ export interface AdvisorRuntimeHost {
 	 *  hard-stops), so the host can repaint UI that reflects whether the
 	 *  advisor is still going to comment on the current yield. */
 	notifyIdle?(): void;
+	/**
+	 * Whether primary assistant thinking blocks (`_thinking:_`) are included in
+	 * deltas rendered for this advisor. Defaults to `true`. Setting `false`
+	 * runs the advisor in evidence-only mode (actions, tool I/O, and outputs
+	 * without the primary model's chain-of-thought).
+	 */
+	includeReasoning?: boolean;
 }
 
 /**
@@ -439,8 +446,9 @@ export class AdvisorRuntime {
 	 * terminal turn ends the cascade, or on reset, so a later refusal starts fresh.
 	 */
 	readonly #refusalModelsTried = new Set<string>();
+	readonly #configuredIncludeThinking: boolean;
 	/** Whether primary reasoning is included in advisor deltas for the current model. */
-	#includeThinking = true;
+	#includeThinking: boolean;
 	#modelIdentity: string | undefined;
 	/** Completed 3-failure backlog-drop cycles since the last success/reset. */
 	#droppedBacklogs = 0;
@@ -483,7 +491,10 @@ export class AdvisorRuntime {
 		private readonly agent: AdvisorAgent,
 		private readonly host: AdvisorRuntimeHost,
 		private readonly retryDelayMs = 1000,
-	) {}
+	) {
+		this.#configuredIncludeThinking = host.includeReasoning !== false;
+		this.#includeThinking = this.#configuredIncludeThinking;
+	}
 
 	get backlog(): number {
 		return this.#backlog;
@@ -914,7 +925,7 @@ export class AdvisorRuntime {
 		const identity = this.host.getModelIdentity?.();
 		if (identity === undefined || identity === this.#modelIdentity) return;
 		this.#modelIdentity = identity;
-		this.#includeThinking = true;
+		this.#includeThinking = this.#configuredIncludeThinking;
 	}
 
 	// Candidate 4 (multi-message split): render the Session update as MULTIPLE
