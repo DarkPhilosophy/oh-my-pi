@@ -648,6 +648,11 @@ export class TranscriptContainer extends Container {
 			this.#lastViewportSpans = [];
 			return EMPTY_ROWS;
 		}
+		// Settled history before the oldest running block need not compete for
+		// live space. Keep the whole active suffix visible when it fits, then
+		// fill the remaining viewport with the natural tail of settled history.
+		const firstUnsettled = live.findIndex(({ entry }) => entry.state !== "settled");
+		let naturalTail = firstUnsettled < 0;
 
 		// Collect newest-first and stop one block past what the viewport can
 		// hold: beyond that the emergency layout is already certain, and every
@@ -657,7 +662,9 @@ export class TranscriptContainer extends Container {
 		const blocks: (readonly string[])[] = [];
 		const measuredImages: boolean[] = [];
 		let unrendered = 0;
+		let naturalRows = 0;
 		for (let cursor = live.length - 1; cursor >= 0; cursor--) {
+			if (naturalRows >= capacity && (firstUnsettled < 0 || cursor < firstUnsettled)) break;
 			if (shown.length > capacity) {
 				unrendered = cursor + 1;
 				break;
@@ -668,6 +675,8 @@ export class TranscriptContainer extends Container {
 			shown.push(candidate);
 			blocks.push(block.rows);
 			measuredImages.push(block.images);
+			naturalRows += block.rows.length + (shown.length > 1 ? 1 : 0);
+			if (cursor === firstUnsettled && naturalRows <= capacity) naturalTail = true;
 		}
 		shown.reverse();
 		blocks.reverse();
@@ -676,7 +685,7 @@ export class TranscriptContainer extends Container {
 			this.#lastViewportSpans = [];
 			return EMPTY_ROWS;
 		}
-		if (shown.length > capacity) {
+		if (!naturalTail && shown.length > capacity) {
 			// Blocks the walk never reached are still transcript state: the
 			// emergency layout consults them only where it must.
 			return this.#renderEmergency(shown, live.slice(0, unrendered), width, capacity, frame);
@@ -694,7 +703,7 @@ export class TranscriptContainer extends Container {
 		}
 		let total = 0;
 		for (const block of blocks) total += block.length + (total > 0 ? 1 : 0);
-		if (total <= capacity) {
+		if (total <= capacity || naturalTail) {
 			const output: string[] = [];
 			const owners: (Component | undefined)[] = [];
 			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
@@ -708,13 +717,15 @@ export class TranscriptContainer extends Container {
 					owners.push(component);
 				}
 			}
-			this.#commitViewportSpans(owners, output.length);
-			return output;
+			const drop = Math.max(0, output.length - capacity);
+			this.#commitViewportSpans(owners.slice(drop), output.length - drop);
+			return drop > 0 ? output.slice(drop) : output;
 		}
 
 		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
 		const allocation: number[] = new Array(shown.length).fill(1);
-		let surplus = capacity - shown.length;
+		const separatorRows = capacity >= shown.length * 2 - 1 ? shown.length - 1 : 0;
+		let surplus = capacity - shown.length - separatorRows;
 		// Reserve a readable tool preview before sharing surplus with prose:
 		// two borders, a truncation indicator, and at least one content row.
 		for (let index = shown.length - 1; index >= 0; index--) {
@@ -743,6 +754,10 @@ export class TranscriptContainer extends Container {
 		const output: string[] = [];
 		const owners: (Component | undefined)[] = [];
 		for (let index = 0; index < shown.length; index++) {
+			if (index > 0 && separatorRows > 0) {
+				output.push("");
+				owners.push(undefined);
+			}
 			const candidate = shown[index]!;
 			const allocated = allocation[index]!;
 			this.#setAllocation(candidate.entry.component, allocated, frame);
@@ -1705,8 +1720,7 @@ export class TranscriptContainer extends Container {
 
 	#adoptEmittedPrefix(entry: TranscriptEntry, block: readonly string[], rowCount: number, width: number): void {
 		if (entry.mode === "mutable") {
-			if (isFinalized(entry.component)) entry.split = rowSplit(block, rowCount, width);
-			else entry.emitted = rowCount;
+			entry.split = rowSplit(block, rowCount, width);
 			return;
 		}
 		// Append-only blocks count emitted rows in stable semantic units; adopt

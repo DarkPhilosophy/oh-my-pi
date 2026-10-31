@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed settled conversation history briefly collapsing into one-line summaries while session loading or transcript rebuilding fills scrollback.
+- Fixed transcript rebuilds compressing settled history or failing while a Bash command is still running.
+- Fixed blank separators around turn statistics disappearing when long tool previews squeeze the viewport.
+
 ## [18.13.2] - 2026-10-27
 
 ### Added

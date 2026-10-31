@@ -40,6 +40,81 @@ class ReshapingCard {
 let composer: Composer | undefined;
 afterEach(() => composer?.stop());
 
+for (const quiet of [false, true]) {
+	it(`keeps completed message bodies visible while restored history drains (quiet=${quiet})`, async () => {
+		const terminal = new VirtualTerminal(80, 40);
+		composer = new Composer({ preferences: { quiet }, terminal });
+		const transcript = new TranscriptContainer();
+		const blocks = Array.from({ length: 18 }, (_, index) => ({
+			isTranscriptBlockFinalized: () => true,
+			render: () => {
+				const until = performance.now() + 4;
+				while (performance.now() < until) {}
+				return [`RESTORED_HEADER_${index}`, `RESTORED_BODY_${index}`, `RESTORED_END_${index}`];
+			},
+		}));
+		for (const block of blocks) transcript.addChild(block);
+		const viewports: string[][] = [];
+		composer.ui.addPaintListener(paint => {
+			viewports.push(paint.viewport.map(row => Bun.stripANSI(row).trimEnd()));
+		});
+		composer.setRuntimeChildren([transcript, new Text("RESTORED_CHROME", 0, 0)]);
+		composer.start({ playWelcomeIntro: true });
+		for (const rebuild of [false, true]) {
+			if (rebuild) {
+				viewports.length = 0;
+				transcript.clear();
+				for (const block of blocks) transcript.addChild(block);
+				composer.ui.requestRender(true, { clearScrollback: true });
+			}
+			const drained = () => {
+				const bodies = terminal.getScrollBuffer().flatMap(row => row.match(/RESTORED_BODY_\d+/g) ?? []);
+				return viewports.length > 0 && bodies.length === 18;
+			};
+			// The real intro lasts three seconds; a single terminal wait is capped at two.
+			for (let attempt = 0; attempt < 3 && !drained(); attempt++) await terminal.waitForRender(drained);
+			for (const viewport of viewports) expect(viewport).toContain("RESTORED_BODY_17");
+			expect(terminal.getScrollBuffer().flatMap(row => row.match(/RESTORED_BODY_\d+/g) ?? [])).toEqual(
+				Array.from({ length: 18 }, (_, index) => `RESTORED_BODY_${index}`),
+			);
+		}
+	}, 15_000);
+}
+
+it("keeps restored bodies readable when a running Bash survives a scrollback reset", async () => {
+	const terminal = new VirtualTerminal(80, 24);
+	composer = new Composer({ preferences: { quiet: true }, terminal });
+	const transcript = new TranscriptContainer();
+	const blocks = Array.from({ length: 30 }, (_, index) => ({
+		isTranscriptBlockFinalized: () => true,
+		render: () => [`ACTIVE_HEADER_${index}`, `ACTIVE_BODY_${index}`, `ACTIVE_END_${index}`],
+	}));
+	const bash = new ToolExecutionComponent("bash", { command: "echo still-running" }, {}, undefined, composer.ui);
+	bash.setArgsComplete();
+	bash.setExecutionStarted();
+	const paints: string[] = [];
+	composer.ui.addPaintListener(() => paints.push(Bun.stripANSI(terminal.getViewport().join("\n"))));
+	composer.setRuntimeChildren([transcript, new Text("ACTIVE_CHROME", 0, 0)]);
+	try {
+		for (const reset of [false, true]) {
+			paints.length = 0;
+			transcript.clear();
+			for (const block of blocks) transcript.addChild(block);
+			transcript.addChild(bash);
+			if (reset) composer.ui.requestRender(true, { clearScrollback: true });
+			else composer.start({ playWelcomeIntro: false });
+			await terminal.waitForRender(() => paints.length > 0);
+			expect(Bun.stripANSI(terminal.getViewport().join("\n"))).toContain("ACTIVE_BODY_29");
+			for (const paint of paints) {
+				expect(paint).toContain("ACTIVE_BODY_29");
+				expect(paint).toContain("Bash");
+			}
+		}
+	} finally {
+		bash.stopAnimation();
+	}
+});
+
 it("closes a long transcript without padding its final rows away from the shell", async () => {
 	const terminal = new VirtualTerminal(120, 40);
 	composer = new Composer({ preferences: { quiet: true }, terminal });

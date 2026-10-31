@@ -88,6 +88,60 @@ describe("native streaming edit previews", () => {
 			component.stopAnimation();
 		}
 	});
+
+	test("keeps a blank row on each side of statistics as a long edit squeezes a running Bash", () => {
+		const ui = { requestRender() {} } as unknown as TUI;
+		const bash = new ToolExecutionComponent("bash", { command: "echo running" }, {}, undefined, ui);
+		const edit = createComponent(() => {});
+		const transcript = new TranscriptContainer();
+		for (let index = 0; index < 30; index++) transcript.addChild(new Text(`OLD_BODY_${index}`, 0, 0));
+		transcript.addChild(bash);
+		transcript.addChild(new Text("TURN_STATS", 0, 1));
+		transcript.addChild(edit);
+		const assertSpacing = (rows: readonly string[]) => {
+			const terminal = new VirtualTerminal(100, rows.length + 1);
+			terminal.write(rows.join("\r\n"));
+			const displayed = terminal.getViewport().map(row => row.trimEnd());
+			const index = displayed.findIndex(row => row.includes("TURN_STATS"));
+			expect(index).toBeGreaterThan(0);
+			expect(displayed[index - 1]).toBe("");
+			expect(displayed[index + 1]).toBe("");
+		};
+		try {
+			bash.setArgsComplete();
+			bash.setExecutionStarted();
+			edit.setArgsComplete();
+			const diff =
+				"@@ -1 +1,80 @@\n-old\n" +
+				Array.from({ length: 80 }, (_, index) => `+const LONG_EDIT_${index} = ${index};`).join("\n");
+			edit.updateStreamPreview({
+				generation: 1,
+				streaming: true,
+				files: [{ path: "mod.ts", diff, firstChangedLine: 1 }],
+			});
+			for (const capacity of [30, 18, 12, 10]) {
+				const viewport = transcript.renderViewport(100, capacity, { tick: capacity, now: capacity });
+				expect(Bun.stripANSI(viewport.join("\n"))).toContain("echo running");
+				assertSpacing(viewport);
+			}
+			bash.updateResult({ content: [{ type: "text", text: "finished" }] }, false);
+			edit.updateResult(
+				{ content: [{ type: "text", text: "edited" }], details: { diff, firstChangedLine: 1 } },
+				false,
+			);
+			const history: string[] = [];
+			for (let tick = 100; tick < 110; tick++) {
+				const batch = transcript.peekFinalizedBatch(100, 3);
+				if (!batch) break;
+				history.push(...batch.rows);
+				transcript.acknowledgeFinalizedBatch(batch.id);
+			}
+			assertSpacing([...history, ...transcript.renderViewport(100, 3, { tick: 110, now: 110 })]);
+		} finally {
+			bash.stopAnimation();
+			edit.stopAnimation();
+		}
+	});
 	test("merges a gutter-prefixed elision marker instead of stacking a second one", () => {
 		const source = renderOutputBlockStaged(
 			{

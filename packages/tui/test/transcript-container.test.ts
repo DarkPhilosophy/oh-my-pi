@@ -799,6 +799,30 @@ describe("TranscriptContainer", () => {
 		expect(transcript.blockStates()).toEqual(blocks.map(() => "committed"));
 	});
 
+	it("keeps the natural viewport unchanged while a settled history backlog drains", () => {
+		const transcript = new TranscriptContainer();
+		const rows = Array.from({ length: 18 }, (_, index) => [`header ${index}`, `body ${index}`, `end ${index}`]);
+		for (const block of rows) transcript.addChild(new SlowBlock(block, 4));
+		const expected = rows.slice(-3).flatMap((block, index) => (index === 0 ? block : ["", ...block]));
+		const history: string[] = [];
+		let batches = 0;
+		let viewport: readonly string[] = [];
+		for (let tick = 0; tick <= rows.length; tick++) {
+			const currentFrame = { tick, now: tick };
+			transcript.beginFrame(currentFrame);
+			const batch = transcript.peekFinalizedBatch(80, 11);
+			viewport = transcript.renderViewport(80, 11, currentFrame);
+			expect(viewport).toEqual(expected);
+			if (!batch) break;
+			history.push(...batch.rows);
+			transcript.acknowledgeFinalizedBatch(batch.id);
+			batches++;
+		}
+		expect(batches).toBeGreaterThan(1);
+		expect([...history, ...viewport].filter(row => row !== "")).toEqual(rows.flat());
+		expect(transcript.peekFinalizedBatch(80, 11)).toBeUndefined();
+	});
+
 	it("shares one frame's measurements between history publication and the bounded viewport (#12933)", () => {
 		const transcript = new TranscriptContainer();
 		const blocks = Array.from({ length: 40 }, (_, index) => new CountingBlock([`row ${index}`]));
@@ -842,32 +866,65 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 2, frame)).toEqual(["settled 2", "settled 3"]);
 	});
 
-	it("excludes empty blocks so pressure never emits blank rows (issue 9483)", () => {
+	it("does not compress settled history when a running tail tool still fits", () => {
+		const transcript = new TranscriptContainer();
+		for (let index = 0; index < 30; index++) {
+			transcript.addChild(new Block([`header ${index}`, `body ${index}`, `end ${index}`], true));
+		}
+		transcript.addChild(new Block(["Bash", "Running", "elapsed"], false));
+		expect(transcript.renderViewport(80, 11, frame)).toEqual([
+			"header 28",
+			"body 28",
+			"end 28",
+			"",
+			"header 29",
+			"body 29",
+			"end 29",
+			"",
+			"Bash",
+			"Running",
+			"elapsed",
+		]);
+	});
+
+	it("keeps separators around turn statistics while a tool pins retirement", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["Bash", "command", "Running"], false));
+		transcript.addChild(new Block(["turn statistics"], true));
+		transcript.addChild(new Block(["Edit", "diff 1", "diff 2", "diff 3", "diff 4", "diff 5"], true));
+		const viewport = transcript.renderViewport(80, 10, frame);
+		const statistics = viewport.indexOf("turn statistics");
+		expect(statistics).toBeGreaterThan(0);
+		expect(viewport[statistics - 1]).toBe("");
+		expect(viewport[statistics + 1]).toBe("");
+		expect(viewport).toHaveLength(10);
+	});
+
+	it("excludes empty blocks without adding extra separators under pressure (issue 9483)", () => {
 		const transcript = new TranscriptContainer();
 		// Text blocks interleaved with empty (hidden tool-activity) blocks that
 		// render nothing but stay live until retired.
 		for (let i = 0; i < 6; i++) {
-			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
+			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], i !== 0));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Emergency path: more non-empty blocks than rows. Every row carries real
-		// text — no block's tail is dropped as blank padding.
+		// Empty components consume neither a row nor an additional separator.
 		const out = transcript.renderViewport(80, 12, frame);
 		expect(out).toHaveLength(12);
-		expect(out.every(row => /\S/.test(row))).toBe(true);
+		expect(out.filter(row => row === "")).toHaveLength(5);
+		for (let index = 0; index < 6; index++) expect(out.some(row => row.startsWith(`t${index}`))).toBe(true);
 	});
 
 	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
 		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], true));
+		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], false));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		// Capacity 10 fits all real content once the two empty blocks stop
-		// stealing a base row each; the older block keeps its tail rows.
+		// Reserve separators only for the three visible blocks.
 		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
+		expect(out).toEqual(["A4", "", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
 	});
 
 	it("renders user message text in emergency layout and omits OSC 133 prompt markers (issue 13835)", () => {
@@ -953,9 +1010,9 @@ describe("TranscriptContainer", () => {
 		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
 		transcript.addChild(assistant);
 		transcript.addChild(tool);
-		// A framed preview needs borders, its truncation indicator and content.
-		const out = transcript.renderViewport(80, 5, frame);
-		expect(out).toEqual(["A4", "T1", "T2", "T3", "T4"]);
+		// One prose row, its separator, and four rows for a readable framed preview.
+		const out = transcript.renderViewport(80, 6, frame);
+		expect(out).toEqual(["A4", "", "T1", "T2", "T3", "T4"]);
 		expect(assistant.allocations.at(-1)).toBe(1);
 		expect(tool.allocations.at(-1)).toBe(4);
 	});
@@ -1413,10 +1470,10 @@ describe("TranscriptContainer", () => {
 		const blocks = Array.from({ length: 40 }, (_, index) => new CountingBlock([`row ${index}`]));
 		for (const block of blocks) transcript.addChild(block);
 
-		expect(transcript.renderViewport(80, 4, frame)).toEqual(["row 36", "row 37", "row 38", "row 39"]);
-		// Only the viewport tail, plus the one block that proves the overflow,
-		// costs a render; a resumed session's backlog never does.
-		expect(blocks.slice(0, 34).map(block => block.renders)).toEqual(blocks.slice(0, 34).map(() => 0));
+		expect(transcript.renderViewport(80, 4, frame)).toEqual(["", "row 38", "", "row 39"]);
+		// Natural spacing is preserved even before history publication begins.
+		// Only the visible tail and its clipped boundary cost a render.
+		expect(blocks.slice(0, 37).map(block => block.renders)).toEqual(blocks.slice(0, 37).map(() => 0));
 		expect(blocks[39]!.renders).toBeGreaterThan(0);
 	});
 
@@ -1470,10 +1527,10 @@ describe("TranscriptContainer viewport click spans", () => {
 		transcript.addChild(first);
 		transcript.addChild(second);
 
-		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "b1", "b2", "b3", "b4"]);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
 			{ component: first, start: 0, end: 1 },
-			{ component: second, start: 1, end: 5 },
+			{ component: second, start: 2, end: 5 },
 		]);
 	});
 
