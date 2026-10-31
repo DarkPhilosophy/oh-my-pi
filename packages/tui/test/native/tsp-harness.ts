@@ -16,7 +16,7 @@ import { type TspApplyError, TspDocument } from "@oh-my-pi/pi-tui/native/apply";
 import { splitTspMessage, type TspHello } from "@oh-my-pi/pi-tui/native/encode";
 import type { Terminal, TerminalAppearance, TerminalStartOptions, TspHelloHandler } from "@oh-my-pi/pi-tui/terminal";
 import { type RenderScheduler, type RenderTimer, TUI } from "@oh-my-pi/pi-tui/tui";
-import { TSP_KINDS, type TspEvent, type TspFrame, type TspNode, type TspPalette } from "@oh-my-pi/pi-wire";
+import { TSP_KINDS, type TspEvent, type TspFrame, type TspNode } from "@oh-my-pi/pi-wire";
 
 export interface TspHarnessOptions {
 	cols?: number;
@@ -119,8 +119,6 @@ export class TspTestTerminal implements Terminal {
 	readonly frames: TspFrame[] = [];
 	/** Every program → terminal message in order (chunks joined), with its JSON body (base64 text for `b`). */
 	readonly log: { verb: string; body: unknown }[] = [];
-	/** Palettes (`t`) received, in order. */
-	readonly palettes: TspPalette[] = [];
 	readonly errors: TspApplyError[] = [];
 	readonly blobs = new Map<string, Uint8Array>();
 	/** Non-TSP bytes written (row painting, cursor control). */
@@ -305,9 +303,6 @@ export class TspTestTerminal implements Terminal {
 		}
 		this.log.push({ verb: raw.verb, body: raw.verb === "b" ? body : JSON.parse(body) });
 		switch (raw.verb) {
-			case "t":
-				this.palettes.push(JSON.parse(body) as TspPalette);
-				return;
 			case "q": {
 				const query = JSON.parse(body) as { q: string; ids?: string[] };
 				if (query.q !== "blobs" || this.#options.answerBlobs === false) return;

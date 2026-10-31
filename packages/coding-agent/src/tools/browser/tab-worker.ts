@@ -143,8 +143,7 @@ import {
 	BrowserTracingController,
 } from "./tracing";
 import {
-	installWebMcp,
-	type WebMcpController,
+	WebMcpController,
 	type WebMcpEventsOptions,
 	type WebMcpEventsResult,
 	type WebMcpInvokeOptions,
@@ -2431,7 +2430,7 @@ export class WorkerCore {
 		const page = this.#requirePage();
 		if (!this.#pageState.dialogs) this.#observeDialogs();
 		this.#applyDialogPolicy(payload.dialogs);
-		this.#pageState.webmcp = await installWebMcp(page);
+		this.#pageState.webmcp = new WebMcpController(page, !this.#webDriverBiDi);
 		await installVitalsObservers(page);
 		if (payload.userAgent !== undefined) await applyUserAgentOverride(page, payload.userAgent);
 		if (payload.ignoreHttpsErrors) this.#pageState.certificateOverride = await applyIgnoreHttpsErrors(page);
@@ -2944,8 +2943,7 @@ export class WorkerCore {
 							? `selector matches ${probe.count} element(s)`
 							: `could not count matches: ${probe.failure}`;
 				let hint = "";
-				if (interrupted)
-					hint = `; typing stopped after ${interrupted.typed} of ${interrupted.total} characters (the field keeps what was typed)`;
+				if (interrupted) hint = `; ${interrupted.progress}`;
 				else if (refusal)
 					hint = `; the element never became clickable (last check: ${refusal}${countNote ? `; ${countNote}` : ""})`;
 				else if (probe && "count" in probe) hint = formatSelectorMatchHint(probe.count);
@@ -3434,14 +3432,15 @@ export class WorkerCore {
 					}),
 				),
 			recording: () => op("tab.recording()", quickOpMs, () => Promise.resolve(this.#pageState.recording.status())),
-			webmcpList: opts => op("tab.webmcpList()", quickOpMs, sig => untilAborted(sig, () => webmcp.list(opts))),
+			webmcpList: opts => op("tab.webmcpList()", quickOpMs, sig => untilAborted(sig, () => webmcp.list(opts, sig))),
 			webmcpInvoke: (toolName, params, opts) => {
 				const w = waitMs(opts?.timeout);
 				return op(`tab.webmcpInvoke(${JSON.stringify(toolName)})`, w, sig =>
-					untilAborted(sig, () => webmcp.invoke(toolName, params, opts)),
+					untilAborted(sig, () => webmcp.invoke(toolName, params, opts, sig)),
 				);
 			},
-			webmcpEvents: opts => op("tab.webmcpEvents()", quickOpMs, sig => untilAborted(sig, () => webmcp.events(opts))),
+			webmcpEvents: opts =>
+				op("tab.webmcpEvents()", quickOpMs, sig => untilAborted(sig, () => webmcp.events(opts, sig))),
 			a11y: opts =>
 				read("tab.a11y()", budgetBound, async sig => {
 					const result = await untilAborted(sig, () => runA11yAudit(page, opts));
@@ -4251,6 +4250,18 @@ export class WorkerCore {
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
+	}
+
+	/**
+	 * Force the inline core to stop after graceful cleanup exhausts its deadline.
+	 * A late connection observes `#closing` and disconnects during initialization.
+	 */
+	terminate(): void {
+		this.#closing = true;
+		this.#unsub();
+		this.#uninstallRejectionGuard();
+		this.#active?.ac.abort(postmortem.markExpectedCleanupError(new ToolAbortError("Tab worker terminated")));
+		if (this.#browser?.connected) void this.#browser.disconnect();
 	}
 
 	async #disposePageState(state: WorkerPageState): Promise<void> {

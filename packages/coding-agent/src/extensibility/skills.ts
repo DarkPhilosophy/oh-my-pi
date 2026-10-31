@@ -1,6 +1,13 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
-import { getProjectDir, isEnoent, parseFrontmatter, prompt, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import {
+	getProjectDir,
+	isEnoent,
+	normalizePathForComparison,
+	parseFrontmatter,
+	prompt,
+	relativePathWithinNormalizedRoot,
+} from "@oh-my-pi/pi-utils";
 import {
 	isValidManagedSkillName,
 	MANAGED_SKILLS_PROVIDER_ID,
@@ -700,7 +707,7 @@ export function findStaleSkillStandIn(
 	skills: readonly Skill[],
 ): Skill | undefined {
 	const staleRoot = registeredPluginRootOf(stale.filePath);
-	const staleRelativePath = staleRoot && relativePathWithinRoot(staleRoot.root, stale.filePath);
+	const staleRelativePath = staleRoot && pathInsidePluginRoot(staleRoot.root, stale.filePath);
 	let samePath: Skill | undefined;
 	for (const candidate of skills) {
 		const candidateRoot = registeredPluginRootOf(candidate.filePath);
@@ -708,13 +715,22 @@ export function findStaleSkillStandIn(
 		if (candidate.name === stale.name) return candidate;
 		if (
 			candidateRoot &&
-			staleRelativePath != null &&
-			staleRelativePath === relativePathWithinRoot(candidateRoot.root, candidate.filePath)
+			typeof staleRelativePath === "string" &&
+			staleRelativePath === pathInsidePluginRoot(candidateRoot.root, candidate.filePath)
 		) {
 			samePath ??= candidate;
 		}
 	}
 	return samePath;
+}
+
+/**
+ * `filePath` relative to the registered plugin `root` holding it. A root is registered under its
+ * path and its real path, and either can match a file named through the other (`/var` vs
+ * `/private/var` on macOS), so both sides are compared in normalized form.
+ */
+function pathInsidePluginRoot(root: string, filePath: string): string | null {
+	return relativePathWithinNormalizedRoot(normalizePathForComparison(root), normalizePathForComparison(filePath));
 }
 
 /**

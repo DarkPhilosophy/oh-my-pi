@@ -753,7 +753,6 @@ export class AdvisorRuntime {
 	}
 
 	#clearAdvisorContextAtCurrentCursor(): void {
-		this.#consecutiveFailures = 0;
 		this.#clearSeenContext();
 		try {
 			this.agent.reset();
@@ -776,6 +775,7 @@ export class AdvisorRuntime {
 		this.#deliveredPrefix = [];
 		this.#pending = [];
 		this.#held = [];
+		this.#consecutiveFailures = 0;
 		this.#clearAdvisorContextAtCurrentCursor();
 		if (clearBacklog) {
 			this.#backlog = 0;
@@ -1636,6 +1636,8 @@ export class AdvisorRuntime {
 						pending: this.#pending.length,
 						backlog: this.#backlog,
 					});
+					// A maintenance re-prime is not a recovery: the batch keeps its strikes, or a batch that
+					// keeps failing and keeps triggering maintenance is retried without end instead of dropped.
 					this.#clearAdvisorContextAtCurrentCursor();
 					const preparedMessages = this.#prepareBatch(rawMessages);
 					return {
@@ -2135,6 +2137,7 @@ export class AdvisorRuntime {
 						this.#noteDroppedBacklog(err);
 						success = true;
 					} else if (contextOverflow) {
+						this.#consecutiveFailures = 0;
 						this.#clearAdvisorContextAtCurrentCursor();
 						if (contextWasFresh) {
 							// The bounded update cannot fit even with no advisor history. Drop

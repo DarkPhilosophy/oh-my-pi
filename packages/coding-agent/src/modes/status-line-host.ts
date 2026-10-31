@@ -2,7 +2,7 @@ import type { StatusLineHost, StatusLineSession } from "@oh-my-pi/pi-tui/status-
 import { Settings, settings } from "../config/settings";
 import type { AgentSession } from "../session/agent-session";
 import { getSessionCompactionBoundaries } from "../session/context-usage-runtime";
-import { classifyResetExpiry, formatResetExpiryNotice } from "../session/reset-expiry";
+import { claimResetExpiryNotice, classifyResetExpiry } from "../session/reset-expiry";
 import { limitMatchesActiveAccount } from "../slash-commands/helpers/active-oauth-account";
 import { resolveActiveRepoContextSync } from "../utils/active-repo-context";
 import { GH_COMMAND_TIMEOUT_MS, github } from "../utils/github";
@@ -64,7 +64,13 @@ export function createStatusLineHost(source: Settings): StatusLineHost<StatusLin
 		calculateTokensPerSecond,
 		limitMatchesActiveAccount,
 		classifyResetExpiry,
-		resetExpiryNotice: formatResetExpiryNotice,
+		resetExpiryNotice: (session, reports, nowMs) => {
+			// Persist claims across processes; without storage, avoid repeating warnings.
+			const storage = (session.settings ?? source).getStorage();
+			return storage
+				? claimResetExpiryNotice(reports, nowMs, (key, expiresAtMs) => storage.claimNotice(key, expiresAtMs))
+				: undefined;
+		},
 		computeCompactionBoundaries: (session, contextWindow, model) =>
 			getSessionCompactionBoundaries(session.settings ?? source, contextWindow, model),
 	};

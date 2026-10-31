@@ -26,7 +26,7 @@ import {
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import { resetAccountLockKey } from "@oh-my-pi/pi-coding-agent/session/codex-auto-reset";
-import { formatResetExpiryNotice } from "@oh-my-pi/pi-coding-agent/session/reset-expiry";
+import { claimResetExpiryNotice } from "@oh-my-pi/pi-coding-agent/session/reset-expiry";
 import { resetLockPath } from "@oh-my-pi/pi-coding-agent/session/reset-fence";
 import {
 	collectUnreportedAccounts,
@@ -1428,7 +1428,7 @@ describe("formatUsageBreakdown", () => {
 		const now = Date.parse("2026-01-01T00:00:00.000Z");
 		const base = claudeResetReport(now, { "anthropic:5h": 0.6 }, [cedarGrant(now, "cedar", 6 * HOUR)]);
 		const report = { ...base, metadata: { email: "evil\u001b[2J\n\tname@example.test" } };
-		const notice = formatResetExpiryNotice([report], now);
+		const notice = claimResetExpiryNotice([report], now, () => true);
 		expect(notice).toBe("Saved Claude reset on evil name@example.test expires in 6h · /usage");
 	});
 
@@ -1449,7 +1449,7 @@ describe("formatUsageBreakdown", () => {
 		const now = Date.parse("2026-01-01T00:00:00.000Z");
 		const base = claudeResetReport(now, { "anthropic:5h": 0.6 }, [cedarGrant(now, "cedar", 6 * HOUR)]);
 		const report = { ...base, metadata: { email: `${"a".repeat(78)}😀😀@example.test` } };
-		const notice = formatResetExpiryNotice([report], now)!;
+		const notice = claimResetExpiryNotice([report], now, () => true)!;
 		expect(notice.isWellFormed()).toBe(true);
 		expect(notice).toContain("…");
 		expect(notice).toEndWith(" expires in 6h · /usage");

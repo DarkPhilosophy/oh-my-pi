@@ -242,6 +242,10 @@ it("installs scripts on the selected Firefox page and retains its helper state a
 		expect(pageA.preloadSources).not.toContain("window.aliasB = true");
 		expect(pageB.preloadSources).toContain("window.aliasB = true");
 		expect(pageB.preloadSources).not.toContain("window.aliasA = true");
+		expect(await run("webmcp-b", pageB, "return await tab.webmcpList()")).toMatchObject({
+			status: "unavailable",
+			tools: [],
+		});
 	} finally {
 		transport.inbound({ type: "close" });
 		await transport.waitFor(

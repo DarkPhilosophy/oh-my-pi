@@ -17,9 +17,8 @@ import { CELL_BUDGET_SLACK_MS } from "../run-scope";
 import { ToolAbortError, toWorkerErrorPayload } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { gracefulKillTreeOnce, pickElectronTarget } from "./attach";
-import { CmuxTab } from "./cmux/cmux-tab";
+import type * as Cmux from "./cmux/cmux-tab";
 import { mapWaitUntil } from "./cmux/rpc";
-import { runInProcessTab } from "./in-process-run";
 import { browserConnection, DEFAULT_VIEWPORT } from "./launch";
 import {
 	closeCdpTarget,
@@ -56,7 +55,7 @@ import {
 
 import { cfgBrowserScreenshotDir } from "./settings";
 import { listTernBlocks, noTernBlockError, pickTernBlock } from "./tern/blocks";
-import { TernTab } from "./tern/tern-tab";
+import type * as Tern from "./tern/tern-tab";
 import { newUploadStagingDir, removeUploadStaging, sweepUploadStaging } from "./upload-files";
 
 // Coding-agent binary/bundle workers route through the CLI entrypoint with a
@@ -150,7 +149,7 @@ export interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle 
 
 export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
 	backend: "cmux";
-	cmuxTab: CmuxTab;
+	cmuxTab: Cmux.CmuxTab;
 	cmuxOwnsSurface: boolean;
 	cmuxAttachedSurface?: string;
 }
@@ -159,7 +158,7 @@ export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
 export interface TernTabSession extends TabSessionBase<TernBrowserHandle> {
 	backend: "tern";
 	/** The PiP's driver. */
-	ternTab: TernTab;
+	ternTab: Tern.TernTab;
 }
 
 export type TabSession = WorkerTabSession | CmuxTabSession | TernTabSession;
@@ -255,6 +254,10 @@ const tabs = new Map<string, TabSession>();
 // recorded target instead. A shared browser's other targets must never be
 // touched.
 const workerPageTargets = new WeakMap<WorkerHandle, string>();
+// Tags a worker that exited on its own. A tab keeps its exited worker until the reattach publishes a replacement, and
+// a release meanwhile must not wait out a `closed` reply that worker can no longer send.
+const kWorkerExited = Symbol("tabWorker.exited");
+type ExitTrackedWorker = WorkerHandle & { [kWorkerExited]?: true };
 // Per-name acquisition chain: serializes concurrent `acquireTab` calls for the
 // same tab name so the existence check and `tabs.set` (separated by several
 // awaits) cannot interleave and leak a worker + browser refCount.
@@ -843,6 +846,8 @@ async function acquireCmuxTab(
 			}
 		}
 
+		// Browser-only evaluators stay out of CLI startup and worker-backed tabs.
+		const { CmuxTab } = await import("./cmux/cmux-tab");
 		const cmuxTab = new CmuxTab({ client: browser.client, surfaceId, url: initialUrl });
 		if (attachedSurface && opts.url) {
 			await cmuxTab.goto(opts.url, { waitUntil: opts.waitUntil ?? "load", timeoutMs: opts.timeoutMs });
@@ -912,6 +917,8 @@ async function acquireTernTab(
 	browser: TernBrowserHandle,
 	opts: AcquireTabOptions,
 ): Promise<AcquireTabResult> {
+	// Tern's driver stays out of sessions that never open a Tern tab.
+	const { TernTab } = await import("./tern/tern-tab");
 	const settings = {
 		name,
 		url: opts.url,
@@ -925,7 +932,7 @@ async function acquireTernTab(
 		userAgent: opts.userAgent,
 		ignoreHttpsErrors: opts.ignoreHttpsErrors,
 	};
-	let ternTab: TernTab;
+	let ternTab: Tern.TernTab;
 	if (opts.target === undefined) {
 		ternTab = await TernTab.open(browser.tern, {
 			...settings,
@@ -1170,6 +1177,9 @@ async function runInTabWithSnapshotUnlocked(
 	if (tab.backend === "cmux" || tab.backend === "tern") {
 		const runSignal = opts.signal ? AbortSignal.any([opts.signal, closeAc.signal]) : closeAc.signal;
 		try {
+			// In-process runners stay out of worker-backed tabs. A close during
+			// this import aborts `runSignal` and rejects `promise` first.
+			const { runInProcessTab } = await import("./in-process-run");
 			// `runInProcessTab.then(resolve, reject)` publishes the run's real
 			// outcome to `promise`, but `releaseTab` may have already
 			// rejected it — `Promise.withResolvers` settles on the first
@@ -1268,8 +1278,8 @@ async function runInTabWithSnapshotUnlocked(
 					error.when === "during" ? "; input this call sent before the detach may already have landed" : "";
 				// Host tool calls the detached run started would otherwise keep running, and reply to the new worker.
 				for (const ctrl of pending.toolCalls.values()) ctrl.abort(error);
-				// Both paths below kill an inline worker's tab, and its `terminate()` is a no-op: without the close
-				// handshake its core keeps its relay connection and could claim the tab again once it is re-announced.
+				// Both paths below kill an inline worker's tab. Close its core first: the close finalizes an active
+				// recording, which the kill's `terminate()` (it only drops the relay connection) would leave unfinished.
 				if (tab.worker.mode === "inline" && tabs.get(name) === tab && tab.state === "alive") {
 					const closed = waitForClosed(tab).catch(() => undefined);
 					safeSend(tab, { type: "close" });
@@ -1596,7 +1606,7 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 	}
 	let cleanupError: unknown;
 	let targetCloseFailed = false;
-	if (wasAlive) {
+	if (wasAlive && !(tab.worker as ExitTrackedWorker)[kWorkerExited]) {
 		try {
 			tab.worker.send({ type: "close" });
 			await waitForClosed(tab);
@@ -2412,6 +2422,7 @@ function attachTabWorker(tab: WorkerTabSession, worker: WorkerHandle): void {
 		if (!(error instanceof WorkerMessageError)) lastError = error;
 	});
 	worker.onExit(exitCode => {
+		(worker as ExitTrackedWorker)[kWorkerExited] = true;
 		// A release or recycle owns a worker it replaced or is tearing down.
 		if (tabs.get(tab.name) !== tab || tab.worker !== worker || tab.state !== "alive" || releaseInflight.has(tab))
 			return;
@@ -2905,9 +2916,13 @@ function wrapBunWorker(worker: Worker): WorkerHandle {
 async function spawnInlineWorker(browser?: BrowserHandle): Promise<WorkerHandle> {
 	const hostListeners = new Set<(message: WorkerOutbound) => void>();
 	const workerListeners = new Set<(message: WorkerInbound) => void>();
+	let terminated = false;
 	const workerTransport: Transport = {
 		send: msg =>
 			queueMicrotask(() => {
+				// Runs stop reporting after termination, but a late connection still
+				// owns its cleanup and must acknowledge when it really disconnects.
+				if (terminated && msg.type !== "closed") return;
 				for (const listener of hostListeners) listener(msg as WorkerOutbound);
 			}),
 		onMessage: handler => {
@@ -2918,7 +2933,7 @@ async function spawnInlineWorker(browser?: BrowserHandle): Promise<WorkerHandle>
 		close: () => {},
 	};
 	const { WorkerCore } = await import("./tab-worker");
-	new WorkerCore(workerTransport, false);
+	const core = new WorkerCore(workerTransport, false);
 	let termination: Promise<void> | undefined;
 	const closed = Promise.withResolvers<void>();
 	if (browser && "webSocketUrl" in browser) browser.connectionCleanup = closed.promise;
@@ -2942,9 +2957,11 @@ async function spawnInlineWorker(browser?: BrowserHandle): Promise<WorkerHandle>
 		onExit: () => () => {},
 		terminate() {
 			if (termination) return termination;
-			termination = raceWithTimeout(closed.promise, GRACE_MS, "Timed out closing inline browser worker").catch(
-				() => undefined,
-			);
+			termination = raceWithTimeout(closed.promise, GRACE_MS, "Timed out closing inline browser worker")
+				.catch(() => core.terminate())
+				.finally(() => {
+					terminated = true;
+				});
 			queueMicrotask(() => {
 				for (const workerListener of workerListeners) workerListener({ type: "close" });
 			});

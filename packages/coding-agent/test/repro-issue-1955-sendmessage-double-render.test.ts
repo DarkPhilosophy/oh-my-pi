@@ -84,6 +84,7 @@ function createHarness(): Harness {
 		emit: async () => undefined,
 		getMessageRenderer: () => undefined,
 		getAssistantThinkingRenderers: () => undefined,
+		getAssistantTextRenderers: () => [],
 		getComposerShapes: () => [],
 	};
 
@@ -152,6 +153,7 @@ function createHarness(): Harness {
 		setRightInfo: vi.fn(),
 		toolOutputExpanded: false,
 		syncComposerShape: vi.fn(),
+		syncExtensionLinks: vi.fn(),
 		hideThinkingBlock: false,
 		showError: vi.fn(),
 		editor: {

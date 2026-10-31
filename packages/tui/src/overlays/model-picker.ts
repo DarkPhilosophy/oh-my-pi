@@ -10,7 +10,6 @@ import type { Focusable, TUI } from "../tui";
 import { type ThemeColor, theme } from "../theme/theme";
 import {
 	buildSessionModelScope,
-	MODEL_PICKER_COLUMNS,
 	ModelBrowser,
 	type ModelBrowserItem,
 	type ModelPickerCatalogue,
@@ -511,17 +510,9 @@ export class ModelPickerComponent implements Focusable {
 				size: "md",
 				layout: "rows",
 				preview: "below",
-				query,
-				cursor,
 				placeholder:
 					mode === "task" || mode === "selection" ? "Search models…" : "Search models, @ for quick roles…",
-				columns: MODEL_PICKER_COLUMNS,
-				...catalogue,
-				order: view.order,
-				...(view.hits ? { hits: view.hits } : {}),
-				selected,
-				...(current ? { current: [current] } : {}),
-				total: this.#browser.baseCount,
+				...this.#browser.pickerRows(catalogue, view, current),
 				empty: mode === "role" ? `No quick roles in the ${cycleKey} cycle` : "No models available",
 				actions: compact([
 					pickerAction(

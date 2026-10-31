@@ -31,6 +31,8 @@ import type {
 } from "../extensibility/extensions";
 import type {
 	CompactOptions,
+	ExtensionLiveSession,
+	ExtensionLiveStartOptions,
 	ExtensionSessionModes,
 	PlanReviewChoice,
 	PlanReviewRequestedEvent,
@@ -68,6 +70,7 @@ import type { EventController } from "./controllers/event-controller";
 import type { LoopConditionConfig, LoopLimitRuntime } from "@oh-my-pi/pi-tui/status-line/loop";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
+import type { ConversationPosition } from "./utils/conversation-position";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
@@ -77,20 +80,26 @@ export type CompactionQueuedMessage = {
 	images?: ImageContent[];
 };
 
+/**
+ * `/compact` sent with the follow-up key during a run: it runs once the run settles, while the
+ * session's branch still continues from the position it was queued at. A switch or tree
+ * navigation hands it back to the editor instead.
+ */
+export type YieldCompaction = ConversationPosition & {
+	/** The submitted command, restored to the editor when the request is dequeued. */
+	text: string;
+	instructions?: string;
+	mode?: CompactMode;
+};
+
 export type SubmittedUserInput = {
 	text: string;
 	images?: ImageContent[];
 	imageLinks?: (string | undefined)[];
 	customType?: string;
-	/** Route through `session.prompt(text, { synthetic: true })` so the text lands
-	 *  as a hidden agent-authored `developer` message rather than a visible user
-	 *  turn. Used by the `c`/`.` continue shortcut. */
-	synthetic?: boolean;
-	/** Marks this submission as a deliberate user resume (set by the `.`/`c`
-	 *  continue shortcut, which is also `synthetic`). Forwarded to
-	 *  `session.prompt({ userInitiated })` so it clears advisor auto-resume
-	 *  suppression even though it is synthetic. */
-	userInitiated?: boolean;
+	/** The `.`/`c` continue shortcut: dispatch through `session.resume()` instead of
+	 *  prompting with `text`, so no visible user turn is added. */
+	resume?: boolean;
 	display?: boolean;
 	/** Queue intent if the session is (or becomes) busy when this submission is
 	 *  dispatched: "steer" (interrupt the active turn) or "followUp" (process after
@@ -195,6 +204,11 @@ export interface InteractiveModeContext {
 	setTerminalTitleState(state: "idle" | "working" | "attention"): void;
 	/** Publish the run status: title plus OSC 7501 for an owned terminal, only this session's title when hosted. */
 	setRunStatus(status: RunStatus): void;
+	/**
+	 * Push the extension link schemes to the markdown renderer; redraws the transcript when that
+	 * changes how links are drawn.
+	 */
+	syncExtensionLinks(): void;
 
 	// Session access
 	session: AgentSession;
@@ -221,12 +235,30 @@ export interface InteractiveModeContext {
 	invalidatePendingFocus(): void;
 	/** Candidate subagent ids under a mutable-viewport line, for click-to-focus. Empty when the line has no target. */
 	resolveViewportClickCandidates(index: number): string[];
+	/**
+	 * Deliver a click at cell `col` of a mutable-viewport line to the extension owning the link
+	 * drawn there. Returns false when no extension link is under the click.
+	 */
+	activateViewportLink(index: number, col: number): boolean;
+	/**
+	 * Enter keyboard link-hint mode: tag each extension link label on screen, or show a status when
+	 * none is drawn. Returns false, doing nothing, unless extension links are routed (a scheme
+	 * claimed, plain terminal).
+	 */
+	startLinkHints(): boolean;
+	/** Whether link-hint mode is on; it ends by itself once the tagged labels move or vanish. */
+	readonly linkHintsActive: boolean;
+	/** Narrow link-hint mode by one typed letter; a whole tag raises `link_activate` for its link. */
+	typeLinkHint(letter: string): void;
+	/** Leave link-hint mode without activating a link. */
+	cancelLinkHints(): void;
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
 	/** Point the inline hover band at a click-candidate id (or clear it). */
 	setClickHoverId(id: string | undefined): void;
-	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */
-	clearTransientSessionUi(): void;
+	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. `viewOnly`
+	 *  (focus switch, main session unchanged) keeps the main session's compaction queues. */
+	clearTransientSessionUi(options?: { viewOnly?: boolean }): void;
 	settings: Settings;
 	keybindings: KeybindingsManager;
 	agent: AgentSession["agent"];
@@ -289,6 +321,11 @@ export interface InteractiveModeContext {
 	proseOnlyThinking: boolean;
 	expandThinkingBlocks: boolean;
 	compactionQueuedMessages: CompactionQueuedMessage[];
+	/** Compaction queued for the next yield; follow-ups sent after it wait in `compactionQueuedMessages`. */
+	yieldCompaction: YieldCompaction | undefined;
+	/** While a queued compaction runs, the conversation the input it held in `compactionQueuedMessages`
+	 *  belongs to; checked when that input is flushed. */
+	compactionQueueOrigin: ConversationPosition | undefined;
 	/** Settled user/assistant components reusable across post-compaction transcript rebuilds. */
 	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
 	pendingTools: Map<string, ToolExecutionHandle>;
@@ -406,6 +443,14 @@ export interface InteractiveModeContext {
 		options?: { preserveDraft?: boolean },
 	): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
+	/** Start the compaction queued for the next yield, if any; it runs once the session is idle. */
+	runYieldCompaction(): void;
+	/** Hand a queued `/compact` and the input in the compaction queue back to the editor, saying why. */
+	restoreCompactionQueueToEditor(status?: string): void;
+	/** Resolves once submissions reached the session (admission or pending-submission hand-off) or finished locally. */
+	waitForSubmissionDispatches(): Promise<void>;
+	/** True while a foreground submission is accepted but not yet handed to the session. */
+	hasPendingSubmission(): boolean;
 	flushPendingBashComponents(): void;
 	flushPendingModelSwitch(): Promise<void>;
 	/** No argument restores the default; a function label is re-read on every spinner tick. */
@@ -544,6 +589,8 @@ export interface InteractiveModeContext {
 	dictationSpaceHold(target: DictationTarget): SpaceHoldHandler;
 	/** Start or stop the Codex-backed realtime voice session. */
 	handleLiveCommand(): Promise<void>;
+	/** Start a live session whose audio runs on an extension's own WebRTC peer (`ctx.startLive`). */
+	startRemoteLive(options: ExtensionLiveStartOptions): Promise<ExtensionLiveSession>;
 	/** Start a `/record` screen capture, or stop the running one. */
 	toggleRecording(): Promise<void>;
 	executeCompaction(

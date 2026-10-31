@@ -123,6 +123,7 @@ async function createHarness() {
 		setRightInfo: vi.fn(),
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
+		syncExtensionLinks: vi.fn(),
 	});
 	const helpers = new UiHelpers(ctx);
 	ctx.addMessageToChat = helpers.addMessageToChat.bind(helpers);

@@ -214,10 +214,13 @@ function createContext(): {
 		} as unknown as InteractiveModeContext["eventController"],
 		sessionManager: {
 			getSessionName: () => "existing session",
+			getSessionId: () => "session",
+			getLeafId: () => null,
 			flushSync: vi.fn(),
 		} as unknown as InteractiveModeContext["sessionManager"],
 		keybindings: {
 			getKeys: () => [],
+			matches: () => false,
 		} as unknown as InteractiveModeContext["keybindings"],
 		compactionQueuedMessages: [],
 		mcpTestEscapeHandlers: new Set(),
@@ -702,6 +705,25 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
 
+	it("hands a queued compaction back when Esc cancels a loop iteration still in setup", () => {
+		const { ctx, editor } = createContext();
+		ctx.loopModeEnabled = true;
+		ctx.pauseLoop = vi.fn();
+		// Prompt setup: the session counts as streaming, but no agent turn (and so no agent_end) exists yet.
+		mutableSessionState(ctx).isStreaming = true;
+		ctx.yieldCompaction = { text: "/compact", sessionId: "session", leafId: null };
+		ctx.compactionQueuedMessages.push({ text: "held behind it", mode: "followUp" });
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(ctx.yieldCompaction).toBeUndefined();
+		expect(ctx.compactionQueuedMessages).toEqual([]);
+		expect(editor.getText()).toContain("/compact");
+		expect(editor.getText()).toContain("held behind it");
+	});
+
 	it("aborts active handoff generation before default Esc handling", () => {
 		const { ctx, editor, spies } = createContext();
 		(ctx.viewSession as { isGeneratingHandoff: boolean }).isGeneratingHandoff = true;
@@ -964,9 +986,17 @@ describe("InputController escape behavior", () => {
 
 		controller.setupKeyHandlers();
 		now.mockReturnValue(2_000);
-		const first = inputListeners[0]("\x1b[D");
+		// Dispatch like the TUI: listeners in registration order until one handles the input.
+		const dispatch = (data: string) => {
+			for (const listener of inputListeners) {
+				const result = listener(data);
+				if (result) return result;
+			}
+			return undefined;
+		};
+		const first = dispatch("\x1b[D");
 		now.mockReturnValue(2_200); // 200ms later — a deliberate second tap
-		const second = inputListeners[0]("\x1b[D");
+		const second = dispatch("\x1b[D");
 
 		// Both taps are consumed; only the second completes the gesture.
 		expect(first).toEqual({ consume: true });
@@ -1288,5 +1318,29 @@ describe("InputController Up-on-empty undo-send wiring", () => {
 		controller.restoreQueuedMessagesToEditor();
 		expect(ctx.locallySubmittedUserSignatures.has("focused line\u00000")).toBe(false);
 		expect(ctx.locallySubmittedUserSignatures.has("main queued steer\u00000")).toBe(true);
+	});
+
+	it("leaves main compaction drafts and signatures alone while the focused subagent queue is empty", () => {
+		const { ctx, editor } = createContext();
+		ctx.compactionQueuedMessages.push({ text: "main compaction", mode: "steer" });
+		ctx.yieldCompaction = { text: "/compact", sessionId: "session", leafId: null };
+		ctx.locallySubmittedUserSignatures.add("main compaction\u00000");
+		ctx.locallySubmittedUserSignatures.add("/compact\u00000");
+		Object.assign(ctx, {
+			focusedAgentId: "subagent",
+			viewSession: {
+				getQueuedMessages: vi.fn(() => ({ steering: [], followUp: [] })),
+				clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
+				abort: vi.fn(),
+			},
+		});
+		const controller = new InputController(ctx);
+		controller.setupKeyHandlers();
+		expect(editor.onUpWhenEmpty?.()).toBe(false);
+		expect(controller.restoreQueuedMessagesToEditor()).toBe(0);
+		expect(editor.getText()).toBe("");
+		expect(ctx.compactionQueuedMessages).toEqual([{ text: "main compaction", mode: "steer" }]);
+		expect(ctx.yieldCompaction).toEqual({ text: "/compact", sessionId: "session", leafId: null });
+		expect([...ctx.locallySubmittedUserSignatures]).toEqual(["main compaction\u00000", "/compact\u00000"]);
 	});
 });

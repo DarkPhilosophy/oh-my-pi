@@ -177,7 +177,7 @@ For example, configure TypeSafe Jev as the judge and attach an image in JavaScri
 
 ```yaml
 modelRoles:
-  judge: typesafe/jev-1.14.0
+   judge: typesafe/jev-1.14.0
 ```
 
 ```js
@@ -192,15 +192,15 @@ A model or `modelOverrides` entry may also use a runner API, which serves one mo
 
 ```yaml
 providers:
-  my-gateway:
-    api: openai-responses
-    discovery:
-      type: openai-models-list
-    modelOverrides:
-      gpt-image-2:
-        api: openai-images # kind: image, generated via /images/generations
-      gpt-image-1.5:
-        kind: image # stays on openai-responses, generated via the hosted image tool
+   my-gateway:
+      api: openai-responses
+      discovery:
+         type: openai-models-list
+      modelOverrides:
+         gpt-image-2:
+            api: openai-images # kind: image, generated via /images/generations
+         gpt-image-1.5:
+            kind: image # stays on openai-responses, generated via the hosted image tool
 ```
 
 A configured `kind`, explicit or implied by a runner API, outranks the bundled catalog's classification of the same id and survives `modelOverrides` and refreshes.
@@ -360,10 +360,10 @@ estimates: providers publish ranges, so pick the conservative end.
 
 ```yaml
 providers:
-  anthropic:
-    modelOverrides:
-      claude-sonnet-5:
-        promptCache: { short: 300, long: 3600 }
+   anthropic:
+      modelOverrides:
+         claude-sonnet-5:
+            promptCache: { short: 300, long: 3600 }
 ```
 
 An explicit `promptCache` replaces the model's catalog lifetimes rather than
@@ -650,7 +650,7 @@ not an allowlist of model transports.
 
 - exact `provider/modelId`
 - exact model id (provider inferred)
-- fuzzy/substring matching
+- fuzzy/substring matching for bare ids (`opus`, `gpt-5.2`); a `provider/modelId` selector must match exactly
 - glob scope patterns in `--models` (e.g. `openai/*`, `*sonnet*`)
 - optional `:thinkingLevel` suffix (`off|minimal|low|medium|high|xhigh|max|auto|inherit`)
 - `@upstream` routing suffix on OpenRouter and Vercel Gateway selectors (for example, `openrouter/anthropic/claude-sonnet-5@anthropic:high`); an exact literal model id still wins
@@ -663,7 +663,9 @@ Resolution precedence for exact selectors:
 1. exact `provider/modelId` reference
 2. exact bare id (case-insensitive); when several providers carry the same id, a preference ranking picks the winner (see below)
 3. retired effort-tier variant alias (collapsed catalog entries, e.g. `X`/`X-thinking` twins)
-4. provider-scoped fuzzy match, then substring matching with an alias-vs-dated pick
+4. substring matching with an alias-vs-dated pick (bare ids only)
+
+A `provider/modelId` selector whose provider is known stops after the exact phases: it never runs a similarly named sibling. A miss fails with `Model "…" not found`, which suggests up to three close ids from that provider. A configured default model that misses produces a warning naming it and the model that runs instead, unless a configured `retry.fallbackChains` entry takes over; a configured dictation model that misses warns the same way.
 
 Glob scope patterns (used by `enabledModels` and CLI `--models`) run separately over concrete models after exact matching.
 
@@ -1181,18 +1183,18 @@ providers:
 
 ```yaml
 providers:
-  anthropic-proxy:
-    baseUrl: https://proxy.example.com/anthropic
-    apiKey: ANTHROPIC_PROXY_API_KEY
-    api: anthropic-messages
-    auth: apiKey
-    authHeader: true
-    disableStrictTools: true # if the proxy doesn't support strict tool schemas
-    models:
-      - id: claude-sonnet-4-20250514
-        name: Claude Sonnet 4 (Proxy)
-        reasoning: true
-        input: [text, image]
+   anthropic-proxy:
+      baseUrl: https://proxy.example.com/anthropic
+      apiKey: ANTHROPIC_PROXY_API_KEY
+      api: anthropic-messages
+      auth: apiKey
+      authHeader: true
+      disableStrictTools: true # if the proxy doesn't support strict tool schemas
+      models:
+         - id: claude-sonnet-4-20250514
+           name: Claude Sonnet 4 (Proxy)
+           reasoning: true
+           input: [text, image]
 ```
 
 ### Override built-in provider route + model metadata

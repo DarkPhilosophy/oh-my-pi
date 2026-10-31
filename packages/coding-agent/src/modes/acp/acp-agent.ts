@@ -538,7 +538,7 @@ async function elicitFormFromAcpClient(
 			} catch (error) {
 				// A throwing `onTimeout` must not leave the elicitation promise
 				// pending — settle it via `finish` below regardless.
-				logger.warn("ACP elicitation onTimeout threw", { sessionId, method, error });
+				logger.warn("ACP elicitation onTimeout threw", { acpSessionId: sessionId, method, error });
 			}
 			finish(undefined);
 		}, dialogOptions.timeout);
@@ -562,7 +562,7 @@ async function elicitFormFromAcpClient(
 		.then(finish, error => {
 			// Caller may already have moved on via abort/timeout; suppress noise.
 			if (settled) return;
-			logger.warn("ACP elicitation failed", { sessionId, method, error });
+			logger.warn("ACP elicitation failed", { acpSessionId: sessionId, method, error });
 			finish(undefined);
 		});
 	const response = await promise;
@@ -751,6 +751,8 @@ export function createAcpExtensionUiContext(
 			logger.debug("ACP extension notification", { message, type });
 		},
 		onTerminalInput: () => () => {},
+		rerenderMessage: () => {},
+		getLinkClicksAvailable: () => false,
 		setStatus: () => {},
 		setWorkingMessage: () => {},
 		setWidget: () => {},
@@ -1027,7 +1029,7 @@ export class AcpAgent implements Agent {
 			// the same cleanup rejection and fails accordingly.
 			this.#beginCancelCleanup(record, activeTurn).catch(async (error: unknown) => {
 				logger.warn("ACP cancel cleanup timed out; closing session", {
-					sessionId: record.session.sessionId,
+					acpSessionId: record.session.sessionId,
 					error,
 				});
 				await this.#closeManagedSession(params.sessionId, record);
@@ -1364,7 +1366,10 @@ export class AcpAgent implements Agent {
 		try {
 			await Promise.race([record.session.abort({ reason: USER_INTERRUPT_LABEL }), timeoutGate.promise]);
 		} catch (error: unknown) {
-			logger.warn("ACP cancel cleanup timed out; closing session", { sessionId: record.session.sessionId, error });
+			logger.warn("ACP cancel cleanup timed out; closing session", {
+				acpSessionId: record.session.sessionId,
+				error,
+			});
 			await this.#closeManagedSession(record.session.sessionId, record);
 		} finally {
 			clearTimeout(timer);
@@ -1748,7 +1753,7 @@ export class AcpAgent implements Agent {
 			await delivery;
 		} catch (error) {
 			logger.warn("Failed to push config_option_update after a lifetime event", {
-				sessionId: record.session.sessionId,
+				acpSessionId: record.session.sessionId,
 				eventType: event.type,
 				error,
 			});
@@ -2329,7 +2334,7 @@ export class AcpAgent implements Agent {
 			});
 		} catch (error) {
 			logger.warn("Failed to autosave approved plan", {
-				sessionId: session.sessionId,
+				acpSessionId: session.sessionId,
 				error,
 			});
 			autosaveFailed = true;
@@ -2342,7 +2347,7 @@ export class AcpAgent implements Agent {
 			await this.#pushConfigOptionUpdateForSession(session);
 		} catch (error) {
 			logger.warn("Failed to emit mode updates after plan approval", {
-				sessionId: session.sessionId,
+				acpSessionId: session.sessionId,
 				error,
 			});
 		}
@@ -3235,7 +3240,7 @@ export class AcpAgent implements Agent {
 						await this.#cancelPromptForClose(record);
 						await this.#disposeSessionRecord(record, reason);
 					} catch (error) {
-						logger.warn("Failed to clean up ACP session", { sessionId, error });
+						logger.warn("Failed to clean up ACP session", { acpSessionId: sessionId, error });
 					}
 				}),
 			);

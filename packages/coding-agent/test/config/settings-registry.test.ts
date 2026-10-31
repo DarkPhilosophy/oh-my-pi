@@ -365,7 +365,7 @@ describe("settings registry", () => {
 	});
 
 	it("migrates, normalizes, and validates constructor overrides like handle writes", () => {
-		expect(cfgSteeringMode.get(Settings.isolated({ queueMode: "all" }))).toBe("all");
+		expect(cfgSteeringMode.get(Settings.isolated({ queueMode: "all" }))).toBe("coalescing");
 		expect(
 			cfgProvidersMaxInFlightRequests.get(Settings.isolated({ "providers.maxInFlightRequests": { openai: 2.7 } })),
 		).toEqual({ openai: 2 });

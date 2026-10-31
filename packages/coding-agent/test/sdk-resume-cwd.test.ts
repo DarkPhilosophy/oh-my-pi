@@ -82,10 +82,14 @@ describe("createAgentSession cwd after resume", () => {
 				toolNames: ["bash", "read"],
 			}));
 
-			expect(await session.switchSession(targetSessionFile)).toBe(true);
-
 			const canonicalCwdB = fs.realpathSync(cwdB);
-			expect(session.sessionManager.getCwd()).toBe(canonicalCwdB);
+			expect(
+				await session.switchSession(targetSessionFile, {
+					keepModel: true,
+					onCwdChange: async newCwd => fs.realpathSync(newCwd) === canonicalCwdB,
+				}),
+			).toBe(true);
+			expect(fs.realpathSync(session.sessionManager.getCwd())).toBe(canonicalCwdB);
 
 			const bashTool = session.getToolByName("bash");
 			if (!bashTool) throw new Error("Expected bash tool");

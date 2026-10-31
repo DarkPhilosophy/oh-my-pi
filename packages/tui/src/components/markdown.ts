@@ -26,6 +26,12 @@ import { isBareMathEnvironment, latexToUnicode } from "../latex-to-unicode";
 import { plainText } from "../native/spans";
 import { md } from "../native/describe";
 import type { DescribeContext, NativeNode } from "../native/node";
+import {
+	extensionLinkScheme,
+	extensionLinksVersion,
+	formatExtensionLink,
+	stripExtensionLinkMarkers,
+} from "../render/extension-links";
 import type { SymbolTheme } from "../symbols";
 import { TERMINAL } from "../terminal-capabilities";
 import { getSymbolTheme, getThemeEpoch } from "../theme/theme";
@@ -206,6 +212,40 @@ function fenceOpenAt(text: string, end: number): boolean {
 		}
 	}
 	return open !== undefined;
+}
+
+/**
+ * Whether `text` ends inside a code fence the source never closed. The
+ * renderer still draws such a fence's closing border, so a caller publishing a
+ * settled source prefix must drop that fabricated row: it is not a prefix of
+ * the live block, which reaches the border only once the closer arrives.
+ */
+export function endsInsideOpenFence(text: string): boolean {
+	return fenceOpenAt(text, text.length);
+}
+
+/**
+ * Offset of the settled prefix of the still-open fence that `text` ends in, or
+ * 0 when it holds none.
+ *
+ * An open fence's body only ever appends: nothing a later chunk adds can
+ * change a line that already ended. Those lines are therefore settled, and a
+ * stream may publish them into native scrollback instead of leaving the whole
+ * block in the mutable viewport until the closing fence finally arrives — a
+ * long streamed code block would otherwise lose every row that left the screen
+ * (#9780).
+ *
+ * The cut lands before the last complete line, not after it: a streamed chunk
+ * usually ends on a "\n", and the publisher requires non-blank source past the
+ * prefix it publishes, so cutting at the final "\n" would publish nothing on
+ * exactly those frames. Once the closing fence has arrived, the retained line
+ * is the one in front of it.
+ */
+function settledFenceBodyEnd(text: string): number {
+	const lastBreak = text.lastIndexOf("\n");
+	if (lastBreak <= 0) return 0;
+	const cut = text.lastIndexOf("\n", lastBreak - 1) + 1;
+	return cut > 0 && fenceOpenAt(text, cut) ? cut : 0;
 }
 
 /**
@@ -1510,6 +1550,15 @@ function inlineHasOpen(tokens: readonly Token[]): boolean {
 	return false;
 }
 
+/** True when the inline token stream holds a link whose scheme an extension claimed. */
+function hasExtensionLink(tokens: readonly Token[]): boolean {
+	for (const token of tokens) {
+		if (token.type === "link" && typeof token.href === "string" && extensionLinkScheme(token.href)) return true;
+		if ("tokens" in token && Array.isArray(token.tokens) && hasExtensionLink(token.tokens as Token[])) return true;
+	}
+	return false;
+}
+
 /** Isolated inline lex of a same-line delta. A single-line delta has no block
  * structure, so the isolated inline pass equals the full lex's inline pass
  * (marked's paragraph tokens run the same `inlineTokens` entry point). */
@@ -2299,6 +2348,7 @@ interface RenderSignature {
 	imageProtocol: string;
 	hyperlinks: boolean;
 	copyTargetAvailable: boolean;
+	extensionLinks: number;
 	textSizing: boolean;
 	bgColorProbe: string;
 	headingProbe: string;
@@ -2529,6 +2579,8 @@ export class Markdown implements Component {
 	#cachedWidth?: number;
 	#cachedCopyTargetAvailable?: boolean;
 	#cachedLines?: readonly string[];
+	// Extension-link routing changes how links draw without changing text or width.
+	#cachedExtensionLinks?: number;
 	#transientRenderCache = false;
 
 	// Streaming-lex cache: the largest blank-line-bounded prefix of #text whose
@@ -2551,6 +2603,12 @@ export class Markdown implements Component {
 	// The frozen prefix's leading run in front of the first of those openers:
 	// no append can change its tokens, so getLastRenderStableText publishes it.
 	#streamSettledText?: string;
+	// The complete lines inside a still-open fence, with the fence's opening
+	// line in front of them: an open fence never reaches a "\n\n" boundary, so
+	// #streamSettledText holds nothing for it and a long streamed code block
+	// would stay unretirable until the closing fence arrived. Kept while the
+	// source extends it, so the published prefix never shrinks.
+	#streamFenceSettledText?: string;
 	// The text in front of the newest top-level item of a list that is still
 	// streaming as the last block. Once an item's marker line has ended, no
 	// append can add to the items in front of it, and #renderList draws each
@@ -2602,6 +2660,9 @@ export class Markdown implements Component {
 	#fastTail?: FastTailRecipe; // undefined = disarmed
 	// B+ capture plumbing: #renderContentLines records the last rendered paragraph row.
 	#lastTailCapture?: { kind: "paragraph"; open: boolean; rowInput: string; rowRaw: string };
+	/** Top-level token index and running count of the extension links drawn in it; see `#renderContentLines`. */
+	#extensionLinkBlock = 0;
+	#extensionLinkOrdinal = 0;
 	#ignoreTight = false;
 	#native?: { text: string; stream: boolean; node: NativeNode };
 	setIgnoreTight(ignore: boolean): this {
@@ -2779,9 +2840,31 @@ export class Markdown implements Component {
 	 */
 	getLastRenderStableText(): string {
 		if (!this.#transientRenderCache) return "";
-		const settled = this.#streamSettledText ?? "";
+		// An open fence has no "\n\n" boundary, so the block walk above settles
+		// nothing inside it. Its finished lines are settled all the same: no
+		// append can change a line that already ended. Publish them, or a long
+		// streamed code block (SQL, logs) stays unretirable in the mutable
+		// viewport and its top rows are dropped as it outgrows the screen.
+		const source = streamingMarkdownSource(this.#text);
+		let fence = this.#streamFenceSettledText;
+		if (fence !== undefined && !source.startsWith(fence)) {
+			// A non-append edit rewound the text below what was published. Drop
+			// the stored prefix as well: keeping it would fail this check on
+			// every later frame and leave the block unretirable for the rest of
+			// the stream.
+			fence = undefined;
+			this.#streamFenceSettledText = undefined;
+		}
+		const body = settledFenceBodyEnd(source);
+		if (body > (fence?.length ?? 0)) {
+			fence = source.slice(0, body);
+			this.#streamFenceSettledText = fence;
+		}
+		let text = this.#streamSettledText ?? "";
 		const list = this.#streamListSettledText;
-		return list !== undefined && list.length > settled.length ? list : settled;
+		if (list !== undefined && list.length > text.length) text = list;
+		if (fence !== undefined && fence.length > text.length) text = fence;
+		return text;
 	}
 
 	/**
@@ -2843,6 +2926,7 @@ export class Markdown implements Component {
 			this.#streamingHighlightCache = undefined;
 			this.#streamingListCache = undefined;
 			this.#streamRewound = undefined;
+			this.#streamFenceSettledText = undefined;
 		}
 		this.invalidate();
 	}
@@ -3203,11 +3287,14 @@ export class Markdown implements Component {
 		const copyTargetAvailable = this.#theme.copyChipTarget !== undefined;
 		// L1: per-instance cache — fastest path for repeated renders of the same
 		// instance at the same width and capability state.
+		// Returning the cached reference is load-bearing: parents memoize their
+		// concatenation on reference equality.
 		if (
 			this.#cachedLines &&
 			this.#cachedText === this.#text &&
 			this.#cachedWidth === width &&
-			this.#cachedCopyTargetAvailable === copyTargetAvailable
+			this.#cachedCopyTargetAvailable === copyTargetAvailable &&
+			this.#cachedExtensionLinks === extensionLinksVersion()
 		) {
 			return this.#cachedLines;
 		}
@@ -3222,6 +3309,7 @@ export class Markdown implements Component {
 			this.#cachedWidth = width;
 			this.#cachedCopyTargetAvailable = copyTargetAvailable;
 			this.#cachedLines = EMPTY_RENDER_LINES;
+			this.#cachedExtensionLinks = extensionLinksVersion();
 			return EMPTY_RENDER_LINES;
 		}
 
@@ -3306,6 +3394,8 @@ export class Markdown implements Component {
 					// into a table on a marker-free delta (`| --` + `--- | -`).
 					!FAST_TABLE_DELIM_ROW_RE.test(grownLastLine) &&
 					(!markerDelta || (!this.#lastTailCapture?.open && !pairSeamHazard && !inlineHasOpen(deltaTokens!))) &&
+					// Extension link markers are numbered per block; a delta rendered alone can't continue that.
+					!(deltaTokens && hasExtensionLink(deltaTokens)) &&
 					!FAST_URL_ANYWHERE_RE.test(seamWindow) &&
 					// A link or math span the grown row leaves open renders speculatively closed: re-lex.
 					speculativeInlineClose(grownLastLine) === undefined
@@ -3346,6 +3436,7 @@ export class Markdown implements Component {
 					this.#cachedText = this.#text;
 					this.#cachedWidth = width;
 					this.#cachedLines = fastResult;
+					this.#cachedExtensionLinks = signature.extensionLinks;
 					this.#fastTail = {
 						lines: fastResult,
 						source: this.#text,
@@ -3409,6 +3500,7 @@ export class Markdown implements Component {
 				this.#cachedWidth = width;
 				this.#cachedCopyTargetAvailable = copyTargetAvailable;
 				this.#cachedLines = cached;
+				this.#cachedExtensionLinks = signature.extensionLinks;
 				return cached;
 			}
 		}
@@ -3445,6 +3537,7 @@ export class Markdown implements Component {
 		this.#cachedCopyTargetAvailable = copyTargetAvailable;
 		this.#cachedWidth = width;
 		this.#cachedLines = result;
+		this.#cachedExtensionLinks = signature.extensionLinks;
 
 		const fastEligible =
 			this.transientRenderCache &&
@@ -3499,6 +3592,7 @@ export class Markdown implements Component {
 			defaultTextStyleId: this.#defaultTextStyle ? objectId(this.#defaultTextStyle) : -1,
 			imageProtocol: TERMINAL.imageProtocol ?? "",
 			hyperlinks: TERMINAL.hyperlinks,
+			extensionLinks: extensionLinksVersion(),
 			textSizing: TERMINAL.textSizing,
 			bgColorProbe,
 			headingProbe,
@@ -3516,7 +3610,7 @@ export class Markdown implements Component {
 		// original source bytes. Keep the raw source in the cache identity so two
 		// documents that render identically can never reuse the other's target.
 		const sourceKey = sourceText === normalizedText ? "=" : `${sourceText.length}:${sourceText}`;
-		return `${normalizedText.length}:${normalizedText}\x00${sourceKey}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.copyTargetAvailable ? 1 : 0}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.symbolsProbe}`;
+		return `${normalizedText.length}:${normalizedText}\x00${sourceKey}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.copyTargetAvailable ? 1 : 0}\x00${signature.extensionLinks}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.symbolsProbe}`;
 	}
 
 	#renderStreamingContentLines(
@@ -3616,6 +3710,7 @@ export class Markdown implements Component {
 		if (cache.imageProtocol !== signature.imageProtocol) return undefined;
 		if (cache.hyperlinks !== signature.hyperlinks) return undefined;
 		if (cache.copyTargetAvailable !== signature.copyTargetAvailable) return undefined;
+		if (cache.extensionLinks !== signature.extensionLinks) return undefined;
 		if (cache.textSizing !== signature.textSizing) return undefined;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return undefined;
 		if (cache.headingProbe !== signature.headingProbe) return undefined;
@@ -3713,6 +3808,7 @@ export class Markdown implements Component {
 		if (cache.imageProtocol !== signature.imageProtocol) return start;
 		if (cache.hyperlinks !== signature.hyperlinks) return start;
 		if (cache.copyTargetAvailable !== signature.copyTargetAvailable) return start;
+		if (cache.extensionLinks !== signature.extensionLinks) return start;
 		if (cache.textSizing !== signature.textSizing) return start;
 		if (cache.bgColorProbe !== signature.bgColorProbe) return start;
 		if (cache.headingProbe !== signature.headingProbe) return start;
@@ -3747,6 +3843,10 @@ export class Markdown implements Component {
 			const token = tokens[i];
 			const nextToken = tokens[i + 1];
 			const tokenWrappedRowStart = wrappedLines.length;
+			// Extension links are numbered per top-level block, across its nested inline runs, so
+			// identical links on neighbouring rows draw distinct markers that every render repeats.
+			this.#extensionLinkBlock = i;
+			this.#extensionLinkOrdinal = 0;
 			const renderedTokenLines = this.#renderToken(token, contentWidth, nextToken?.type);
 			for (const renderedRow of renderedTokenLines) {
 				// Lists wrap while their structural prefixes are still available, so
@@ -4628,7 +4728,8 @@ export class Markdown implements Component {
 				const headingText = this.#renderInlineTokens(token.tokens || [], this.#proseFgExemptContext(styleContext));
 				const headingPlainText = plainInlineTokens(token.tokens || []);
 				let styledHeading: string;
-				if (headingLevel === 1 && TERMINAL.textSizing) {
+				// A sized heading draws plain text, which would drop a clickable extension link's marker.
+				if (headingLevel === 1 && TERMINAL.textSizing && stripExtensionLinkMarkers(headingText) === headingText) {
 					const plainWidth = visibleWidth(headingPlainText);
 					if (plainWidth > 0 && 2 * plainWidth <= width) {
 						const sizedHeading = encodeTextSizedHeading(headingPlainText, 2);
@@ -4964,8 +5065,15 @@ export class Markdown implements Component {
 						token.tokens || [],
 						this.#proseFgExemptContext(resolvedStyleContext),
 					);
-					const styledLinkText = this.#theme.link(this.#theme.underline(linkText));
 					const href = typeof token.href === "string" ? token.href : "";
+					// An extension owns this link: no suffix, and no hyperlink the terminal could open.
+					// Its label gets its own (dotted) underline instead of the web-link one.
+					if (href && extensionLinkScheme(href)) {
+						const key = `${this.#extensionLinkBlock}\0${this.#extensionLinkOrdinal++}`;
+						result += formatExtensionLink(this.#theme.link(linkText), href, key) + stylePrefix;
+						break;
+					}
+					const styledLinkText = this.#theme.link(this.#theme.underline(linkText));
 					const target = (href && this.#theme.resolveLink?.(href)) || href;
 					const clickableLinkText = formatHyperlink(styledLinkText, target);
 					// If link text matches href, only show the link once. A missing

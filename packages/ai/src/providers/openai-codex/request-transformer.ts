@@ -31,7 +31,7 @@ export interface ReasoningConfig {
 export interface CodexRequestOptions {
 	/** User-facing effort; maps 1:1 onto the wire tier of the same name. */
 	reasoningEffort?: CodexCallerEffort | "none";
-	/** Suppress native reasoning by sending `reasoning.effort: "none"`. */
+	/** Minimize native reasoning using the model's lowest supported effort and wire mapping. */
 	reasoningOff?: boolean;
 	reasoningSummary?: ReasoningConfig["summary"] | null;
 	/** Explicit `reasoning.context` override. Omitted by default; Responses Lite forces `all_turns` as required by that transport. */

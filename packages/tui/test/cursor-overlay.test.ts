@@ -506,7 +506,7 @@ it("keeps uncovered click targets available while blocking popup-covered rows", 
 	}
 });
 
-it.each([false, true])("preserves image placement IDs when history scrolls under a popup (tmux=%s)", async tmux => {
+it.each([false, true])("preserves image data when history scrolls under a popup (tmux=%s)", async tmux => {
 	if (tmux) Bun.env.TMUX = "/tmp/omp-test-tmux,1,0";
 	const terminal = new VirtualTerminal(40, 12);
 	const ui = new TUI(terminal);
@@ -540,8 +540,14 @@ it.each([false, true])("preserves image placement IDs when history scrolls under
 		ui.setCursorOverlay(undefined, 0, 0);
 		ui.requestRender();
 		await terminal.waitForRender();
-		expect(writes.join("")).toContain(placement);
-		expect(writes.join("")).not.toMatch(/\x1b_Ga=d,/);
+		const output = writes.join("");
+		// Live copies now have separate placement IDs from committed history.
+		// Replacing a live placement is valid; deleting its image data would
+		// also erase archived copies and leave the restored popup backing blank.
+		expect(output).toMatch(/\x1b_Ga=p,q=2,C=1,i=713,p=\d+,c=40,r=8,/);
+		for (const deletion of output.matchAll(/\x1b_Ga=d,([^\x1b]*)\x1b\\/g)) {
+			expect(deletion[1]).toMatch(/^d=i,i=713,p=\d+,q=2$/);
+		}
 	} finally {
 		ui.stop();
 	}

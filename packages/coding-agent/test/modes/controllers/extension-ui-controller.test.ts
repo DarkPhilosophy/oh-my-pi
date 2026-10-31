@@ -75,6 +75,7 @@ function makeHarness() {
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
 		syncComposerShape: vi.fn(),
+		syncExtensionLinks: vi.fn(),
 		showStatus: vi.fn(),
 	} as unknown as InteractiveModeContext;
 

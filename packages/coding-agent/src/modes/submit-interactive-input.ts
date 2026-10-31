@@ -1,4 +1,3 @@
-import { EventLoopKeepalive } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "../session/agent-session";
 import type { InteractiveMode } from "./interactive-mode";
 import { invokeSkillCommandFromText, isKnownSkillCommand } from "./skill-command";
@@ -17,7 +16,7 @@ export async function submitInteractiveInput(
 		| "optimisticSkillMessagePending"
 	> &
 		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">>,
-	session: Pick<AgentSession, "prompt" | "promptCustomMessage" | "isStreaming" | "buildUserSkillPrompt">,
+	session: Pick<AgentSession, "prompt" | "promptCustomMessage" | "resume" | "isStreaming" | "buildUserSkillPrompt">,
 	input: SubmittedUserInput,
 ): Promise<void> {
 	if (input.cancelled) {
@@ -25,7 +24,6 @@ export async function submitInteractiveInput(
 	}
 
 	try {
-		using _keepalive = new EventLoopKeepalive();
 		// Honor the submission's queue intent, defaulting to followUp. Reading
 		// `session.isStreaming` to decide queue-vs-fresh is NOT atomic with the
 		// eventual `agent.prompt()` call inside `session.prompt()`: a background turn
@@ -37,10 +35,9 @@ export async function submitInteractiveInput(
 		// the message instead of erroring when a turn is already underway. Normal
 		// user Enter carries "steer" (interrupt, matching the streaming-branch Enter);
 		// background/continuation submits omit it and fall back to "followUp". The
-		// synthetic branch below opts out by design.
+		// resume branch below opts out by design.
 		const streamingBehavior = input.streamingBehavior ?? ("followUp" as const);
-		// Continue shortcuts submit an already-started synthetic developer prompt with
-		// no optimistic user message.
+		// Continue shortcuts arrive already started, without an optimistic user message.
 		if (!input.started && !mode.markPendingSubmissionStarted(input)) {
 			return;
 		}
@@ -62,18 +59,9 @@ export async function submitInteractiveInput(
 				attribution: "agent" as const,
 			};
 			input.dispatched = await session.promptCustomMessage(message, { streamingBehavior });
-		} else if (input.synthetic) {
-			// Synthetic continue shortcuts are hidden developer prompts. The streaming
-			// queue (#queueUserMessage) only carries user-attributed messages, so we do
-			// NOT pass streamingBehavior here: queueing would silently demote the
-			// developer directive to a visible user message. A synthetic submit while
-			// streaming keeps its prior behavior (rejected as busy) rather than changing
-			// its role.
-			await session.prompt(input.text, {
-				synthetic: true,
-				expandPromptTemplates: false,
-				userInitiated: input.userInitiated,
-			});
+		} else if (input.resume) {
+			// Continue without inserting or queueing another user message.
+			await session.resume();
 		} else if (isKnownSkillCommand(skillHost, input.text)) {
 			// Resubmitted skill text must dispatch through the skill path, or the
 			// model receives a literal `/skill:` token.

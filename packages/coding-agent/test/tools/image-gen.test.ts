@@ -87,10 +87,16 @@ function catalogModel(provider: string, id: string, api: Api, kind: "chat" | "im
 	});
 }
 
-function createContext(options: { models: Model<Api>[]; settings: Settings; fetch: FetchImpl }): CustomToolContext {
+function createContext(options: {
+	models: Model<Api>[];
+	settings: Settings;
+	fetch: FetchImpl;
+	activeModel?: Model<Api>;
+	credentials?: Record<string, string>;
+}): CustomToolContext {
 	const authStorage = createInMemoryAuthStorage();
 	for (const model of options.models) {
-		authStorage.keys.setRuntime(model.provider, `key-${model.provider}`);
+		authStorage.keys.setRuntime(model.provider, options.credentials?.[model.provider] ?? `key-${model.provider}`);
 	}
 	const registry = new ModelRegistry(authStorage);
 	registry.getAvailable = (kind = "chat") =>
@@ -102,7 +108,7 @@ function createContext(options: { models: Model<Api>[]; settings: Settings; fetc
 		fetch: options.fetch,
 		sessionManager: SessionManager.inMemory(process.cwd()),
 		modelRegistry: registry,
-		model: undefined,
+		model: options.activeModel,
 		settings: options.settings,
 		isIdle: () => true,
 		hasQueuedMessages: () => false,
@@ -173,6 +179,75 @@ describe("imageGenTool", () => {
 		expect(requests[0].body.model).toBe("gpt-image-2.5-sunburst");
 		expect(result.details?.provider).toBe("factory-droid");
 		expect(result.details?.imageCount).toBe(1);
+	});
+
+	describe("Factory Droid image models at the end of the image defaults", () => {
+		const factory = factoryDroidRegistry()
+			.filter(({ spec }) => spec.id === "kimi-k3" || buildModel(spec).kind === "image")
+			.map(entry => buildModel(buildFactoryDroidModel(entry)));
+		const xai = catalogModel("xai", "grok-imagine-image", "openai-images");
+		const FACTORY_GENERATE = "https://api.factory.ai/api/llm/o/v1/images/generations";
+		const XAI_GENERATE = "https://xai.example/v1/images/generations";
+
+		/** Run the tool once with every image request succeeding; returns the requested URLs and the result. */
+		async function run(models: Model<Api>[]) {
+			const urls: string[] = [];
+			const ctx = createContext({
+				models,
+				settings: Settings.isolated(),
+				fetch: async input => {
+					urls.push(input.toString());
+					return new Response(JSON.stringify({ data: [{ b64_json: WEBP_DATA }] }), {
+						headers: { "content-type": "application/json" },
+					});
+				},
+				activeModel: factory.find(model => model.id === "kimi-k3"),
+			});
+			const result = await imageGenTool.execute("default", { subject: "a lighthouse" }, undefined, ctx);
+			generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+			return { urls, result };
+		}
+
+		it("generates with only a Factory login, starting from the CLI's preferred model", async () => {
+			const { urls, result } = await run(factory);
+			expect(urls).toEqual([FACTORY_GENERATE]);
+			expect(result?.details?.model).toBe("gpt-image-2.5-sunburst");
+		});
+
+		it("keeps another default image provider ahead of Factory", async () => {
+			const { urls, result } = await run([...factory, xai]);
+			expect(urls).toEqual([XAI_GENERATE]);
+			expect(result?.details?.provider).toBe("xai");
+		});
+	});
+
+	it("falls back to the selected Antigravity id when discovery advertises no image model", async () => {
+		const model = catalogModel("google-antigravity", "gemini-selected-image", "google-gemini-cli");
+		const requestBodies: Array<Record<string, unknown>> = [];
+		const fetchMock: FetchImpl = async (input, init) => {
+			const url = input.toString();
+			if (url.endsWith("/v1internal:fetchAvailableModels")) {
+				return new Response(JSON.stringify({ imageGenerationModelIds: [] }), { status: 200 });
+			}
+			requestBodies.push(JSON.parse(String(init?.body)));
+			return new Response(
+				`data: ${JSON.stringify({ response: { candidates: [{ content: { role: "model", parts: [{ inlineData: { data: WEBP_DATA, mimeType: "image/png" } }] } }] } })}\n\n`,
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		};
+		const credentials = JSON.stringify({ token: "antigravity-token", projectId: "catalog-project" });
+		const settings = Settings.isolated({ modelRoles: { image: "google-antigravity/gemini-selected-image" } });
+		const ctx = createContext({
+			models: [model],
+			settings,
+			fetch: fetchMock,
+			credentials: { "google-antigravity": credentials },
+		});
+
+		const result = await imageGenTool.execute("antigravity", { subject: "fallback id" }, undefined, ctx);
+		generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+		expect(requestBodies[0]).toMatchObject({ model: "gemini-selected-image", project: "catalog-project" });
+		expect(result.details?.model).toBe("gemini-selected-image");
 	});
 
 	it("e2e writes OpenAI Responses image_generation WebP output to a temp file", async () => {

@@ -114,7 +114,7 @@ describe("daemon session runtime", () => {
 					isStreaming: false,
 					subscribe: () => () => {},
 					subscribeCommandMetadataChanged: () => () => {},
-					settings: { get: () => undefined },
+					settings: Settings.isolated({}),
 					sessionManager: { getCwd: () => process.cwd() },
 					dispose: async () => {
 						await options.sessionManager?.close();
@@ -548,7 +548,7 @@ describe("daemon session runtime", () => {
 					isStreaming: false,
 					subscribe: () => () => {},
 					subscribeCommandMetadataChanged: () => () => {},
-					settings: { get: () => undefined },
+					settings: Settings.isolated({}),
 					sessionManager: { getCwd: () => process.cwd() },
 					dispose: async () => {
 						await options.sessionManager?.close();
@@ -638,7 +638,7 @@ describe("daemon session runtime", () => {
 					isStreaming: false,
 					subscribe: () => () => {},
 					subscribeCommandMetadataChanged: () => () => {},
-					settings: { get: () => undefined },
+					settings: Settings.isolated({}),
 					sessionManager: { getCwd: () => process.cwd() },
 					dispose: async () => {
 						await options.sessionManager?.close();
