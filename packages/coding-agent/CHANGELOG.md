@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added experimental, configurable advisory context checkpoints beside notes-backed context windows, with todo-independent growth detection, a cooldown, and a per-window reminder limit.
+
 ### Fixed
 
+- Fixed completed tool results remaining pending after a mid-run transcript rebuild until the agent finished.
+- Fixed abandoned thinking blocks staying active after a failed stream and preventing later transcript output from reaching scrollback.
+- Experimental context checkpoints recommend a fresh context at completed-work boundaries; post-save reminders are delivered as model-only messages instead of appearing in tool output.
 - Fixed colliding plugin skills failing to reload after an upgrade when their installation path contains a symbolic link.
 - Fixed tracked queued prompts losing their identity when adjacent messages are coalesced.
 ## [18.14.1] - 2026-10-31

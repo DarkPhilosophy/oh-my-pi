@@ -360,6 +360,9 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		"setext",
 		"tiny",
 		"with-tool",
+		"thinking-with-tool",
+		"thinking-with-two-tools",
+		"thinking-with-settled-tool",
 	] as const)("keeps every completed visible row accessible during a %s text stream", async kind => {
 		const terminal = new VirtualTerminal(80, kind === "tiny" ? 2 : 14);
 		const scheduler = new VirtualRenderScheduler();
@@ -373,9 +376,10 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		let body = kind === "after-fence" ? "Introduction.\n\n```text\nalpha\nbeta\n```\n\n" : "";
 		const expected: string[] = [];
 		let liveTool: ToolExecutionComponent | undefined;
+		let earlierTool: ToolExecutionComponent | undefined;
 		const message = () =>
 			assistantMessage(
-				kind === "thinking" ? [{ type: "thinking", thinking: body }] : [{ type: "text", text: body }],
+				kind.startsWith("thinking") ? [{ type: "thinking", thinking: body }] : [{ type: "text", text: body }],
 			);
 		const markers = () =>
 			Array.from(
@@ -409,13 +413,24 @@ describe("EventController mixed assistant text/tool rendering", () => {
 					type: "message_update",
 					message: partial,
 					assistantMessageEvent: {
-						type: kind === "thinking" ? "thinking_delta" : "text_delta",
+						type: kind.startsWith("thinking") ? "thinking_delta" : "text_delta",
 						contentIndex: 0,
 						delta,
 						partial,
 					},
 				});
-				if (kind === "with-tool" && step === 0) {
+				if (kind.includes("tool") && step === 0) {
+					if (kind === "thinking-with-two-tools") {
+						earlierTool = new ToolExecutionComponent(
+							"bash",
+							{ command: "wait-for-result" },
+							{},
+							undefined,
+							composer.ui,
+							".",
+						);
+						chatContainer.addChild(earlierTool);
+					}
 					liveTool = new ToolExecutionComponent(
 						"edit",
 						{ path: "mod.ts" },
@@ -438,6 +453,7 @@ describe("EventController mixed assistant text/tool rendering", () => {
 						],
 					});
 					chatContainer.addChild(liveTool);
+					if (kind === "thinking-with-settled-tool") liveTool.seal();
 				}
 				composer.ui.requestRender();
 				await scheduler.settle(terminal);
@@ -456,6 +472,7 @@ describe("EventController mixed assistant text/tool rendering", () => {
 		} finally {
 			composer.stop();
 			liveTool?.stopAnimation();
+			earlierTool?.stopAnimation();
 		}
 	});
 

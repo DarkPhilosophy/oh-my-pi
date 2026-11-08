@@ -105,7 +105,7 @@ function todoTransitionKey(phase: string, content: string): string {
 	return `${phase}\u0000${content}`;
 }
 
-function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): TodoCompletionTransition[] {
+export function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): TodoCompletionTransition[] {
 	const previousStatuses = new Map<string, TodoStatus>();
 	for (const phase of previous) {
 		for (const task of phase.tasks) {

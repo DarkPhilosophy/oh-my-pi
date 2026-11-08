@@ -10,6 +10,10 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import {
+	cfgCompactionContextReminders,
+	cfgCompactionContextReminderGrowthPercent,
+} from "../src/session/context-settings";
+import {
 	createCustomMessage,
 	convertToLlm,
 	SKILL_PROMPT_MESSAGE_TYPE,
@@ -131,6 +135,7 @@ describe("experimental context management", () => {
 			getSessionSpawns: () => "*",
 			sessionManager: manager,
 			settings,
+			onContextNotesSaved: entryId => session?.noteContextNotesSaved(entryId),
 		};
 		const tools: Tool[] = [
 			new ReadTool(toolSession),
@@ -141,6 +146,7 @@ describe("experimental context management", () => {
 		const agent = new Agent({
 			initialState: { model: mock.model, systemPrompt: ["test"], tools, messages: history },
 			getApiKey: () => "test-key",
+			convertToLlm,
 			streamFn: mock.stream,
 		});
 		session = new AgentSession({
@@ -154,6 +160,196 @@ describe("experimental context management", () => {
 		await session.setActiveToolsByName(tools.map(tool => tool.name));
 		return { session, manager, mock };
 	}
+
+	it("routes a successful save to one hidden provider reminder without leaking it into tool output", async () => {
+		const { session, mock } = await createRolloverSession(
+			[
+				{ content: [{ type: "toolCall", name: "context_notes", arguments: { text: "Current task checkpoint" } }] },
+				{ content: [{ type: "toolCall", name: "context_notes", arguments: { text: "Updated task checkpoint" } }] },
+				{ content: ["finished"] },
+			],
+			false,
+		);
+		// Saving notes must not depend on percentage growth or an existing todo.
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 10_000, contextWindow: 100_000, percent: 10 });
+		await session.prompt("Save the completed work and continue.");
+		await session.waitForIdle();
+		const reminders = session.messages.filter(
+			message => message.role === "custom" && message.customType === "experimental-context-notes-reminder",
+		);
+		expect(reminders).toHaveLength(1);
+		expect(reminders[0]).toMatchObject({ display: false });
+		const reminder = reminders[0]!;
+		if (reminder.role !== "custom") throw new Error("Expected model-only context reminder");
+		expect(mock.calls[1]!.context.messages).toEqual(expect.arrayContaining(convertToLlm([reminder])));
+		for (const result of session.messages.filter(message => message.role === "toolResult")) {
+			expect(JSON.stringify(result.content)).not.toContain("context-window-reminder");
+			expect(JSON.stringify(result.content)).not.toContain("new_context");
+		}
+		expect(mock.calls).toHaveLength(3);
+	});
+
+	it("preserves the saved notebook when the next model turn requests rollover", async () => {
+		const { session, manager, mock } = await createRolloverSession(
+			[
+				{
+					content: [
+						{
+							type: "toolCall",
+							name: "context_notes",
+							arguments: { text: "Preserve the completed investigation" },
+						},
+					],
+				},
+				{ content: [{ type: "toolCall", name: "new_context", arguments: {} }] },
+				{ content: ["finished"] },
+			],
+			false,
+		);
+		await session.prompt("Save the investigation and move to a fresh context.");
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(3);
+		expect(manager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(1);
+		expect(getContextNotes(manager.getBranch())?.text).toBe("Preserve the completed investigation");
+		// Rollover can retire the aside from the live tail, so inspect the actual
+		// pre-rollover provider request rather than requiring it to survive there.
+		expect(
+			mock.calls[1]!.context.messages.some(
+				message => message.role === "developer" && JSON.stringify(message.content).includes("new_context"),
+			),
+		).toBe(true);
+	});
+
+	it.each(["read", "clear", "disabled", "failed"] as const)(
+		"does not queue a post-save reminder for %s",
+		async kind => {
+			const { session, manager, mock } = await createRolloverSession(
+				[
+					{
+						content: [
+							{
+								type: "toolCall",
+								name: "context_notes",
+								arguments: kind === "read" ? {} : { text: kind === "clear" ? "" : "Saved notes" },
+							},
+						],
+					},
+					{ content: ["finished"] },
+				],
+				false,
+			);
+			if (kind === "disabled") cfgCompactionContextReminders.override(session.settings, false);
+			if (kind === "failed")
+				vi.spyOn(manager, "ensureOnDisk").mockRejectedValue(new Error("Notebook persistence failed"));
+			vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 10_000, contextWindow: 100_000, percent: 10 });
+			await session.prompt("Continue the current work.");
+			await session.waitForIdle();
+			expect(
+				session.messages.filter(
+					message => message.role === "custom" && message.customType === "experimental-context-notes-reminder",
+				),
+			).toHaveLength(0);
+			expect(mock.calls).toHaveLength(2);
+		},
+	);
+
+	it("recognizes a real task completion independently of context growth", async () => {
+		const { session, mock } = await createRolloverSession(
+			[{ content: [{ type: "toolCall", name: "context_notes", arguments: {} }] }, { content: ["finished"] }],
+			false,
+		);
+		cfgCompactionContextReminderGrowthPercent.override(session.settings, 60);
+		session.setTodoPhases([{ name: "Current work", tasks: [{ content: "Investigate", status: "in_progress" }] }]);
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 45_000, contextWindow: 100_000, percent: 45 });
+		const tool = session.agent.state.tools.find(tool => tool.name === "context_notes");
+		if (!tool) throw new Error("Expected the real context_notes tool");
+		const execute = tool.execute.bind(tool);
+		vi.spyOn(tool, "execute").mockImplementation(async (...args) => {
+			const result = await execute(...args);
+			session.setTodoPhases([{ name: "Current work", tasks: [{ content: "Investigate", status: "completed" }] }]);
+			return result;
+		});
+		await session.prompt("Finish the current investigation.");
+		await session.waitForIdle();
+		expect(
+			session.messages.filter(
+				message => message.role === "custom" && message.customType === "experimental-context-notes-reminder",
+			),
+		).toHaveLength(1);
+		expect(mock.calls).toHaveLength(2);
+	});
+
+	it("offers one hidden checkpoint without todos or Auto-Compact and never wakes a finished turn", async () => {
+		const { session, manager, mock } = await createRolloverSession(
+			[
+				{ content: [{ type: "toolCall", name: "context_notes", arguments: {} }] },
+				{ content: [{ type: "toolCall", name: "context_notes", arguments: {} }] },
+				{ content: ["finished"] },
+			],
+			false,
+		);
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 45_000, contextWindow: 100_000, percent: 45 });
+		await session.prompt("Continue the investigation without a todo plan.");
+		await session.waitForIdle();
+		const checkpoints = session.messages.filter(
+			message => message.role === "custom" && message.customType === "experimental-context-notes-reminder",
+		);
+		expect(checkpoints).toHaveLength(1);
+		expect(checkpoints[0]).toMatchObject({ display: false });
+		expect(mock.calls).toHaveLength(3);
+		expect(manager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(0);
+		expect(getContextNotes(manager.getBranch())).toBeUndefined();
+	});
+
+	it("still checkpoints new work when an old todo plan is fully completed", async () => {
+		const { session, mock } = await createRolloverSession(
+			[
+				{ content: [{ type: "toolCall", name: "context_notes", arguments: {} }] },
+				{ content: ["finished the new request"] },
+			],
+			false,
+		);
+		session.setTodoPhases([{ name: "Earlier request", tasks: [{ content: "Old work", status: "completed" }] }]);
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 45_000, contextWindow: 100_000, percent: 45 });
+		await session.prompt("Investigate this new request.");
+		await session.waitForIdle();
+		expect(
+			session.messages.filter(
+				message => message.role === "custom" && message.customType === "experimental-context-notes-reminder",
+			),
+		).toHaveLength(1);
+		expect(mock.calls).toHaveLength(2);
+	});
+
+	it("does not manufacture a provider turn just to deliver a context reminder", async () => {
+		const { session, mock } = await createRolloverSession([{ content: ["finished immediately"] }], false);
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 90_000, contextWindow: 100_000, percent: 90 });
+		await session.prompt("Answer without tools.");
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(1);
+		expect(
+			session.messages.filter(
+				message => message.role === "custom" && message.customType === "experimental-context-notes-reminder",
+			),
+		).toHaveLength(0);
+	});
+
+	it("honors the advisory-reminder switch even while context usage grows", async () => {
+		const { session, mock } = await createRolloverSession(
+			[{ content: [{ type: "toolCall", name: "context_notes", arguments: {} }] }, { content: ["finished"] }],
+			false,
+		);
+		cfgCompactionContextReminders.override(session.settings, false);
+		vi.spyOn(session, "getContextUsage").mockReturnValue({ tokens: 90_000, contextWindow: 100_000, percent: 90 });
+		await session.prompt("Continue without checkpoint reminders.");
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(2);
+		expect(
+			session.messages.filter(
+				message => message.role === "custom" && message.customType === "experimental-context-notes-reminder",
+			),
+		).toHaveLength(0);
+	});
 
 	it("rolls over once on new_context below the automatic threshold", async () => {
 		const { session, manager, mock } = await createRolloverSession();

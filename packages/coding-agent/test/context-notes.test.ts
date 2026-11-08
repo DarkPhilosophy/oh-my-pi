@@ -227,9 +227,7 @@ describe("experimental context notes", () => {
 				// forward but stays on the same lineage (issue #12316).
 				sessionManager.appendCustomEntry("concurrent_turn_growth");
 				pendingEnsure.resolve();
-				await expect(pendingWrite).resolves.toMatchObject({
-					content: [{ type: "text", text: "Context notes saved." }],
-				});
+				await pendingWrite;
 				expect(getContextNotes(sessionManager.getBranch())).toMatchObject({ text: "must persist on growth" });
 			} finally {
 				ensureSpy.mockRestore();

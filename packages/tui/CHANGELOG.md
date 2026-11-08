@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed unfinished thinking and text disappearing above a tall active tool preview before their final row could reach scrollback.
 - Fixed settled conversation history briefly collapsing into one-line summaries while session loading or transcript rebuilding fills scrollback.
 - Fixed transcript rebuilds compressing settled history or failing while a Bash command is still running.
 - Fixed blank separators around turn statistics disappearing when long tool previews squeeze the viewport.

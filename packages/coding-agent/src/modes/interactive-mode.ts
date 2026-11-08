@@ -5105,6 +5105,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		for (const [id, component] of livePendingTools) {
 			this.pendingTools.set(id, component);
 		}
+		// A completion can already be buffered by the agent while transcript
+		// replay still sees only its call. Settle the recreated card now rather
+		// than leaving it pending until another event or agent_end.
+		this.#eventController.restorePendingToolResults();
 		// During the pre-streaming window — after `startPendingSubmission` has
 		// optimistically rendered the user's message but before the user
 		// `message_start` event lands it in `session` entries — any rebuild

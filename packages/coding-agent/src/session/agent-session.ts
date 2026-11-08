@@ -526,6 +526,11 @@ function jobSnapshotItem(job: AsyncJob): AsyncJobSnapshotItem {
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { EAGER_TODO_PRELUDE_MESSAGE_TYPE, TodoTracker, type TodoTrackerHost } from "./todo-tracker";
+import { ContextReminders } from "./context-reminders";
+import contextReminderPrompt from "../prompts/system/experimental-context-notes-reminder.md" with { type: "text" };
+import contextNotesSavedReminderPrompt from "../prompts/system/experimental-context-notes-saved-reminder.md" with { type: "text" };
+import { getContextNotes } from "./context-notes";
+import { getCompletionTransitions } from "../tools/todo";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
 import {
@@ -577,6 +582,11 @@ import {
 import { cfgTaskBatch, cfgTaskDisabledAgents } from "../task/settings";
 import {
 	cfgBranchSummaryReserveTokens,
+	cfgCompactionContextReminders,
+	cfgCompactionContextReminderMinimumPercent,
+	cfgCompactionContextReminderGrowthPercent,
+	cfgCompactionContextReminderCooldownMinutes,
+	cfgCompactionExperimentalContextManagement,
 	cfgCompactionModelThresholds,
 	cfgCompactionModelThresholdsEnabled,
 	cfgExtendedContext,
@@ -1045,6 +1055,10 @@ export class AgentSession implements SettingsScope {
 	#followUpModeOverride: QueueMode | undefined;
 	/** A single model-only notebook reminder queued for the current prompt generation. */
 	#experimentalContextNotesReminder: { prompt: string; generation: number } | undefined;
+	readonly #contextReminders = new ContextReminders();
+	#contextReminderWorkStartedAt = Date.now();
+	#contextNotesSavedReminder: { entryId: string; generation: number } | undefined;
+	#contextNotesSavedReminderScope: string | undefined;
 	#planModeState: PlanModeState | undefined;
 	#vibeModeState: VibeModeState | undefined;
 	#goalModeState: GoalModeState | undefined;
@@ -1361,6 +1375,9 @@ export class AgentSession implements SettingsScope {
 	#resetPromptMaintenanceState(): void {
 		this.#recovery.resetForNewPrompt();
 		this.#maintenance.resetForNewPrompt();
+		this.#contextReminders.resetPrompt();
+		this.#contextNotesSavedReminder = undefined;
+		this.#contextReminderWorkStartedAt = Date.now();
 		this.#yieldTerminationPending = false;
 	}
 
@@ -2427,18 +2444,11 @@ export class AgentSession implements SettingsScope {
 			// Mid-run todo reconciliation — evaluated at injection time so a turn
 			// that flips a todo just before this poll suppresses the nudge.
 			thunks.push(() => this.#todo.takeMidRunNudge());
-			const contextNotesReminder = this.#experimentalContextNotesReminder;
-			if (contextNotesReminder) {
-				this.#experimentalContextNotesReminder = undefined;
-				if (contextNotesReminder.generation === this.#promptGeneration) {
-					thunks.push(() => ({
-						role: "custom",
-						customType: "experimental-context-notes-reminder",
-						content: contextNotesReminder.prompt,
-						display: false,
-						timestamp: Date.now(),
-					}));
-				}
+			// Advisory checkpoints only ride an already-running tool loop. An
+			// aside at "stop" would otherwise wake a finished task for another turn.
+			if (boundary === "work") {
+				const generation = this.#promptGeneration;
+				thunks.push(() => (generation === this.#promptGeneration ? this.#takeContextReminder() : null));
 			}
 			return thunks;
 		});
@@ -6670,6 +6680,8 @@ export class AgentSession implements SettingsScope {
 		this.#sessionGeneration++;
 		this.#pendingNextTurnMessages = [];
 		this.#experimentalContextNotesReminder = undefined;
+		this.#contextNotesSavedReminder = undefined;
+		this.#contextNotesSavedReminderScope = undefined;
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		// Reset the session_stop continuation chain: the queued continuation
 		// message is gone with the conversation, but the counters would otherwise
@@ -11039,7 +11051,72 @@ export class AgentSession implements SettingsScope {
 	}
 
 	setTodoPhases(phases: TodoPhase[]): void {
+		if (getCompletionTransitions(this.#todo.phases, phases).length > 0) this.#contextReminders.noteCompletion();
 		this.#todo.setPhases(phases);
+	}
+
+	/** Queue a model-only aside; saving notes never schedules an extra provider turn. */
+	noteContextNotesSaved(entryId: string): void {
+		const notes = getContextNotes(this.sessionManager.getBranch());
+		if (this.#isDisposed || notes?.entryId !== entryId || !notes.text) return;
+		this.#contextNotesSavedReminder = { entryId, generation: this.#promptGeneration };
+	}
+
+	#takeContextReminder(): CustomMessage | null {
+		const queued = this.#experimentalContextNotesReminder;
+		if (queued && queued.generation !== this.#promptGeneration) this.#experimentalContextNotesReminder = undefined;
+		if (
+			this.#isDisposed ||
+			this.#maintenance.isCompacting ||
+			!cfgCompactionExperimentalContextManagement.get(this.settings) ||
+			!cfgCompactionContextReminders.get(this.settings)
+		)
+			return null;
+		const enabled = this.#tools.getEnabledToolNames();
+		for (const name in EXPERIMENTAL_CONTEXT_REQUIRED_TOOLS) {
+			if (!enabled.includes(name) || !this.#tools.getToolByName(name)) return null;
+		}
+		const branch = this.sessionManager.getBranch();
+		const boundary = branch.findLast(entry => entry.type === "compaction" || entry.type === "reset_boundary");
+		const scope = `${this.sessionId}:${boundary?.id ?? branch[0]?.id ?? "empty"}`;
+		const saved = this.#contextNotesSavedReminder;
+		const notes = saved ? getContextNotes(branch) : undefined;
+		const afterSave =
+			saved?.generation === this.#promptGeneration &&
+			notes?.entryId === saved?.entryId &&
+			!!notes?.text &&
+			this.#contextNotesSavedReminderScope !== scope;
+		this.#contextNotesSavedReminder = undefined;
+		const usage = this.getContextUsage();
+		if (!afterSave && (!usage || usage.contextWindow <= 0)) return null;
+		const now = Date.now();
+		if (
+			!afterSave &&
+			!this.#contextReminders.take({
+				scope,
+				percent: usage!.percent,
+				now,
+				minimumPercent: cfgCompactionContextReminderMinimumPercent.get(this.settings),
+				growthPercent: cfgCompactionContextReminderGrowthPercent.get(this.settings),
+				cooldownMinutes: cfgCompactionContextReminderCooldownMinutes.get(this.settings),
+				nearThreshold: queued?.generation === this.#promptGeneration,
+			})
+		)
+			return null;
+		this.#experimentalContextNotesReminder = undefined;
+		if (afterSave) this.#contextNotesSavedReminderScope = scope;
+		return {
+			role: "custom",
+			customType: "experimental-context-notes-reminder",
+			content: afterSave
+				? contextNotesSavedReminderPrompt
+				: prompt.render(contextReminderPrompt, {
+						contextPercent: Math.round(usage!.percent),
+						elapsedMinutes: Math.floor((now - this.#contextReminderWorkStartedAt) / 60_000),
+					}),
+			display: false,
+			timestamp: now,
+		};
 	}
 
 	/** Active item labels accepted by this pooled turn's incremental yield tool. */

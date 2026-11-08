@@ -2643,6 +2643,11 @@ export class EventController {
 		this.#lastAgentEndAt = Date.now();
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.flushAll();
+		// A failed stream may reach agent_end without message_end. Its leading
+		// thinking/text block must not remain a live frontier forever.
+		this.ctx.streamingComponent?.markTranscriptBlockFinalized();
+		this.ctx.streamingComponent = undefined;
+		this.ctx.streamingMessage = undefined;
 		if (this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;

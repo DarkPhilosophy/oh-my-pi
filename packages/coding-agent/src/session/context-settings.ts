@@ -127,6 +127,69 @@ export const cfgCompactionExperimentalContextManagement = register({
 	},
 });
 
+function validateContextReminderNumber(raw: unknown): void {
+	if (raw === undefined) return;
+	if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 1) {
+		throw new Error("Context reminder thresholds and cooldown must be finite numbers of at least 1");
+	}
+}
+
+export const cfgCompactionContextReminders = register({
+	id: "compaction.contextReminders",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "context",
+		group: "Compaction",
+		label: "Advisory context reminders (experimental)",
+		description:
+			"With notes-backed context windows, offer occasional model-only checkpoints during work. Never forces notes, rollover, or an extra turn.",
+	},
+});
+
+export const cfgCompactionContextReminderMinimumPercent = register({
+	id: "compaction.contextReminderMinimumPercent",
+	type: "number",
+	default: 40,
+	validate: validateContextReminderNumber,
+	ui: {
+		tab: "context",
+		group: "Compaction",
+		label: "Reminder minimum context (experimental)",
+		description: "Suppress advisory reminders below this context usage.",
+		options: [25, 40, 50, 60, 75].map(value => ({ value: String(value), label: `${value}%` })),
+	},
+});
+
+export const cfgCompactionContextReminderGrowthPercent = register({
+	id: "compaction.contextReminderGrowthPercent",
+	type: "number",
+	default: 20,
+	validate: validateContextReminderNumber,
+	ui: {
+		tab: "context",
+		group: "Compaction",
+		label: "Reminder context growth (experimental)",
+		description:
+			"Percentage-point growth between reminders when no task completes. At most three reminders per context window.",
+		options: [10, 20, 30, 40].map(value => ({ value: String(value), label: `${value} pp` })),
+	},
+});
+
+export const cfgCompactionContextReminderCooldownMinutes = register({
+	id: "compaction.contextReminderCooldownMinutes",
+	type: "number",
+	default: 15,
+	validate: validateContextReminderNumber,
+	ui: {
+		tab: "context",
+		group: "Compaction",
+		label: "Reminder cooldown minutes (experimental)",
+		description: "Minimum interval between reminders; elapsed time alone never triggers one.",
+		options: [5, 10, 15, 30, 60].map(value => ({ value: String(value), label: `${value} min` })),
+	},
+});
+
 export const cfgCompactionMidTurnEnabled = register({
 	id: "compaction.midTurnEnabled",
 	type: "boolean",

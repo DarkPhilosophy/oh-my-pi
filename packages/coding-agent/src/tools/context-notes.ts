@@ -161,6 +161,7 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		const data: ContextNotesEntry = { version: 1, text: params.text };
 		const entryId = manager.appendCustomEntry(CONTEXT_NOTES_ENTRY_TYPE, data);
 		await manager.flush();
+		if (bytes > 0) this.session.onContextNotesSaved?.(entryId);
 		return {
 			content: [{ type: "text", text: "Context notes saved." }],
 			details: { entryId, text: params.text, bytes },

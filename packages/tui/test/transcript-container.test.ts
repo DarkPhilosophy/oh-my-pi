@@ -1,4 +1,5 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it, vi } from "bun:test";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
@@ -758,14 +759,16 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
 	});
 
-	it("assigns one row per live block until pressure requires aggregation", () => {
+	it("shows the natural tail of live blocks, never one row per block", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["first"], false));
 		transcript.addChild(new Block(["second"], false));
 
-		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "second"]);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["first", "", "second"]);
 		expect(transcript.canAdmit(2)).toBe(false);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
+		// What does not fit scrolls off the top, like any terminal.
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["", "second"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["second"]);
 	});
 	it("does not report settled resume backlog as active", () => {
 		const transcript = new TranscriptContainer();
@@ -863,7 +866,8 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block([], false));
 		for (let index = 0; index < 4; index++) transcript.addChild(new Block([`settled ${index}`], true));
 
-		expect(transcript.renderViewport(80, 2, frame)).toEqual(["settled 2", "settled 3"]);
+		// The empty active block is not hidden work and costs no row; the tail is the last rows.
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["", "settled 3"]);
 	});
 
 	it("does not compress settled history when a running tail tool still fits", () => {
@@ -908,11 +912,13 @@ describe("TranscriptContainer", () => {
 			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], i !== 0));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Empty components consume neither a row nor an additional separator.
+		// Empty components consume neither a row nor an additional separator: the three newest
+		// text blocks fill the screen with exactly one separator between each pair.
 		const out = transcript.renderViewport(80, 12, frame);
 		expect(out).toHaveLength(12);
-		expect(out.filter(row => row === "")).toHaveLength(5);
-		for (let index = 0; index < 6; index++) expect(out.some(row => row.startsWith(`t${index}`))).toBe(true);
+		expect(out.filter(row => row === "")).toHaveLength(3);
+		for (const index of [3, 4, 5]) expect(out.some(row => row.startsWith(`t${index}`))).toBe(true);
+		expect(out.some(row => row.startsWith("t0"))).toBe(false);
 	});
 
 	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
@@ -922,9 +928,9 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
-		// Reserve separators only for the three visible blocks.
+		// Empty blocks add no separators: only the gaps between real blocks cost a row.
 		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A4", "", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
+		expect(out).toEqual(["", "B1", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
 	});
 
 	it("renders user message text in emergency layout and omits OSC 133 prompt markers (issue 13835)", () => {
@@ -938,7 +944,8 @@ describe("TranscriptContainer", () => {
 
 		const rendered = transcript.renderViewport(80, 5, frame);
 		expect(rendered).toHaveLength(5);
-		const userRow = rendered[2]!;
+		// The prompt's own rows scrolled off, so it keeps one row at the top above the newest blocks.
+		const userRow = rendered[0]!;
 		expect(userRow).toContain("is there a reason we haven't tested against the real device yet?");
 		expect(userRow).not.toContain("\x1b]133;A");
 		expect(userRow).not.toContain("\x1b]133;B");
@@ -999,22 +1006,77 @@ describe("TranscriptContainer", () => {
 
 		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
 		const rows = transcript.renderViewport(80, 3, frame);
-		expect(rows[0]).toBe("2 more transcript blocks active");
-		expect(Bun.stripANSI(rows[1] ?? "").trim()).toBe("Implemented");
-		expect(rows[2]).toBe("task running");
+		// The answer scrolled off the top but keeps one representative row above the tail.
+		expect(rows.map(row => Bun.stripANSI(row).trim())).toEqual(["Implemented", "", "task running"]);
 	});
 
-	it("reserves readable tool context before giving remaining rows to assistant text", () => {
+	describe("degraded viewport trace", () => {
+		function degraded(): TranscriptContainer {
+			const transcript = new TranscriptContainer();
+			transcript.addChild(new Block(["old tool still running"], false));
+			for (let index = 0; index < 20; index++) transcript.addChild(new ToolBlock([`done ${index}`], true));
+			return transcript;
+		}
+
+		it("logs once per episode and names the oldest unfinalized block, not once per frame", () => {
+			const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+			try {
+				const transcript = degraded();
+				for (let frameIndex = 0; frameIndex < 25; frameIndex++) transcript.renderViewport(80, 6, frame);
+
+				const calls = warn.mock.calls.filter(([message]) => String(message).includes("more live blocks than rows"));
+				expect(calls).toHaveLength(1);
+				expect(calls[0]![1]).toMatchObject({
+					rows: 6,
+					active: 1,
+					oldestUnfinalized: { position: 0, state: "active" },
+				});
+			} finally {
+				warn.mockRestore();
+			}
+		});
+
+		it("stays silent when every live block fits the viewport", () => {
+			const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+			try {
+				const transcript = new TranscriptContainer();
+				transcript.addChild(new Block(["running"], false));
+				transcript.addChild(new ToolBlock(["done"], true));
+				transcript.renderViewport(80, 10, frame);
+				expect(warn.mock.calls.filter(([message]) => String(message).includes("more live blocks"))).toHaveLength(0);
+			} finally {
+				warn.mockRestore();
+			}
+		});
+	});
+
+	for (const rows of [3, 6, 12]) {
+		it(`shows the newest content in full when more blocks exist than rows (${rows} rows)`, () => {
+			const transcript = new TranscriptContainer();
+			transcript.addChild(new Block(["old tool still running"], false));
+			for (let index = 0; index < 30; index++) {
+				transcript.addChild(new ToolBlock([`done ${index} header`, `done ${index} output`], true));
+			}
+
+			const shown = transcript.renderViewport(80, rows, frame).map(row => Bun.stripANSI(row).trim());
+			// The screen is the tail of the content, like any terminal: no row is a stand-in for a block.
+			expect(shown).toHaveLength(rows);
+			expect(shown.at(-1)).toBe("done 29 output");
+			expect(shown.at(-2)).toBe("done 29 header");
+			expect(shown.filter(row => row.endsWith("output")).length).toBeGreaterThanOrEqual(Math.floor(rows / 3));
+		});
+	}
+
+	it("shows the newest tool in full and lets older prose scroll off", () => {
 		const transcript = new TranscriptContainer();
 		const assistant = new Block(["A1", "A2", "A3", "A4"], false);
 		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
 		transcript.addChild(assistant);
 		transcript.addChild(tool);
-		// One prose row, its separator, and four rows for a readable framed preview.
-		const out = transcript.renderViewport(80, 6, frame);
-		expect(out).toEqual(["A4", "", "T1", "T2", "T3", "T4"]);
-		expect(assistant.allocations.at(-1)).toBe(1);
-		expect(tool.allocations.at(-1)).toBe(4);
+		// The tool keeps every row and its framed preview stays readable; prose is never squeezed to
+		// make room, it scrolls off the top like any terminal output.
+		expect(transcript.renderViewport(80, 6, frame)).toEqual(["A4", "", "T1", "T2", "T3", "T4"]);
+		expect(transcript.renderViewport(80, 4, frame)).toEqual(["T1", "T2", "T3", "T4"]);
 	});
 
 	it("permits removing settled blocks until they are offered or committed", () => {
@@ -1520,28 +1582,35 @@ describe("TranscriptContainer viewport click spans", () => {
 		expect(transcript.getLastViewportSpans()).toEqual([]);
 	});
 
-	it("maps allocation-clipped rows to their surviving tails", () => {
+	it("maps the rows of the natural tail to the block that owns them", () => {
 		const transcript = new TranscriptContainer();
 		const first = new Block(["a1", "a2", "a3", "a4"], false);
 		const second = new Block(["b1", "b2", "b3", "b4"], false);
 		transcript.addChild(first);
 		transcript.addChild(second);
 
-		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "", "b2", "b3", "b4"]);
+		// The first block scrolled off: only the separator and the second block's rows remain,
+		// and the separator belongs to no block, so it has no click span.
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["", "b1", "b2", "b3", "b4"]);
+		expect(transcript.getLastViewportSpans()).toEqual([{ component: second, start: 1, end: 5 }]);
+
+		// With room for part of the first block, each span still points at its own block.
+		expect(transcript.renderViewport(80, 7, frame)).toEqual(["a3", "a4", "", "b1", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
-			{ component: first, start: 0, end: 1 },
-			{ component: second, start: 2, end: 5 },
+			{ component: first, start: 0, end: 2 },
+			{ component: second, start: 3, end: 7 },
 		]);
 	});
 
-	it("leaves the emergency summary row unmapped", () => {
+	it("maps every row shown under pressure to a real block, with no synthetic summary row", () => {
 		const transcript = new TranscriptContainer();
+		const last = new Block(["c1"], false);
 		transcript.addChild(new Block(["a1"], false));
 		transcript.addChild(new Block(["b1"], false));
-		transcript.addChild(new Block(["c1"], false));
+		transcript.addChild(last);
 
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["2 more transcript blocks active"]);
-		expect(transcript.getLastViewportSpans()).toEqual([]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["c1"]);
+		expect(transcript.getLastViewportSpans()).toEqual([{ component: last, start: 0, end: 1 }]);
 	});
 });
 

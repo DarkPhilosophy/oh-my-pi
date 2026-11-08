@@ -154,6 +154,14 @@ const MAX_LIVE_BLOCKS = 256;
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
 /**
+ * Rows a running tool keeps when a taller block follows it. A running Bash needs five to keep
+ * its frame, its command, the `Output · Running` state row and its footer; four drops the state
+ * row, which is what tells a running tool from a finished one.
+ */
+const ACTIVE_BLOCK_ROWS = 5;
+/** Minimum gap between degraded-viewport log lines, so a flapping layout cannot flood the log. */
+const DEGRADED_VIEWPORT_LOG_INTERVAL_MS = 60_000;
+/**
  * Wall-clock budget for composing one retirement batch. A resumed session
  * hands the container its whole ledger at once, and rendering all of it in the
  * frame that first paints it blocks the loop for as long as that render takes
@@ -283,6 +291,9 @@ export class TranscriptContainer extends Container {
 	// retirement: everything behind it stays live and degrades to one-line
 	// allocations. Logs once per pinned episode after a grace period.
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
+	// Forensic trail for the degraded one-row-per-block layout: logged when the situation
+	// changes, never per frame, and at most once a minute.
+	#degradedViewport: { signature: string; at: number } | undefined;
 	/** Block spans of the last `renderViewport` output, for click hit-testing. */
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
 	/**
@@ -681,14 +692,27 @@ export class TranscriptContainer extends Container {
 		shown.reverse();
 		blocks.reverse();
 		measuredImages.reverse();
+		// The bounded tail walk may stop before a still-running tool. Carry
+		// its live suffix separately; do not render the settled backlog.
+		for (let cursor = unrendered - 1; cursor >= 0; cursor--) {
+			const candidate = live[cursor]!;
+			if (candidate.entry.state !== "active" || !isToolActivityComponent(candidate.entry.component)) continue;
+			const block = this.#liveBlock(candidate.entry, candidate.index, width);
+			if (block.rows.length === 0) continue;
+			shown.unshift(candidate);
+			blocks.unshift(block.rows);
+			measuredImages.unshift(block.images);
+			break;
+		}
 		if (shown.length === 0) {
 			this.#lastViewportSpans = [];
 			return EMPTY_ROWS;
 		}
+		// The viewport is the tail of the live content, like any terminal: what does not fit
+		// scrolls off the top. Blocks are never squeezed to a row each; a block that does not
+		// fit whole shows its newest rows.
 		if (!naturalTail && shown.length > capacity) {
-			// Blocks the walk never reached are still transcript state: the
-			// emergency layout consults them only where it must.
-			return this.#renderEmergency(shown, live.slice(0, unrendered), width, capacity, frame);
+			this.#noteDegradedViewport(live, shown.length, capacity, firstUnsettled);
 		}
 		// The walk ran newest-first, so the images it measured claimed no
 		// display slot (see #measure). Render those blocks again oldest-first:
@@ -701,91 +725,140 @@ export class TranscriptContainer extends Container {
 				this.#projectedEmittedRowCount(entry, index, width),
 			);
 		}
-		let total = 0;
-		for (const block of blocks) total += block.length + (total > 0 ? 1 : 0);
-		if (total <= capacity || naturalTail) {
-			const output: string[] = [];
-			const owners: (Component | undefined)[] = [];
-			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
-				if (output.length > 0) {
-					output.push("");
-					owners.push(undefined);
-				}
-				const component = shown[blockIndex]!.entry.component;
-				for (const line of blocks[blockIndex]!) {
-					output.push(line);
-					owners.push(component);
-				}
-			}
-			const drop = Math.max(0, output.length - capacity);
-			this.#commitViewportSpans(owners.slice(drop), output.length - drop);
-			return drop > 0 ? output.slice(drop) : output;
-		}
-
-		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
-		const allocation: number[] = new Array(shown.length).fill(1);
-		const separatorRows = capacity >= shown.length * 2 - 1 ? shown.length - 1 : 0;
-		let surplus = capacity - shown.length - separatorRows;
-		// Reserve a readable tool preview before sharing surplus with prose:
-		// two borders, a truncation indicator, and at least one content row.
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (!isToolActivityComponent(shown[index]!.entry.component)) continue;
-			const extra = Math.min(blocks[index]!.length, 4) - 1;
-			if (extra > surplus) continue;
-			allocation[index] += extra;
-			surplus -= extra;
-		}
-		// Surplus rows favor ordinary transcript blocks over dynamic tool-activity
-		// cards (newest-first within each class), so a growing tool card collapses to
-		// its compact form instead of clipping already-visible assistant text (#9718).
-		const order: number[] = [];
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (!isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
-		}
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
-		}
-		for (const index of order) {
-			if (surplus <= 0) break;
-			const extra = Math.min(Math.max(0, blocks[index]!.length - allocation[index]!), surplus);
-			allocation[index] += extra;
-			surplus -= extra;
-		}
-		const output: string[] = [];
-		const owners: (Component | undefined)[] = [];
-		for (let index = 0; index < shown.length; index++) {
-			if (index > 0 && separatorRows > 0) {
-				output.push("");
-				owners.push(undefined);
-			}
-			const candidate = shown[index]!;
-			const allocated = allocation[index]!;
-			this.#setAllocation(candidate.entry.component, allocated, frame);
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
-			);
+		// A tool that is still running stays visible even when a taller block follows it: it keeps
+		// a small readable share (frame, summary, newest rows) instead of scrolling off. Finished
+		// blocks are never squeezed; they keep every row and scroll off the top when they do not
+		// fit. The newest block takes whatever rows the active ones leave.
+		const squeeze = (blockIndex: number, rows: number): void => {
+			const { entry, index } = shown[blockIndex]!;
+			const emitted = this.#projectedEmittedRowCount(entry, index, width);
+			// Published rows no longer consume viewport space, but the renderer's
+			// allocation covers the whole card. Budget its live suffix separately.
+			this.#setAllocation(entry.component, rows + emitted, frame);
+			const rendered = this.#renderEntry(entry, width).slice(emitted);
 			const compact =
-				rendered.length > allocated && isToolActivityComponent(candidate.entry.component)
-					? (candidate.entry.component as Component & TranscriptPresentationTarget).renderTranscriptCompact?.(
+				rendered.length > rows && isToolActivityComponent(entry.component)
+					? (entry.component as Component & TranscriptPresentationTarget).renderTranscriptCompact?.(
 							width,
-							allocated,
+							rows,
 							rendered,
 						)
 					: undefined;
-			const visible =
-				compact !== undefined
-					? compact
-					: rendered.length <= allocated
-						? rendered
-						: rendered.slice(rendered.length - allocated);
-			for (const line of visible) {
+			blocks[blockIndex] = compact ?? (rendered.length <= rows ? rendered : rendered.slice(rendered.length - rows));
+		};
+		const newest = shown.length - 1;
+		let firstRunning = -1;
+		for (let blockIndex = 0; blockIndex < newest; blockIndex++) {
+			const neighbour = shown[blockIndex]!.entry;
+			if (neighbour.state !== "active" || !isToolActivityComponent(neighbour.component)) continue;
+			if (blocks[blockIndex]!.length > ACTIVE_BLOCK_ROWS) squeeze(blockIndex, ACTIVE_BLOCK_ROWS);
+			if (firstRunning < 0) firstRunning = blockIndex;
+		}
+		if (newest >= 0) {
+			// Everything from the first running tool up to the newest block stays on screen with it,
+			// so the newest block gets what is left after that real height and its separators.
+			let above = 0;
+			if (firstRunning >= 0) {
+				for (let blockIndex = firstRunning; blockIndex < newest; blockIndex++) {
+					if (blocks[blockIndex]!.length > 0) above += blocks[blockIndex]!.length + 1;
+				}
+			}
+			// Content behind unfinished append-only prose must leave its live tail
+			// visible. Its final partial row cannot reach scrollback yet, even when
+			// the following tool has finished or other tools are still running.
+			if (
+				shown.some(
+					({ entry }, index) =>
+						index < (firstRunning >= 0 ? firstRunning : newest) &&
+						entry.state === "active" &&
+						entry.mode === "appendOnly" &&
+						!isToolActivityComponent(entry.component) &&
+						blocks[index]!.length > 0,
+				)
+			) {
+				above += 2;
+			}
+			const room = Math.max(1, capacity - above);
+			if (blocks[newest]!.length > room) squeeze(newest, room);
+		}
+		const output: string[] = [];
+		const owners: (Component | undefined)[] = [];
+		for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+			if (output.length > 0) {
+				output.push("");
+				owners.push(undefined);
+			}
+			const component = shown[blockIndex]!.entry.component;
+			for (const line of blocks[blockIndex]!) {
 				output.push(line);
-				owners.push(candidate.entry.component);
+				owners.push(component);
 			}
 		}
 		const drop = Math.max(0, output.length - capacity);
+		if (drop > 0 && capacity > ACTIVE_BLOCK_ROWS + 1) {
+			for (let index = shown.length - 2; index >= 0; index--) {
+				const { entry } = shown[index]!;
+				if (entry.state !== "active" || !isToolActivityComponent(entry.component)) continue;
+				const first = owners.indexOf(entry.component);
+				if (first < 0 || first >= drop) continue;
+				const pinned = blocks[index]!;
+				const room = capacity - pinned.length - 1;
+				if (room <= 0) continue;
+				const tail = output
+					.map((row, index) => ({ row, owner: owners[index] }))
+					.filter(({ owner }) => owner !== entry.component)
+					.slice(-room);
+				const visibleOutput = [...pinned, "", ...tail.map(({ row }) => row)];
+				const visibleOwners = [...pinned.map(() => entry.component), undefined, ...tail.map(({ owner }) => owner)];
+				this.#commitViewportSpans(visibleOwners, visibleOutput.length);
+				return visibleOutput;
+			}
+		}
+		// A prompt or answer that scrolled off the top keeps one row above the tail, so the
+		// reader still knows what the agent is working on (#13835). Needs a second row to give.
+		if (drop > 0 && capacity > 1) {
+			const visible = new Set<Component>();
+			for (let row = drop; row < output.length; row++) {
+				const owner = owners[row];
+				// A block whose visible rows are all blank padding has effectively scrolled off.
+				if (owner !== undefined && !isPlainBlank(Bun.stripANSI(output[row]!))) visible.add(owner);
+			}
+			const lead = this.#scrolledOffRow(live, shown, owners.slice(0, drop), visible, width);
+			if (lead !== undefined) {
+				const tail = capacity - 1;
+				const visibleOutput = [lead.row, ...output.slice(output.length - tail)];
+				const visibleOwners = [lead.owner, ...owners.slice(owners.length - tail)];
+				this.#commitViewportSpans(visibleOwners, visibleOutput.length);
+				return visibleOutput;
+			}
+		}
 		this.#commitViewportSpans(owners.slice(drop), output.length - drop);
 		return drop > 0 ? output.slice(drop) : output;
+	}
+
+	/**
+	 * The newest settled block that lost every visible row and offers a representative row.
+	 * That covers blocks cut off the top of the collected window and blocks never collected.
+	 */
+	#scrolledOffRow(
+		live: readonly { entry: TranscriptEntry; index: number }[],
+		shown: readonly { entry: TranscriptEntry; index: number }[],
+		cutOwners: readonly (Component | undefined)[],
+		visible: ReadonlySet<Component>,
+		width: number,
+	): { row: string; owner: Component } | undefined {
+		const firstShown = shown[0]?.index ?? live.length;
+		const cut = new Set(cutOwners.filter((owner): owner is Component => owner !== undefined));
+		for (let cursor = live.length - 1; cursor >= 0; cursor--) {
+			const candidate = live[cursor]!;
+			const component = candidate.entry.component;
+			if (visible.has(component)) continue;
+			if (candidate.index >= firstShown && !cut.has(component)) continue;
+			if (candidate.entry.state !== "settled") continue;
+			const row = (component as Component & FinalizableBlock).renderTranscriptBlockEmergencyRow?.(width);
+			if (row !== undefined) return { row, owner: component };
+		}
+		return undefined;
 	}
 
 	/** Offers explicitly ready parts, or the finalized prefix required by actual capacity. */
@@ -1405,6 +1478,45 @@ export class TranscriptContainer extends Container {
 	}
 
 	/**
+	 * Leave a trace when the live region holds more blocks than the viewport has rows,
+	 * which collapses tool cards to their header. The log names the oldest block that is
+	 * not finalized, so the next occurrence shows whether a stuck block or only a short
+	 * viewport caused it. Logged when the situation changes and at most once a minute.
+	 */
+	#noteDegradedViewport(
+		live: readonly { entry: TranscriptEntry; index: number }[],
+		shown: number,
+		capacity: number,
+		firstUnsettled: number,
+	): void {
+		const oldest = firstUnsettled >= 0 ? live[firstUnsettled] : undefined;
+		const signature = `${live.length}:${oldest?.index ?? -1}:${capacity}`;
+		const now = Date.now();
+		const last = this.#degradedViewport;
+		if (last !== undefined && (last.signature === signature || now - last.at < DEGRADED_VIEWPORT_LOG_INTERVAL_MS)) {
+			return;
+		}
+		this.#degradedViewport = { signature, at: now };
+		const active = live.reduce((count, { entry }) => count + (entry.state === "active" ? 1 : 0), 0);
+		logger.warn("Transcript viewport has more live blocks than rows", {
+			liveBlocks: live.length,
+			collected: shown,
+			rows: capacity,
+			active,
+			oldestUnfinalized: oldest
+				? {
+						position: firstUnsettled,
+						component: oldest.entry.component.constructor.name,
+						state: oldest.entry.state,
+						mode: oldest.entry.mode,
+						rows: renderForScrollback(() => trimBlankEdges(oldest.entry.component.render(120)))
+							.slice(0, 2)
+							.map(row => Bun.stripANSI(row).trim()),
+					}
+				: undefined,
+		});
+	}
+	/**
 	 * Record that pressure retirement is blocked behind a not-yet-settled
 	 * frontier block, and log its identity once the episode outlives the grace
 	 * period. A block that never finalizes (a dropped terminal event) pins the
@@ -1421,11 +1533,16 @@ export class TranscriptContainer extends Container {
 		}
 		if (this.#pinnedFrontier.logged || now - this.#pinnedFrontier.since < PINNED_FRONTIER_WARN_MS) return;
 		this.#pinnedFrontier.logged = true;
+		// Observe only: a block cannot be forced terminal, because a tool that is merely
+		// quiet may still stream output that would then be lost. The first rows name it.
 		logger.warn("Transcript retirement pinned by unfinalized frontier block", {
 			component: entry.component.constructor.name,
 			state: entry.state,
 			mode: entry.mode,
 			liveBlocks: this.#liveCount(),
+			rows: renderForScrollback(() => trimBlankEdges(entry.component.render(120)))
+				.slice(0, 2)
+				.map(row => Bun.stripANSI(row).trim()),
 		});
 	}
 
@@ -1544,124 +1661,6 @@ export class TranscriptContainer extends Container {
 			head?.split !== undefined ||
 			(head?.mode === "appendOnly" && head.emitted > 0);
 		this.#replayRequested = false;
-	}
-
-	/**
-	 * One-row-per-block fallback for a live region that cannot fit the viewport.
-	 * `behind` holds the older live blocks `renderViewport` deliberately left
-	 * unrendered. Only its active blocks (few) and the newest settled block
-	 * offering an emergency row are rendered, so the summary count and the
-	 * surviving emergency row match a full walk without rendering the ledger.
-	 */
-	#renderEmergency(
-		shown: readonly { entry: TranscriptEntry; index: number }[],
-		behind: readonly { entry: TranscriptEntry; index: number }[],
-		width: number,
-		rows: number,
-		frame: AnimationFrame,
-	): readonly string[] {
-		let hiddenBelow = 0;
-		for (const candidate of behind) {
-			if (candidate.entry.state !== "active") continue;
-			if (this.#liveBlock(candidate.entry, candidate.index, width).rows.length > 0) hiddenBelow++;
-		}
-		let behindEmergency: { candidate: { entry: TranscriptEntry; index: number }; row: string } | null | undefined;
-		const findBehindEmergency = () => {
-			if (behindEmergency !== undefined) return behindEmergency;
-			behindEmergency = null;
-			for (let index = behind.length - 1; index >= 0; index--) {
-				const candidate = behind[index]!;
-				if (candidate.entry.state !== "settled") continue;
-				const block = candidate.entry.component as Component & FinalizableBlock;
-				if (block.renderTranscriptBlockEmergencyRow === undefined) continue;
-				if (this.#liveBlock(candidate.entry, candidate.index, width).rows.length === 0) continue;
-				const row = block.renderTranscriptBlockEmergencyRow(width);
-				if (row === undefined) continue;
-				behindEmergency = { candidate, row };
-				break;
-			}
-			return behindEmergency;
-		};
-		let visibleRows = rows;
-		let visible: { entry: TranscriptEntry; index: number }[] = [];
-		let emergencyCandidate: { entry: TranscriptEntry; index: number } | undefined;
-		let emergencyRow: string | undefined;
-		let hiddenActive = 0;
-		for (let attempt = 0; attempt < 2; attempt++) {
-			visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
-			emergencyCandidate = undefined;
-			emergencyRow = undefined;
-			const visibleStart = shown.length - visibleRows;
-			for (let index = visibleStart - 1; index >= 0; index--) {
-				const candidate = shown[index]!;
-				const block = candidate.entry.component as Component & FinalizableBlock;
-				const row =
-					candidate.entry.state === "settled" ? block.renderTranscriptBlockEmergencyRow?.(width) : undefined;
-				if (row === undefined) continue;
-				emergencyCandidate = candidate;
-				emergencyRow = row;
-				visible = [candidate, ...visible.slice(1)];
-				break;
-			}
-			if (emergencyCandidate === undefined) {
-				const found = findBehindEmergency();
-				if (found !== null) {
-					emergencyCandidate = found.candidate;
-					emergencyRow = found.row;
-					visible = [found.candidate, ...visible.slice(1)];
-				}
-			}
-
-			let activeTotal = hiddenBelow;
-			for (const candidate of shown) {
-				if (candidate.entry.state === "active") activeTotal++;
-			}
-			hiddenActive = activeTotal;
-			for (const candidate of visible) {
-				if (candidate.entry.state === "active") hiddenActive--;
-			}
-			// The summary row itself represents the newest active block when no
-			// active row fits beside it; report only the additional backlog.
-			if (hiddenActive === activeTotal && hiddenActive > 0) hiddenActive--;
-			if (attempt === 0 && hiddenActive > 0) {
-				visibleRows = Math.max(0, rows - 1);
-				continue;
-			}
-			break;
-		}
-
-		const output = hiddenActive > 0 ? [`${hiddenActive} more transcript blocks active`] : [];
-		const owners: (Component | undefined)[] = hiddenActive > 0 ? [undefined] : [];
-		for (const candidate of visible) {
-			if (candidate === emergencyCandidate) {
-				output.push(emergencyRow ?? "");
-				owners.push(candidate.entry.component);
-				continue;
-			}
-			this.#setAllocation(candidate.entry.component, 1, frame);
-			const emergency = (
-				candidate.entry.component as Component & FinalizableBlock
-			).renderTranscriptBlockEmergencyRow?.(width);
-			if (emergency !== undefined) {
-				output.push(emergency);
-				owners.push(candidate.entry.component);
-				continue;
-			}
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
-			);
-			const compact =
-				rendered.length > 1
-					? (candidate.entry.component as Component & TranscriptPresentationTarget).renderTranscriptCompact?.(
-							width,
-						)
-					: undefined;
-			output.push(compact?.[0] ?? rendered[0] ?? "");
-			owners.push(candidate.entry.component);
-		}
-		const visibleOutput = output.slice(0, rows);
-		this.#commitViewportSpans(owners, visibleOutput.length);
-		return visibleOutput;
 	}
 
 	#setAllocation(component: Component, rows: number, frame: AnimationFrame): void {

@@ -481,6 +481,8 @@ export interface ToolSession {
 	getTodoPhases?: () => TodoPhase[];
 	/** Replace cached todo phases for this session. */
 	setTodoPhases?: (phases: TodoPhase[]) => void;
+	/** Notify the owner after a non-empty experimental notebook save has flushed. */
+	onContextNotesSaved?: (entryId: string) => void;
 	/**
 	 * Record todo phases on the session branch. Direct `todo` calls persist via
 	 * their toolResult entry; callers that produce none (the eval bridge) use this
