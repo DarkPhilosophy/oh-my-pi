@@ -183,7 +183,7 @@ describe("subagent HUD lines", () => {
 			];
 			cfgTaskShowResolvedModelBadge.override(Settings.instance, false);
 			const disabled = render(sessions);
-			expect(disabled).toContain(`${theme.status.done} HiddenBadge: Inspect rendering`);
+			expect(disabled).toContain(`${theme.status.running} HiddenBadge: Inspect rendering`);
 			expect(disabled).not.toContain("openai/gpt-5");
 			expect(disabled).not.toContain(theme.icon.advisor);
 
@@ -263,7 +263,7 @@ describe("subagent HUD lines", () => {
 					progress: makeProgress({ id: "LegacyWorker", resolvedModel: "custom/model:high" }),
 				}),
 			]);
-			expect(out).toContain(`${theme.status.done} custom/model:high LegacyWorker`);
+			expect(out).toContain(`${theme.status.running} custom/model:high LegacyWorker`);
 			expect(out).not.toContain(theme.thinking.high.split(" ")[0]);
 		});
 	});
@@ -786,6 +786,10 @@ describe("subagent HUD lines", () => {
 		expect(out).toContain("2 more — expand");
 	});
 	describe("live preview", () => {
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
 		it("shows the current tool call only when enabled", () => {
 			const sessions = [
 				makeSession({
@@ -888,6 +892,8 @@ describe("subagent HUD lines", () => {
 		});
 
 		it("shortens a path argument by its key but keeps a literal search pattern as written", () => {
+			// A fixed home: the detail is capped at 40 columns, which would cut the literal pattern under a long HOME.
+			vi.spyOn(os, "homedir").mockReturnValue(path.join(path.sep, "home", "tester"));
 			const homeFile = `${os.homedir()}/.ssh/config`;
 			const preview = (key: string) =>
 				render(
@@ -1203,7 +1209,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 			settings: Settings.isolated({ "startup.quiet": true }),
 			modelRegistry,
 		});
-		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
+		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, eventBus);
 	});
 
 	afterEach(async () => {

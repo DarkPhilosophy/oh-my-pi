@@ -1,9 +1,13 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { formatDoubleTap } from "@oh-my-pi/pi-tui/app-keybindings";
-import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
-import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
-import { AgentRegistry, MAIN_AGENT_ID, type AgentRef, type RegistryEvent } from "../../registry/agent-registry";
-import type { AgentSession } from "../../session/agent-session";
+import { type AgentLifecycleApi, AgentLifecycleManager } from "../../registry/agent-lifecycle";
+import {
+	AgentRegistry,
+	type AgentRegistryApi,
+	MAIN_AGENT_ID,
+	type AgentRef,
+	type RegistryEvent,
+} from "../../registry/agent-registry";
+import { type AgentViewSession, isAgentViewSession } from "../../session/agent-session-handle";
 import type { InteractiveModeContext } from "../types";
 
 /**
@@ -41,8 +45,8 @@ export function pickRecentFocusableAgentId(refs: readonly AgentRef[], currentId?
 export class SessionFocusController {
 	#focusedAgentId: string | undefined;
 	/** Session currently attached while focused; undefined when unfocused. */
-	#attachedSession: AgentSession | undefined;
-	#focusAttachment: Promise<boolean> | undefined;
+	#attachedSession: AgentViewSession | undefined;
+	#focusAttachment: Promise<void> | undefined;
 	#registryUnsubscribe: (() => void) | undefined;
 	#attachGeneration = 0;
 	/** Monotonic focus-request id: a request that resolves after a newer one drops instead of clobbering the view. */
@@ -50,8 +54,8 @@ export class SessionFocusController {
 
 	constructor(
 		private ctx: InteractiveModeContext,
-		private registry: AgentRegistry = AgentRegistry.global(),
-		private lifecycle: () => AgentLifecycleManager = () => AgentLifecycleManager.global(),
+		private registry: AgentRegistryApi = AgentRegistry.global(),
+		private lifecycle: () => AgentLifecycleApi = () => AgentLifecycleManager.global(),
 	) {}
 
 	get focusedAgentId(): string | undefined {
@@ -59,7 +63,7 @@ export class SessionFocusController {
 	}
 
 	/** Focused live session, undefined when unfocused. */
-	get target(): AgentSession | undefined {
+	get target(): AgentViewSession | undefined {
 		return this.#attachedSession;
 	}
 	/** Focus the main view on an agent's live session. Throws an Error with a user-displayable message. */
@@ -67,9 +71,15 @@ export class SessionFocusController {
 		if (this.ctx.collabGuest) throw new Error("Viewing agents is unavailable in a collab session.");
 		if (id === MAIN_AGENT_ID) return this.unfocus();
 		const request = ++this.#focusRequestSeq;
-		let session: AgentSession;
+		let session: AgentViewSession;
 		try {
-			session = await this.lifecycle().ensureLive(id);
+			const live = await this.lifecycle().ensureLive(id);
+			// Main-thread handles are local sessions or mirrors of worker-homed ones, both viewable; only a
+			// worker's peer handle (a session homed on another thread, seen from a worker) is not.
+			if (!isAgentViewSession(live)) {
+				throw new Error(`Agent ${id} is homed on another thread and can only be viewed from the main thread.`);
+			}
+			session = live;
 		} catch (error) {
 			// A newer request owns the view now: a stale revive failure must
 			// not surface after the winner already focused.
@@ -93,20 +103,13 @@ export class SessionFocusController {
 			attachment = this.#attach(session);
 			this.#focusAttachment = attachment;
 		}
-		let attached = false;
 		try {
-			attached = await attachment;
+			await attachment;
 		} catch (error) {
 			if (request !== this.#focusRequestSeq) return;
 			throw error;
 		} finally {
 			if (this.#focusAttachment === attachment) this.#focusAttachment = undefined;
-		}
-		if (request !== this.#focusRequestSeq) return;
-		if (attached && this.#focusedAgentId === id && this.#attachedSession === session) {
-			this.ctx.showStatus(
-				`Viewing agent ${id} — ${appKey(this.ctx.keybindings, "app.interrupt")} returns to main, ${formatDoubleTap("left")} hops to parent`,
-			);
 		}
 	}
 
@@ -138,8 +141,7 @@ export class SessionFocusController {
 		if (!this.#focusedAgentId) return;
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
-		const attached = await this.#attach(this.ctx.session);
-		if (attached && this.#focusedAgentId === undefined) this.ctx.showStatus("Returned to main session");
+		await this.#attach(this.ctx.session);
 	}
 
 	dispose(): void {
@@ -171,7 +173,7 @@ export class SessionFocusController {
 	}
 
 	/** Retarget core, both directions: swap subscription, transcript, and status line onto `target`. */
-	async #attach(target: AgentSession): Promise<boolean> {
+	async #attach(target: AgentViewSession): Promise<void> {
 		const generation = ++this.#attachGeneration;
 		this.ctx.syncIdleMaintenanceView(target);
 		try {
@@ -187,11 +189,7 @@ export class SessionFocusController {
 					await this.ctx.eventController.handleEvent({ type: "message_start", message });
 					if (generation !== this.#attachGeneration) return;
 				}
-				await this.ctx.eventController.handleEvent({
-					type: "message_update",
-					message,
-					assistantMessageEvent: { type: "start", partial: message },
-				});
+				await this.ctx.eventController.syncAssistantMessage(message);
 				if (generation === this.#attachGeneration) this.ctx.eventController.restorePendingToolResults();
 			};
 			this.ctx.unsubscribe = target.subscribe(async event => {
@@ -206,7 +204,10 @@ export class SessionFocusController {
 					if (event.type === "message_end") await restoreAssistant(event.message);
 					else {
 						assistantStreamSynced = true;
-						await this.ctx.eventController.handleEvent({ type: "message_start", message: event.message });
+						// A replay `start` opens the message itself via the restart path.
+						if (event.assistantMessageEvent?.type !== "start") {
+							await this.ctx.eventController.handleEvent({ type: "message_start", message: event.message });
+						}
 					}
 					if (generation !== this.#attachGeneration) return;
 				}
@@ -215,31 +216,30 @@ export class SessionFocusController {
 			});
 
 			await target.settleInFlightMessagePersistence();
-			if (generation !== this.#attachGeneration) return false;
+			if (generation !== this.#attachGeneration) return;
 			this.ctx.statusLine.setSession(target, this.#focusedAgentId);
 			// Reset run bookkeeping before replay populates pending tool handles.
 			if (target.isStreaming) await this.ctx.eventController.handleEvent({ type: "agent_start" });
 			else {
 				this.ctx.setRunStatus({ state: "idle" });
 			}
-			if (generation !== this.#attachGeneration) return false;
+			if (generation !== this.#attachGeneration) return;
 			await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-			if (generation !== this.#attachGeneration) return false;
+			if (generation !== this.#attachGeneration) return;
 			this.ctx.eventController.restorePendingToolResults();
 
 			const live = target.agent.state.streamMessage;
 			if (live?.role === "assistant") await restoreAssistant(live);
-			if (generation !== this.#attachGeneration) return false;
+			if (generation !== this.#attachGeneration) return;
 			for (const event of target.activeToolExecutionUpdates()) {
 				await this.ctx.eventController.handleEvent(event);
-				if (generation !== this.#attachGeneration) return false;
+				if (generation !== this.#attachGeneration) return;
 			}
 			await this.ctx.reloadTodos(target);
-			if (generation !== this.#attachGeneration) return false;
+			if (generation !== this.#attachGeneration) return;
 			this.ctx.updatePendingMessagesDisplay();
 			this.ctx.updateEditorBorderColor();
 			this.ctx.ui.requestRender();
-			return true;
 		} catch (error) {
 			if (generation === this.#attachGeneration) {
 				this.#focusedAgentId = undefined;

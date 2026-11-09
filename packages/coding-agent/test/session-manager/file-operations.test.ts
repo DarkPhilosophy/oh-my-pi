@@ -468,11 +468,11 @@ describe("SessionManager legacy session migration persistence", () => {
 		const session = SessionManager.create(tempDir, tempDir);
 		await session.ensureOnDisk();
 		expect(await SessionManager.list(tempDir, tempDir)).toHaveLength(1);
-		expect(await SessionManager.listForPicker(tempDir, tempDir)).toEqual([]);
+		expect((await SessionManager.listForPicker(tempDir, tempDir)).sessions).toEqual([]);
 
 		session.appendMessage({ role: "user", content: "visible conversation", timestamp: 1 });
 		await session.flush();
-		expect(await SessionManager.listForPicker(tempDir, tempDir)).toHaveLength(1);
+		expect((await SessionManager.listForPicker(tempDir, tempDir)).sessions).toHaveLength(1);
 		await session.close();
 	});
 });

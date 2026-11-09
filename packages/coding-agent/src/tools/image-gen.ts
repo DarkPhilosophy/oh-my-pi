@@ -37,6 +37,7 @@ import {
 	ptree,
 	readSseJson,
 	Snowflake,
+	truncate,
 	USER_AGENT,
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
@@ -64,6 +65,8 @@ const MAX_IMAGE_SIZE = 35 * 1024 * 1024;
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_IMAGE_OUTPUT_FORMAT = "webp";
 const OPENAI_IMAGE_MIME_TYPE = "image/webp";
+/** 单条失败原因的字符上限：网关 HTML 错误页等原始响应体不应整段进入模型与 TUI。 */
+const MAX_FAILURE_REASON_CHARS = 300;
 
 const DEFAULT_ANTIGRAVITY_ENDPOINT_PROD = "https://daily-cloudcode-pa.googleapis.com";
 const DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX = "https://daily-cloudcode-pa.sandbox.googleapis.com";
@@ -1119,7 +1122,6 @@ function buildOpenAIImageHeaders(
 		}
 		// Same region gate as the chat transport; the token carries the value.
 		applyCodexResidencyHeader(headers, apiKey);
-		headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 		headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
 		headers.set("User-Agent", USER_AGENT);
 		if (sessionId) {
@@ -1504,10 +1506,19 @@ async function executeCatalogImageGeneration(
 		}
 
 		const attempted = candidates.map(model => `${model.provider}/${model.id}`).join(", ");
+		// Flatten and cap each provider error; drop its trailing period so the joined text never reads `..`.
+		const reasons =
+			failures.length > 0
+				? ` Failures: ${failures
+						.map(error =>
+							truncate(error.message.replace(/\s+/g, " ").trim(), MAX_FAILURE_REASON_CHARS).replace(/\.$/, ""),
+						)
+						.join("; ")}.`
+				: "";
 		const suffix = skipped.length > 0 ? ` Skipped: ${skipped.join(", ")}.` : "";
 		throw new AggregateError(
 			failures,
-			`Image generation exhausted the resolved image chain${attempted ? `: ${attempted}` : "."}${suffix}`,
+			`Image generation exhausted the resolved image chain${attempted ? `: ${attempted}` : ""}.${reasons}${suffix}`,
 		);
 	});
 }
@@ -2096,11 +2107,25 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 
 			throw new AggregateError(
 				failures.map(failure => failure.error),
-				`Image generation failed for all credentialed providers: ${failures.map(failure => failure.provider).join(", ")}`,
+				`Image generation failed for all credentialed providers: ${failures.map(failure => failure.provider).join(", ")}.${formatImageFailureReasons(failures)}`,
 			);
 		});
 	},
 };
+
+/**
+ * Each provider's failure, whitespace-flattened and capped: a gateway HTML error page
+ * must not reach the model or the TUI whole. A trailing period is dropped so the joined
+ * list ends with exactly one.
+ */
+function formatImageFailureReasons(failures: ReadonlyArray<{ provider: ImageProvider; error: Error }>): string {
+	if (failures.length === 0) return "";
+	const reasons = failures.map(
+		({ provider, error }) =>
+			`${provider}: ${truncate(error.message.replace(/\s+/g, " ").trim(), MAX_FAILURE_REASON_CHARS).replace(/\.$/, "")}`,
+	);
+	return ` Failures: ${reasons.join("; ")}.`;
+}
 
 export async function getImageGenTools(
 	_modelRegistry?: ModelRegistry,

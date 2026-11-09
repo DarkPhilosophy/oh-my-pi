@@ -1,6 +1,7 @@
 import { type PauseWorkStatus, runPauseScreen } from "@oh-my-pi/pi-tui/overlays/pause-screen";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
+import type { AgentSessionHandle } from "../session/agent-session-handle";
 import type { RenderTestOptions } from "../session/render-test";
 import { clearApprovalGrants } from "../tools/approval-cache";
 import { clearSubmittedText } from "./helpers/draft";
@@ -38,7 +39,7 @@ function parseRenderTestArgs(args: string): RenderTestOptions {
 }
 
 /** Advisors with review work they can still run (not parked, yielded, or quota-paused). */
-function advisorUnsettledCount(session: AgentSession): number {
+function advisorUnsettledCount(session: AgentSessionHandle): number {
 	return session
 		.getAdvisorStatusOverview()
 		.advisors.filter(advisor => advisor.backlog > 0 && !advisor.isPaused && !advisor.yielded).length;

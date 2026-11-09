@@ -73,7 +73,7 @@ describe("InteractiveMode LSP startup events", () => {
 				fileTypes: [".rs"],
 			},
 		];
-		mode = new InteractiveMode(session, "test", undefined, () => {}, lspServers, undefined, eventBus);
+		mode = new InteractiveMode(session, "test", () => {}, lspServers, undefined, eventBus);
 		// This test exercises the LSP startup banner, not git branch watching.
 		// Starting a real fs.watch on the repo HEAD in a parallel Bun worker is
 		// enough to trigger a Bun SIGTRAP in unrelated workers during the
@@ -161,7 +161,7 @@ describe("InteractiveMode LSP startup events", () => {
 		});
 		const output: string[] = [];
 		terminal.setOutput(data => output.push(data));
-		mode = new InteractiveMode(session, "test", undefined, () => {}, lspServers, undefined, eventBus, {
+		mode = new InteractiveMode(session, "test", () => {}, lspServers, undefined, eventBus, {
 			terminal,
 			onDetach: () => {},
 		});
@@ -190,7 +190,7 @@ describe("InteractiveMode LSP startup events", () => {
 		const output: string[] = [];
 		terminal.setOutput(data => output.push(data));
 		const detachReasons: string[] = [];
-		mode = new InteractiveMode(session, "test", undefined, () => {}, lspServers, undefined, eventBus, {
+		mode = new InteractiveMode(session, "test", () => {}, lspServers, undefined, eventBus, {
 			terminal,
 			onDetach: reason => detachReasons.push(reason),
 		});

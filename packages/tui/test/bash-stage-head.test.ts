@@ -1,5 +1,6 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { TUI } from "@oh-my-pi/pi-tui";
+import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -16,7 +17,14 @@ beforeAll(async () => {
 	await initTheme();
 });
 
+// Untraced fixtures: shell visualization draws a pending script preview that a
+// traceless result never has; real bash results carry the trace.
+beforeEach(() => {
+	setChatTranscriptDisplayPreferences({ shellVisualization: false });
+});
+
 afterEach(() => {
+	setChatTranscriptDisplayPreferences({ shellVisualization: true });
 	for (const card of cards) card.stopAnimation();
 	cards.length = 0;
 });

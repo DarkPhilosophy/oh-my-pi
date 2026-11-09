@@ -9,7 +9,7 @@ import { createAgentSessionRuntime } from "../src/daemon/session-runtime";
 import type { HostedTerminalDescriptor } from "../src/daemon/terminal-bridge";
 import * as interactiveModeModule from "../src/modes/interactive-mode";
 import * as themeModule from "@oh-my-pi/pi-tui/theme";
-import { AgentRegistry } from "../src/registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi } from "../src/registry/agent-registry";
 import type { CreateAgentSessionResult } from "../src/sdk";
 import {
 	type AgentSession,
@@ -215,7 +215,7 @@ describe("daemon session runtime", () => {
 		}
 	});
 	test("isolates concurrent runtime registries and re-enters each command scope", async () => {
-		const registries: AgentRegistry[] = [];
+		const registries: AgentRegistryApi[] = [];
 		const createRuntime = (sessionId: string) =>
 			createAgentSessionRuntime({
 				cwd: process.cwd(),
@@ -536,7 +536,7 @@ describe("daemon session runtime", () => {
 		const modeCtor = vi
 			.spyOn(interactiveModeModule as unknown as ModeFactory, "InteractiveMode")
 			.mockImplementation(function (this: unknown, ...args: unknown[]) {
-				hostedCwdChange = (args[7] as { onCwdChange?: (cwd: string) => void } | undefined)?.onCwdChange;
+				hostedCwdChange = (args[6] as { onCwdChange?: (cwd: string) => void } | undefined)?.onCwdChange;
 				return makeFakeMode() as unknown as interactiveModeModule.InteractiveMode;
 			});
 		const runtime = await createAgentSessionRuntime({

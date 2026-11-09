@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import localDoc from "../prompts/internal-urls/local.md" with { type: "text" };
-import { AgentRegistry } from "../registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi } from "../registry/agent-registry";
 import {
 	buildDirectoryResource,
 	containedRealPath,
@@ -473,7 +473,7 @@ export class LocalProtocolHandler implements ProtocolHandler {
 		write: { via: "file", payload: "text", scope: "sandbox", tier: () => "read" },
 	};
 
-	static #overrides = new WeakMap<AgentRegistry, LocalProtocolOptions>();
+	static #overrides = new WeakMap<AgentRegistryApi, LocalProtocolOptions>();
 
 	/**
 	 * Install a process-global override that wins over the AgentRegistry-based

@@ -351,7 +351,19 @@ describe("EventController paces streamed tool args", () => {
 		]);
 		const { controller, pendingTools } = createFixture(message);
 		await dispatch(controller, message);
-		// Empty partial JSON is still an open argument stream, not completion.
+		// Empty partial JSON is still an open argument stream, not completion: a write
+		// waits for its path (it may become a reply URL), so no card is mounted yet.
+		expect(pendingTools.has("tc-open")).toBe(false);
+		const withPath = makeStreamingMessage([
+			{
+				type: "toolCall",
+				id: "tc-open",
+				name: "write",
+				arguments: {},
+				[kStreamingPartialJson]: '{"path":"/tmp/a.ts","content":"',
+			},
+		]);
+		await dispatch(controller, withPath);
 		pendingTools.get("tc-open")!.render(80);
 		expect(rendered.mock.calls.at(-1)?.[1].argsComplete).toBe(false);
 	});

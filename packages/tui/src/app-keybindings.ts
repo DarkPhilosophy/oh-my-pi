@@ -45,6 +45,7 @@ interface AppKeybindings {
 	"app.retry": true;
 	"app.message.dequeue": true;
 	"app.message.expandQueue": true;
+	"app.btw.inject": true;
 	"app.clipboard.pasteImage": true;
 	"app.clipboard.pasteTextRaw": true;
 	"app.clipboard.copyLine": true;
@@ -186,6 +187,10 @@ export const KEYBINDINGS = {
 	"app.message.expandQueue": {
 		defaultKeys: "alt+o",
 		description: "Expand/collapse queued message preview",
+	},
+	"app.btw.inject": {
+		defaultKeys: "alt+i",
+		description: "Send a /btw answer's steering prompt to the main session",
 	},
 	"app.clipboard.pasteImage": {
 		defaultKeys: getDefaultPasteImageKeys(),

@@ -121,6 +121,7 @@ function createHarness(): Harness {
 
 	const ctx = {
 		chatContainer: new Container(),
+		pendingShellContainer: new Container(),
 		pendingMessagesContainer: new Container(),
 		hookWidgetContainerAbove: new Container(),
 		hookWidgetContainerBelow: new Container(),
@@ -139,7 +140,7 @@ function createHarness(): Harness {
 		session: sessionMock,
 		viewSession: {
 			buildTranscriptSessionContext: () => buildSessionContext(entries),
-			sessionManager: { getEntries: () => entries },
+			sessionManager: { getEntries: () => entries, getConversationTip: () => undefined },
 		},
 		focusedAgentId: undefined,
 		sessionManager: {

@@ -47,7 +47,13 @@ import {
 import type { ToolActivityContext, ToolActivitySummary } from "./renderer";
 import { fileHyperlink, Hasher, type RenderCache, renderStatusLine, truncateToWidth, WidthAwareText } from "../render";
 import { framedToolCard } from "../render/tool-card";
-import { HL_FILE_PREFIX, HL_FILE_SUFFIX, HL_MOVE_KEYWORD, HL_REM_KEYWORD } from "./hashline-format";
+import {
+	HASHLINE_TAG_SUFFIX_RE,
+	HL_FILE_PREFIX,
+	HL_FILE_SUFFIX,
+	HL_MOVE_KEYWORD,
+	HL_REM_KEYWORD,
+} from "./hashline-format";
 
 /** Edit payload syntax selected by the caller. */
 export type EditMode = "replace" | "patch" | "hashline" | "apply_patch" | "sloppy";
@@ -360,7 +366,8 @@ function renderEditHeader(
 	width: number,
 	uiTheme: Theme,
 	options: {
-		icon?: "pending" | "success" | "error";
+		icon?: "pending" | "running" | "success" | "error";
+		spinnerFrame?: number;
 		iconOverride?: string;
 		op?: Operation;
 		rawPath: string;
@@ -386,6 +393,7 @@ function renderEditHeader(
 		renderStatusLine(
 			{
 				icon: options.icon,
+				spinnerFrame: options.spinnerFrame,
 				iconOverride: options.iconOverride,
 				title,
 				description,
@@ -556,8 +564,6 @@ function formatStreamingDiff(
 	width: number,
 	uiTheme: Theme,
 	expanded: boolean,
-	label = "streaming",
-	spinnerFrame?: number,
 	cache?: RenderedStringCache,
 	settled = false,
 	previewRows = Infinity,
@@ -575,16 +581,17 @@ function formatStreamingDiff(
 	// the cheap raw-line wrap walk keeps the per-chunk cost bounded.
 	// innerWidth/budget are in the cache salt so a resize re-slices.
 	const innerWidth = Math.max(1, width - 2);
-	const showStatus = previewRows > 2;
+	// The status label rides the card's bottom border, so the whole row budget
+	// goes to the diff (one row reserved for the leading spacer).
 	const budget = Math.min(
-		Math.max(1, previewRows - 1 - (showStatus ? 1 : 0)),
+		Math.max(1, previewRows - 1),
 		expanded && settled
 			? Infinity
 			: expanded
 				? previewWindowRows()
 				: Math.min(PREVIEW_LIMITS.EXPANDED_LINES, previewWindowRows()),
 	);
-	let text = cachedRenderedString(cache, uiTheme, expanded, `${rawPath}:${innerWidth}:${budget}`, diff, () => {
+	return cachedRenderedString(cache, uiTheme, expanded, `${rawPath}:${innerWidth}:${budget}`, diff, () => {
 		// "Cursor" tail window: pin the last rows to the bottom so freshly streamed
 		// changes stay on screen. The whole-file diff is recomputed every chunk and
 		// its Myers alignment is not monotonic in payload length, so a hunk-aware
@@ -602,18 +609,6 @@ function formatStreamingDiff(
 		rendered += renderDiffColored(tail.content, { filePath: rawPath, theme: uiTheme });
 		return rendered;
 	});
-	// The animated glyph rides this trailing line — inside the transcript's
-	// volatile-tail holdback — never the block header: an animating head row
-	// pins the native-scrollback commit boundary at the top of the block, so a
-	// tall expanded preview could never scroll-append mid-stream.
-	const spinner = spinnerFrame !== undefined ? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ` : "";
-	// Expanded approval previews hide the "(preview)" label (#1992) but keep
-	// the animated glyph when one is active so the volatile tail stays live.
-	const hideLabel = expanded && label === "preview" && !settled;
-	if (showStatus && (spinner || !hideLabel)) {
-		text += `\n${hideLabel ? spinner.trimEnd() : `${spinner}${uiTheme.fg("dim", `(${label})`)}`}`;
-	}
-	return text;
 }
 
 function formatMultiFileStreamingDiff(
@@ -621,7 +616,6 @@ function formatMultiFileStreamingDiff(
 	width: number,
 	uiTheme: Theme,
 	expanded: boolean,
-	spinnerFrame?: number,
 	caches?: RenderedStringCache[],
 	settled = false,
 	previewRows = Infinity,
@@ -636,13 +630,9 @@ function formatMultiFileStreamingDiff(
 			continue;
 		}
 		if (preview.diff) {
-			// Only the last file's preview carries the animated streaming glyph;
-			// earlier files have settled and must stay byte-stable so their rows
-			// can commit to native scrollback mid-stream.
-			const isLast = index === previews.length - 1;
 			const cache = previewCacheAt(caches, index);
 			parts.push(
-				`${header}${formatStreamingDiff(preview.diff, preview.path, width, uiTheme, expanded, "preview", isLast ? spinnerFrame : undefined, cache, settled)}`,
+				`${header}${formatStreamingDiff(preview.diff, preview.path, width, uiTheme, expanded, cache, settled)}`,
 			);
 		}
 	}
@@ -679,13 +669,17 @@ function formatMultiFileStreamingDiff(
 		width,
 		uiTheme,
 		expanded,
-		"preview",
-		spinnerFrame,
 		previewCacheAt(caches, lastIndex),
 		settled,
 		previewRows - 1,
 	);
 	return `${heading}\n${tail.trimStart()}`;
+}
+
+/** A call's streamed preview body, and the label its card shows in the bottom border. */
+interface CallPreview {
+	text: string;
+	footer?: "preview" | "streaming";
 }
 
 function getCallPreview(
@@ -695,72 +689,78 @@ function getCallPreview(
 	uiTheme: Theme,
 	renderContext: EditRenderContext | undefined,
 	expanded: boolean,
-	spinnerFrame?: number,
 	caches?: RenderedStringCache[],
-): string {
+): CallPreview {
 	const multi = renderContext?.perFileDiffPreview;
 	if (multi && multi.length > 1 && multi.some(p => p.diff || p.error)) {
-		return formatMultiFileStreamingDiff(
-			multi,
-			width,
-			uiTheme,
-			expanded,
-			spinnerFrame,
-			caches,
-			renderContext?.previewSettled,
-			renderContext?.previewRows,
-		);
+		return {
+			text: formatMultiFileStreamingDiff(
+				multi,
+				width,
+				uiTheme,
+				expanded,
+				caches,
+				renderContext?.previewSettled,
+				renderContext?.previewRows,
+			),
+			footer: multi.some(p => p.diff) ? "preview" : undefined,
+		};
 	}
 	const cache = previewCacheAt(caches, 0);
 	if (args.previewDiff) {
-		return formatStreamingDiff(
-			args.previewDiff,
-			rawPath,
-			width,
-			uiTheme,
-			expanded,
-			"preview",
-			spinnerFrame,
-			cache,
-			renderContext?.previewSettled,
-			renderContext?.previewRows,
-		);
+		return {
+			text: formatStreamingDiff(
+				args.previewDiff,
+				rawPath,
+				width,
+				uiTheme,
+				expanded,
+				cache,
+				renderContext?.previewSettled,
+				renderContext?.previewRows,
+			),
+			footer: "preview",
+		};
 	}
 	if (args.diff && args.op) {
-		return formatStreamingDiff(
-			args.diff,
-			rawPath,
-			width,
-			uiTheme,
-			expanded,
-			"streaming",
-			spinnerFrame,
-			cache,
-			renderContext?.previewSettled,
-			renderContext?.previewRows,
-		);
+		return {
+			text: formatStreamingDiff(
+				args.diff,
+				rawPath,
+				width,
+				uiTheme,
+				expanded,
+				cache,
+				renderContext?.previewSettled,
+				renderContext?.previewRows,
+			),
+			footer: "streaming",
+		};
 	}
 	if (args.diff) {
-		return renderPlainTextPreview(args.diff, uiTheme, rawPath);
+		return { text: renderPlainTextPreview(args.diff, uiTheme, rawPath) };
 	}
 	if (args.newText || args.patch) {
-		return renderPlainTextPreview(args.newText ?? args.patch ?? "", uiTheme, rawPath);
+		return { text: renderPlainTextPreview(args.newText ?? args.patch ?? "", uiTheme, rawPath) };
 	}
 	if (renderContext?.editStreamingFallback) {
-		return renderContext.editStreamingFallback;
+		return { text: renderContext.editStreamingFallback };
 	}
 	const contextPreview = renderContext?.editDiffPreview;
 	if (contextPreview && "error" in contextPreview && contextPreview.error) {
-		return uiTheme.fg("error", replaceTabs(contextPreview.error));
+		return { text: uiTheme.fg("error", replaceTabs(contextPreview.error)) };
 	}
-	return "";
+	return { text: "" };
 }
 
 const MISSING_APPLY_PATCH_END_ERROR = "The last line of the patch must be '*** End Patch'";
 
+/** A model-typed `[path#tag]` header may spell the tag in lowercase. */
+const TYPED_TAG_SUFFIX_RE = new RegExp(HASHLINE_TAG_SUFFIX_RE.source, "i");
+
 function normalizeHashlineInputPreviewPath(rawPath: string): string {
 	const trimmed = rawPath.trim();
-	const hashStart = /#[0-9a-fA-F]{4}$/u.exec(trimmed)?.index;
+	const hashStart = TYPED_TAG_SUFFIX_RE.exec(trimmed)?.index;
 	const withoutHash = hashStart === undefined ? trimmed : trimmed.slice(0, hashStart);
 	if (withoutHash.length < 2) return withoutHash;
 	const first = withoutHash[0];
@@ -1247,34 +1247,41 @@ export const editToolRenderer = {
 		return framedToolCard(
 			uiTheme,
 			({ width }) => {
-				// No status icon on the head row: it's the head of the framed block,
-				// and native-scrollback commits are prefix-only — an animated glyph
-				// would pin the commit boundary at the top, and the pending hourglass
-				// just adds noise. The liveness cue rides the trailing "(preview)" /
-				// "(streaming)" line instead.
+				// Only a live spinner fills the icon slot: a pending hourglass after it
+				// stops would read as a step backwards while the edit executes.
 				const header = renderEditHeader(width, uiTheme, {
+					icon: options.spinnerFrame === undefined ? undefined : "running",
+					spinnerFrame: options.spinnerFrame,
 					op,
 					rawPath,
 					rename,
 					extraSuffix: fileCount > 1 ? uiTheme.fg("dim", ` (+${fileCount - 1} more)`) : undefined,
 				});
-				let body = getCallPreview(
+				const preview = getCallPreview(
 					editArgs,
 					rawPath,
 					width,
 					uiTheme,
 					renderContext,
 					options.expanded,
-					options?.spinnerFrame,
 					callPreviewCaches,
 				);
+				let body = preview.text;
 				if (applyPatchError) {
 					body += `\n${uiTheme.fg("error", truncateToWidth(replaceTabs(applyPatchError), Math.max(1, width - 2)))}`;
 				}
 				const bodyLines = body ? body.split("\n") : [];
 				while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
+				// Expanded approval previews hide the "preview" label (#1992) until the
+				// preview settles; "streaming" ends with the args.
+				const footer =
+					(preview.footer === "preview" && options.expanded && !renderContext?.previewSettled) ||
+					(preview.footer === "streaming" && options.argsComplete)
+						? undefined
+						: preview.footer;
 				return {
 					header,
+					footerMeta: footer ? uiTheme.fg("dim", footer) : undefined,
 					sections:
 						bodyLines.length > 0
 							? [{ content: bodyLines.flatMap(line => wrapEditRendererLine(line, Math.max(1, width - 2))) }]

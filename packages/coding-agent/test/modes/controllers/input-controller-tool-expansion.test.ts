@@ -18,6 +18,7 @@ describe("InputController tool output expansion", () => {
 				isTranscriptBlockFinalized: () => true,
 			};
 		};
+		const pendingShell = { setExpanded: vi.fn() };
 		const chatContainer = new TranscriptContainer();
 		const frontier = { render: () => ["frontier"], isTranscriptBlockFinalized: () => false };
 		chatContainer.addChild(frontier);
@@ -27,6 +28,7 @@ describe("InputController tool output expansion", () => {
 		const ctx = {
 			toolOutputExpanded: false,
 			chatContainer,
+			pendingShellContainer: { children: [pendingShell] },
 			ui: { requestRender: vi.fn() },
 		} as unknown as InteractiveModeContext;
 		const controller = new InputController(ctx);
@@ -40,6 +42,7 @@ describe("InputController tool output expansion", () => {
 			"live",
 			"live details",
 		]);
+		expect(pendingShell.setExpanded).toHaveBeenCalledWith(true);
 		controller.setToolsExpanded(false);
 		expect(chatContainer.render(80).filter(Boolean)).toEqual([
 			"frontier",

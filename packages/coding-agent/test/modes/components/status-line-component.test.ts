@@ -43,7 +43,7 @@ function makeSessionWithLastMessage(lastMessage: unknown, prewalkArmed: boolean 
 		isFastModeActive: () => false,
 		configuredThinkingLevel: () => undefined,
 		modelRegistry: {
-			isUsingOAuth: () => false,
+			isUsingSubscription: () => false,
 		},
 	};
 }

@@ -41,6 +41,7 @@ import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
+import type { AgentViewSession } from "../session/agent-session-handle";
 import type { RunStatus } from "../utils/run-status";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
@@ -60,6 +61,7 @@ import type { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-executio
 import type { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
 import type { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import type { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+import type { PresentedBlock } from "@oh-my-pi/pi-tui/chat/transcript-presentation";
 import type { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
 import type { HookSelectorComponent, HookSelectorOptions } from "@oh-my-pi/pi-tui/overlays/hook-selector";
 import type { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
@@ -118,6 +120,8 @@ export interface InteractiveModeInitOptions {
 	clearInitialTerminalHistory?: boolean;
 	/** Opt into hosting when the caller owns outer startup readiness and shutdown. */
 	autoStartCollab?: boolean;
+	/** A command-line prompt runs once startup ends: report `working` from the first frame. */
+	startupRun?: boolean;
 }
 
 export type InteractiveSelectorDialogOptions = ExtensionUIDialogOptions &
@@ -174,6 +178,8 @@ export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
 	chatContainer: TranscriptContainer;
+	/** `!`/`$` runs started while the agent streams, until {@link flushPendingBashComponents} moves them into the transcript. */
+	pendingShellContainer: Container;
 	pendingMessagesContainer: Container;
 	statusContainer: Container;
 	/** Whether the status/working row rendered lines in the latest frame; the band composer's editor top gap collapses only then. */
@@ -199,6 +205,8 @@ export interface InteractiveModeContext {
 		blocks: string[][] | RightInfoProvider | undefined,
 		onLayout?: (result: PanelLayoutResult) => void,
 	): void;
+	/** Show a pin change already written to the pins file; supersedes any in-flight pins-file reload. */
+	applySessionPin(sessionId: string, pinned: boolean): void;
 	syncComposerShape(): void;
 	/** Update this interactive session's terminal title without affecting sibling daemon sessions. */
 	setTerminalTitleState(state: "idle" | "working" | "attention"): void;
@@ -213,14 +221,12 @@ export interface InteractiveModeContext {
 	// Session access
 	session: AgentSession;
 	sessionManager: SessionManager;
-	/** Re-resolve the CLI/settings model scope after a successful OAuth login. */
-	refreshScopedModelsAfterLogin?: () => Promise<void>;
 	/** The current session display name / title. */
 	readonly sessionName: string | undefined;
 	/** Session the transcript/editor/status are attached to: the focused agent's, else `session`. */
-	readonly viewSession: AgentSession;
+	readonly viewSession: AgentViewSession;
 	/** Bind idle maintenance to the given view (default: the current one), or release the UI activity binding on null. */
-	syncIdleMaintenanceView(target?: AgentSession | null): void;
+	syncIdleMaintenanceView(target?: AgentViewSession | null): void;
 	/** Id of the focused agent, undefined when the main session is attached. */
 	readonly focusedAgentId: string | undefined;
 	/** Set while a tool-approval dialog owns the composer: its drafts steer the main session awaiting that approval, even from a focused agent's view. */
@@ -241,9 +247,9 @@ export interface InteractiveModeContext {
 	 */
 	activateViewportLink(index: number, col: number): boolean;
 	/**
-	 * Enter keyboard link-hint mode: tag each extension link label on screen, or show a status when
-	 * none is drawn. Returns false, doing nothing, unless extension links are routed (a scheme
-	 * claimed, plain terminal).
+	 * Enter keyboard link-hint mode: tag each extension link label on screen; with none on screen,
+	 * open the link browser, or show a status when the transcript draws none either. Returns false,
+	 * doing nothing, unless extension links are routed (a scheme claimed, plain terminal).
 	 */
 	startLinkHints(): boolean;
 	/** Whether link-hint mode is on; it ends by itself once the tagged labels move or vanish. */
@@ -252,6 +258,35 @@ export interface InteractiveModeContext {
 	typeLinkHint(letter: string): void;
 	/** Leave link-hint mode without activating a link. */
 	cancelLinkHints(): void;
+	/**
+	 * Leave link-hint mode and open the fullscreen link browser over the viewed transcript, where
+	 * links already in terminal scrollback can be picked too. Returns false, opening nothing, when
+	 * links are not routed, it is already open, or the transcript draws no extension link.
+	 */
+	openLinkBrowser(): boolean;
+	/**
+	 * Close the link browser if it is open. An editor-area dialog (an extension's confirm, select,
+	 * input, editor or custom UI, or an ask) calls this before mounting, so it is not hidden behind it.
+	 */
+	closeLinkBrowser(): void;
+	/** Redraw the link browser's copy of the reply sent at `timestamp`, if the browser is open. */
+	rerenderInLinkBrowser(timestamp: number): void;
+	/**
+	 * Rebuild the transcript's terminal scrollback (rows already retired to it changed), or once
+	 * the link browser closes while it covers the screen.
+	 */
+	rebuildTranscriptScrollback(): void;
+	/**
+	 * Run `redraw` over `blocks`; it returns whether the block's display changed. Live blocks (and
+	 * every block in Tern's native view) just repaint; a changed block with rows already in terminal
+	 * scrollback rebuilds the scrollback once for the batch, since a plain terminal cannot repaint them.
+	 */
+	redrawTranscriptBlocks(blocks: readonly Component[], redraw: (block: Component) => boolean): void;
+	/**
+	 * Ask the extension transcript presenters again for every block (only the parts `ids` selects,
+	 * when given) and redraw those whose display changed.
+	 */
+	refreshTranscriptPresentation(ids?: ReadonlySet<string>): void;
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
 	/** Point the inline hover band at a click-candidate id (or clear it). */
@@ -269,7 +304,10 @@ export interface InteractiveModeContext {
 	collabController: CollabController;
 	/** Owned room; use {@link collabController}.host for current-session reuse and links. */
 	collabHost?: CollabHost;
-	collabGuest?: CollabGuestLink;
+	/** The collab session this process joined as a guest; set with {@link setCollabGuest}. */
+	readonly collabGuest?: CollabGuestLink;
+	/** Join (`guest`) or leave (`undefined`) a collab session as a guest. */
+	setCollabGuest(guest: CollabGuestLink | undefined): void;
 	eventController: EventController;
 	eventBus?: EventBus;
 	/** Root-scoped bus carrying this session tree's `task:subagent:*` frames. */
@@ -329,9 +367,9 @@ export interface InteractiveModeContext {
 	/** Settled user/assistant components reusable across post-compaction transcript rebuilds. */
 	transcriptMessageComponents: WeakMap<AgentMessage, Component>;
 	pendingTools: Map<string, ToolExecutionHandle>;
-	pendingBashComponents: BashExecutionComponent[];
+	pendingBashComponents: PresentedBlock<BashExecutionComponent>[];
 	bashComponent: BashExecutionComponent | undefined;
-	pendingPythonComponents: EvalExecutionComponent[];
+	pendingPythonComponents: PresentedBlock<EvalExecutionComponent>[];
 	pythonComponent: EvalExecutionComponent | undefined;
 	isPythonMode: boolean;
 	streamingComponent: AssistantMessageComponent | undefined;
@@ -538,7 +576,7 @@ export interface InteractiveModeContext {
 	updateEditorBorderColor(): void;
 	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
-	reloadTodos(source?: AgentSession): Promise<void>;
+	reloadTodos(source?: AgentViewSession): Promise<void>;
 	toggleTodoExpansion(): void;
 	setTodoExpanded(expanded: boolean): void;
 	// Command handling
@@ -574,6 +612,7 @@ export interface InteractiveModeContext {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		options?: Pick<CompactOptions, "internalGuidance" | "readerModel">,
 	): Promise<CompactionOutcome>;
 	handleHandoffCommand(customInstructions?: string): Promise<void>;
 	handleShakeCommand(mode: ShakeMode): Promise<void>;
@@ -667,6 +706,8 @@ export interface InteractiveModeContext {
 	handleBtwCopyKey(): Promise<boolean>;
 	canFollowUpBtw(): boolean;
 	handleBtwFollowUpKey(): boolean;
+	/** The inject key (`app.btw.inject`, Alt+I): steer the main session with the completed /btw answer's `<inject>` block (`btw.inject`). */
+	handleBtwInjectKey(): boolean;
 	handleBtwBranch(
 		question: string,
 		assistantMessage: AssistantMessage,

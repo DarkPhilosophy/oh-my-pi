@@ -17,7 +17,7 @@ function createRuntime(phases: TodoPhase[]) {
 	const committed: TodoPhase[][] = [];
 	const output: string[] = [];
 	const runtime = {
-		session: { getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => committed.push(next) },
+		session: { getTodoPhases: () => phases, commitTodoPhases: (next: TodoPhase[]) => committed.push(next) },
 		sessionManager: { getBranch: () => [], appendCustomEntry: () => "entry", getCwd: () => "/" },
 		cwd: "/",
 		output: async (text: string) => {

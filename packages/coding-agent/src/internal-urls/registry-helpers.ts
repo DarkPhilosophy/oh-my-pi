@@ -7,11 +7,11 @@ import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
-import { AgentRegistry } from "../registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi } from "../registry/agent-registry";
 
-let extraArtifactsDirs: WeakMap<AgentRegistry, Record<string, true>> = new WeakMap();
+let extraArtifactsDirs: WeakMap<AgentRegistryApi, Record<string, true>> = new WeakMap();
 
-function extraDirsFor(registry: AgentRegistry): Record<string, true> {
+function extraDirsFor(registry: AgentRegistryApi): Record<string, true> {
 	let dirs = extraArtifactsDirs.get(registry);
 	if (!dirs) {
 		dirs = {};

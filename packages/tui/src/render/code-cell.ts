@@ -96,7 +96,7 @@ function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; 
 	if (status) {
 		const icon = formatStatusIcon(
 			status === "complete"
-				? "done"
+				? "success"
 				: status === "error"
 					? "error"
 					: status === "warning"

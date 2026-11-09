@@ -51,6 +51,7 @@ import {
 } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { requestTextPrediction, textPredictionBackend } from "../../predict/client";
 import { type AgentSession, type NavigateTreeResult, SessionBusyError } from "../../session/agent-session";
+import type { AgentSessionHandle } from "../../session/agent-session-handle";
 import type { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
@@ -64,7 +65,6 @@ import { refreshAgentDiscovery } from "../../task";
 import { listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
 import { cfgSttEnabled } from "../../stt/settings";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { EventBus } from "../../utils/event-bus";
 import { selectRpcEntries } from "./rpc-compat";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
@@ -868,7 +868,7 @@ export async function handleRpcSteerSubagent(
 	const notRunning = `Subagent not running: ${subagentId}`;
 	const owned = resolveOwnedLiveSubagent(subagentRegistry, subagentId);
 	if (!owned) return notRunning;
-	let session: AgentSession;
+	let session: AgentSessionHandle;
 	try {
 		session = await AgentLifecycleManager.global().ensureLive(subagentId);
 	} catch {
@@ -1448,6 +1448,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			supportedProtocolVersions: [1, 2],
 			maxFrameBytes: MAX_RPC_FRAME_BYTES,
 			maxReassembledFrameBytes: MAX_RPC_REASSEMBLED_BYTES,
+			supportsBashExcludeFromContext: true,
 		}),
 	);
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
@@ -1595,6 +1596,10 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		}
 
 		rerenderMessage(): void {
+			// No transcript is drawn in RPC mode
+		}
+
+		refreshTranscript(): void {
 			// No transcript is drawn in RPC mode
 		}
 
@@ -2385,9 +2390,8 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			}
 
 			case "set_todos": {
-				session.setTodoPhases(command.phases);
+				session.commitTodoPhases(command.phases);
 				const phases = session.getTodoPhases();
-				session.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 				return success(id, "set_todos", { todoPhases: phases });
 			}
 
@@ -2658,7 +2662,13 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// =================================================================
 
 			case "bash": {
-				const result = await session.executeBash(command.command);
+				// Reject rather than coerce: a falsy non-boolean such as `null` would silently share the output.
+				if (command.excludeFromContext !== undefined && typeof command.excludeFromContext !== "boolean") {
+					return error(id, "bash", "excludeFromContext must be a boolean");
+				}
+				const result = await session.executeBash(command.command, undefined, {
+					excludeFromContext: command.excludeFromContext,
+				});
 				return success(id, "bash", result);
 			}
 
@@ -2827,6 +2837,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 						knownProvider.storeCredentialsAs ?? knownProvider.id,
 						"online",
 					);
+					await session.refreshScopedModels();
 					return success(id, "login", { providerId: command.providerId });
 				} catch (err: unknown) {
 					return error(id, "login", err instanceof Error ? err.message : String(err));
@@ -2867,10 +2878,9 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					return error(id, "logout", "providerId must be a string and credentialId an integer");
 				}
 				const { removed, remainingSource } = await logoutCredential(
-					session.modelRegistry,
+					session,
 					command.providerId,
 					command.credentialId,
-					session.sessionId,
 				);
 				if (!removed) {
 					return error(id, "logout", `Credential ${command.credentialId} is not stored for ${command.providerId}`);

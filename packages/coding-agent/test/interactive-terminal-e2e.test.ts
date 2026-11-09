@@ -49,7 +49,7 @@ describe("libkitty end-to-end", () => {
 		});
 		term = new VirtualTerminal(120, 32);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		mode = new InteractiveMode(session, "test", () => {}, undefined, undefined, undefined, composer);
 	});
 
 	afterEach(async () => {
@@ -294,7 +294,7 @@ describe("libkitty end-to-end", () => {
 		// repaint leaves retired rows untouched).
 		term = new VirtualTerminal(120, 10);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		mode = new InteractiveMode(session, "test", () => {}, undefined, undefined, undefined, composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();
@@ -373,7 +373,7 @@ describe("libkitty end-to-end", () => {
 
 		term = new VirtualTerminal(120, 10);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		mode = new InteractiveMode(session, "test", () => {}, undefined, undefined, undefined, composer);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();

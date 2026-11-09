@@ -164,7 +164,7 @@ try {
 	if (values.mode === "daemon") {
 		hosted = new HostedTerminal({ columns, rows, kittyProtocolActive: false, kittyEnableSequence: null });
 		hosted.setOutput(data => terminal.write(data));
-		mode = new InteractiveMode(session, "profile", undefined, () => {}, undefined, undefined, undefined, {
+		mode = new InteractiveMode(session, "profile", () => {}, undefined, undefined, undefined, {
 			terminal: hosted,
 			onDetach: () => hosted?.setOutput(undefined),
 		});
@@ -172,7 +172,6 @@ try {
 		mode = new InteractiveMode(
 			session,
 			"profile",
-			undefined,
 			() => {},
 			undefined,
 			undefined,

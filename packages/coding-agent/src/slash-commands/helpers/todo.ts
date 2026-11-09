@@ -6,7 +6,6 @@ import {
 	markdownToPhases,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
-	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "../../tools/todo";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./parse";
@@ -97,8 +96,7 @@ function currentPhases(runtime: SlashCommandRuntime): TodoPhase[] {
 }
 
 function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[]): void {
-	runtime.session.setTodoPhases(phases);
-	runtime.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+	runtime.session.commitTodoPhases(phases);
 }
 
 const TODO_HELP_TEXT = [

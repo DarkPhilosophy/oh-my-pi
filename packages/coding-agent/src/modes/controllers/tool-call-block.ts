@@ -28,7 +28,7 @@ export function createToolCallBlock(ctx: InteractiveModeContext, call: ToolCallB
 		reply.updateArgs(call.args);
 		return reply;
 	}
-	return new ToolExecutionComponent(
+	const component = new ToolExecutionComponent(
 		call.name,
 		call.args,
 		{
@@ -41,4 +41,5 @@ export function createToolCallBlock(ctx: InteractiveModeContext, call: ToolCallB
 		call.cwd,
 		call.id,
 	);
+	return component;
 }

@@ -682,7 +682,6 @@ describe("imageGenTool", () => {
 		expect(requestHeaders?.get("authorization")).toBe("Bearer opaque-proxy-key");
 		expect(requestHeaders?.has("chatgpt-account-id")).toBe(false);
 		expect(requestHeaders?.has("x-openai-internal-codex-residency")).toBe(false);
-		expect(requestHeaders?.get("OpenAI-Beta")).toBe("responses=experimental");
 		expect(requestHeaders?.get("originator")).toBe("omp");
 		expect(result.details?.provider).toBe("openai-codex");
 		expect(result.details?.imageCount).toBe(1);

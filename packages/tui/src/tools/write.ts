@@ -18,7 +18,6 @@ import {
 	formatDiagnostics,
 	formatErrorDetail,
 	formatExpandHint,
-	formatStatusIcon,
 	PREVIEW_LIMITS,
 	type RenderedStringCache,
 	replaceTabs,
@@ -85,6 +84,8 @@ export interface WriteToolDetails {
 	message?: CoordinationDetails;
 	proc?: ProcWriteDetails;
 	cfg?: CfgWriteDetails;
+	/** Set when the write touched no files: a peer message, a reply, or a background-work cancellation. */
+	touchesNoFiles?: boolean;
 }
 
 interface WriteRenderArgs {
@@ -342,63 +343,49 @@ function formatStreamingContent(
 	expanded: boolean,
 	language: string | undefined,
 	uiTheme: Theme,
-	spinnerFrame?: number,
 	cache?: RenderedStringCache,
 	streamKey?: WriteStreamingPreviewStateCarrier,
 	argsComplete?: boolean,
 	contentWidth?: number,
 ): string {
 	if (!content) return "";
-	const bodyText = cachedRenderedString(
-		cache,
-		uiTheme,
-		expanded,
-		`${language ?? ""}:${contentWidth ?? 0}`,
-		content,
-		() => {
-			const state = updateStreamingPreview(streamKey, content, language, uiTheme, argsComplete === true);
-			let totalLines: number;
-			let startIndex: number;
-			let visibleLines: string[];
-			if (state) {
-				totalLines = state.lineCount;
-				const flushed = argsComplete === true && state.finalFlushedLength === content.length;
-				const trailingLine = flushed ? state.finalTrailing : content.slice(state.completeLength).replace(/\r/g, "");
-				if (totalLines === 1 && trailingLine.length === 0) return "";
-				const allLines = [...state.highlightedLines, trailingLine];
-				startIndex = expanded ? 0 : previewWindowStart(allLines, totalLines, contentWidth);
-				visibleLines = allLines.slice(startIndex);
-			} else {
-				const normalized = normalizeDisplayText(content);
-				if (normalized.length === 0) return "";
-				const lines = normalized.split("\n");
-				totalLines = lines.length;
-				startIndex = expanded ? 0 : previewWindowStart(lines, totalLines, contentWidth);
-				visibleLines = highlightCode(lines.slice(startIndex).join("\n"), language);
-			}
-			const hidden = startIndex;
-			const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
+	return cachedRenderedString(cache, uiTheme, expanded, `${language ?? ""}:${contentWidth ?? 0}`, content, () => {
+		const state = updateStreamingPreview(streamKey, content, language, uiTheme, argsComplete === true);
+		let totalLines: number;
+		let startIndex: number;
+		let visibleLines: string[];
+		if (state) {
+			totalLines = state.lineCount;
+			const flushed = argsComplete === true && state.finalFlushedLength === content.length;
+			const trailingLine = flushed ? state.finalTrailing : content.slice(state.completeLength).replace(/\r/g, "");
+			if (totalLines === 1 && trailingLine.length === 0) return "";
+			const allLines = [...state.highlightedLines, trailingLine];
+			startIndex = expanded ? 0 : previewWindowStart(allLines, totalLines, contentWidth);
+			visibleLines = allLines.slice(startIndex);
+		} else {
+			const normalized = normalizeDisplayText(content);
+			if (normalized.length === 0) return "";
+			const lines = normalized.split("\n");
+			totalLines = lines.length;
+			startIndex = expanded ? 0 : previewWindowStart(lines, totalLines, contentWidth);
+			visibleLines = highlightCode(lines.slice(startIndex).join("\n"), language);
+		}
+		const hidden = startIndex;
+		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 
-			let text = "\n\n";
-			if (hidden > 0) {
-				text += `${uiTheme.fg("dim", fitMarker(formatEarlierLines({ hidden, shown: visibleLines.length }), contentWidth))}\n`;
-			}
-			for (let i = 0; i < visibleLines.length; i++) {
-				const lineNum = startIndex + i + 1;
-				const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
-				const body = replaceTabs(visibleLines[i] ?? "");
-				text += `${gutter}${body}\n`;
-			}
-			return text;
-		},
-	);
-	if (bodyText.length === 0) return "";
-	// The animated glyph lives on this trailing line — inside the transcript's
-	// volatile-tail holdback — never in the header: an animating head row pins
-	// the native-scrollback commit boundary at the top of the block, so a long
-	// expanded preview could never scroll-append mid-stream.
-	const spinner = spinnerFrame !== undefined ? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ` : "";
-	return `${bodyText}${spinner}${uiTheme.fg("dim", `… (streaming)`)}`;
+		let text = "\n\n";
+		if (hidden > 0) {
+			text += `${uiTheme.fg("dim", fitMarker(formatEarlierLines({ hidden, shown: visibleLines.length }), contentWidth))}\n`;
+		}
+		for (let i = 0; i < visibleLines.length; i++) {
+			const lineNum = startIndex + i + 1;
+			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
+			const body = replaceTabs(visibleLines[i] ?? "");
+			text += `${gutter}${body}\n`;
+		}
+		// The streaming label lives in the card footer: no trailing newline.
+		return text.slice(0, -1);
+	});
 }
 
 function wrapWritePreviewRows(lines: string[], width: number): string[] {
@@ -655,17 +642,6 @@ export const writeToolRenderer = {
 		// rather than an archive member or database row selector.
 		const pathDisplay =
 			filePath && args.content !== undefined ? fileHyperlink(pendingFileLinkPath(rawPath), styledPath) : styledPath;
-		// No status icon on the head row: it's the head of the framed block, and
-		// native-scrollback commits are prefix-only — an animated glyph would pin
-		// the commit boundary at the top, and the pending hourglass just adds
-		// noise. The liveness cue rides the trailing "(streaming)" line instead.
-		const header = renderStatusLine(
-			{
-				title: "Write",
-				description: `${langIcon} ${pathDisplay}`,
-			},
-			uiTheme,
-		);
 		// Raw content, not normalizeDisplayText(args.content): the collapsed
 		// streaming path normalizes only its tail window, so a full-payload
 		// normalize on every reveal tick would re-introduce the O(n²) streaming
@@ -676,13 +652,22 @@ export const writeToolRenderer = {
 		return framedToolCard(
 			uiTheme,
 			({ contentWidth }) => {
+				// Only a live spinner fills the icon slot, as in Edit's call card.
+				const header = renderStatusLine(
+					{
+						icon: options?.spinnerFrame === undefined ? undefined : "running",
+						spinnerFrame: options?.spinnerFrame,
+						title: "Write",
+						description: `${langIcon} ${pathDisplay}`,
+					},
+					uiTheme,
+				);
 				const body = content
 					? formatStreamingContent(
 							content,
 							Boolean(options?.expanded),
 							lang,
 							uiTheme,
-							options?.spinnerFrame,
 							streamingCache,
 							// `options` is the ToolExecutionComponent's persistent
 							// render-state object — a stable identity across reveal ticks
@@ -697,6 +682,8 @@ export const writeToolRenderer = {
 				while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 				return {
 					header,
+					// The label ends with the args: once the content is complete the write is just running.
+					footerMeta: body && !options?.argsComplete ? uiTheme.fg("dim", "streaming") : undefined,
 					sections: bodyLines.length > 0 ? [{ content: wrapWritePreviewRows(bodyLines, contentWidth) }] : [],
 					phase: "pending",
 					borderColor: "borderMuted",

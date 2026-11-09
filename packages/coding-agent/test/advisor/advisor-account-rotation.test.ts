@@ -68,6 +68,11 @@ describe("advisor account-policy rotation", () => {
 		authStorage.keys.setRuntime("anthropic", "test-key");
 		authStorage.keys.setRuntime("openai-codex", "test-key");
 
+		// Two stored ChatGPT accounts: the credential-switch budget allows one rotation.
+		const listCredentials = authStorage.credentials.list.bind(authStorage.credentials);
+		authStorage.credentials.list = provider =>
+			provider === "openai-codex" ? ([{}, {}] as never) : listCredentials(provider);
+
 		const rotations: Array<{ provider: string; modelId: unknown }> = [];
 		authStorage.limits.rotate = async (provider, _sessionId, options) => {
 			rotations.push({ provider, modelId: options?.modelId });

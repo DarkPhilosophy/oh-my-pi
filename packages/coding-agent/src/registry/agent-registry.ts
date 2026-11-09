@@ -13,8 +13,9 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { logger } from "@oh-my-pi/pi-utils";
-import type { AgentSession } from "../session/agent-session";
-import { AgentAwaits } from "./agent-awaits";
+import type { AgentSessionHandle } from "../session/agent-session-handle";
+import type { AdvisorScope } from "../session/session-advisors";
+import { AgentAwaits, type AgentAwaitsApi } from "./agent-awaits";
 import { oneLineLabel } from "@oh-my-pi/pi-tui/tools/task";
 
 import { MAIN_AGENT_ID, type AgentStatus, type AgentMetricsSummary } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
@@ -68,12 +69,14 @@ export interface AgentHistorySummary {
 
 export interface AgentRef {
 	id: string;
+	/** Unique per ref object, minted by the owning registry; `register`/`reopen` mint a new one. */
+	readonly generation: number;
 	displayName: string;
 	kind: AgentKind;
 	parentId?: string;
 	status: AgentStatus;
 	/** Null exactly when parked/aborted. */
-	session: AgentSession | null;
+	session: AgentSessionHandle | null;
 	sessionFile: string | null;
 	createdAt: number;
 	lastActivity: number;
@@ -85,7 +88,14 @@ export interface AgentRef {
 	lifecycle?: AgentRunLifecycle;
 }
 
-export type AgentRefExpectation = AgentRef | AgentSession;
+export type AgentRefExpectation = AgentRef | AgentSessionHandle;
+
+const kMintedRef = Symbol("agent-registry.ref");
+
+/** Whether `value` is a ref object minted by an {@link AgentRegistry} on this thread (thread bridges encode these). */
+export function isMintedAgentRef(value: unknown): value is AgentRef {
+	return typeof value === "object" && value !== null && Reflect.get(value, kMintedRef) === true;
+}
 
 /**
  * Whether messaging `ref` resumes it: a live `idle` agent, or a `parked` or
@@ -103,14 +113,15 @@ export type RegistryEvent =
 	| { type: "metadata_changed"; ref: AgentRef }
 	| { type: "removed"; ref: AgentRef };
 
-type RegistryListener = (event: RegistryEvent) => void;
+/** Listener for {@link AgentRegistryApi.onChange}. */
+export type RegistryListener = (event: RegistryEvent) => void;
 
 export interface RegisterInput {
 	id: string;
 	displayName: string;
 	kind: AgentKind;
 	parentId?: string;
-	session: AgentSession | null;
+	session: AgentSessionHandle | null;
 	sessionFile?: string | null;
 	status?: AgentStatus;
 	/** Last persisted task summary, when restoring a historical agent. */
@@ -137,16 +148,91 @@ export function createAgentRegistryScope(registry = new AgentRegistry()): {
 	};
 }
 
-export class AgentRegistry {
-	static #global: AgentRegistry | undefined;
+/** Public surface of the process-global agent registry, implemented locally on main and by a proxy in workers. */
+export interface AgentRegistryApi {
+	/** Which of these agents are blocked until others finish. */
+	readonly awaits: AgentAwaitsApi;
+	/** Register (or replace) the ref for `input.id`; always mints a new generation. */
+	register(input: RegisterInput): AgentRef;
+	/** Register an absent id, or reuse the exact detached `parked` ref `expected`. */
+	registerIfAvailable(input: RegisterInput, expected: AgentRef | null): AgentRef | undefined;
+	/** Start a fresh `parked` generation for the killed ref `expected`. */
+	reopen(id: string, expected: AgentRef): AgentRef | undefined;
+	/** Attach transcript-derived identity and telemetry without changing lifecycle state. */
+	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean;
+	/** Transition `id` to `status` when it still matches `expected`. */
+	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean;
+	/** Record that the current run handed over its final result. */
+	markResultAccepted(id: string, expected?: AgentRefExpectation, responseAt?: number): boolean;
+	/** Accepted-but-running refs whose run already finished. */
+	staleAcceptedRuns(): AgentRef[];
+	/** Record a short activity gist for the work-aware roster. */
+	setActivity(id: string, activity: string): void;
+	/** Attach a live session to `id` when it still matches `expected`. */
+	attachSession(
+		id: string,
+		session: AgentSessionHandle,
+		sessionFile?: string | null,
+		expected?: AgentRefExpectation,
+	): boolean;
+	/** Detach the live session of `id` when it still matches `expected`. */
+	detachSession(id: string, expected?: AgentRefExpectation): boolean;
+	/** Remove `id` when it still matches `expected`. */
+	unregister(id: string, expected?: AgentRefExpectation): boolean;
+	/** The current ref for `id`. */
+	get(id: string): AgentRef | undefined;
+	/** Every registered ref. */
+	list(): AgentRef[];
+	/** Every alive non-advisor agent except `id`. */
+	listVisibleTo(id: string): AgentRef[];
+	/** Whether a ref's claimed running state is corroborated by its attached live session. */
+	isRunning(ref: AgentRef): boolean;
+	/** Mirror a session's run-state notifications into ref `id`; returns the unsubscribe function. */
+	syncSessionStatus(id: string, session: AgentSessionHandle): () => void;
+	/** Subscribe to registry events; returns the unsubscribe function. */
+	onChange(listener: RegistryListener): () => void;
+}
 
-	static global(): AgentRegistry {
+/**
+ * The live advisor veto scope of a session on this thread. Cross-thread mirrors carry
+ * none; checked structurally to keep the registry free of the advisor runtime graph.
+ */
+function liveAdvisorScope(session: AgentSessionHandle | null): AdvisorScope | undefined {
+	if (!session) return undefined;
+	const scope: unknown = Reflect.get(session, "advisorScope");
+	return typeof scope === "object" && scope !== null && typeof Reflect.get(scope, "setSuppressed") === "function"
+		? (scope as AdvisorScope)
+		: undefined;
+}
+
+export class AgentRegistry implements AgentRegistryApi {
+	static #global: AgentRegistryApi | undefined;
+
+	/**
+	 * The registry of the current session scope, else the installed registry: lazily a local
+	 * {@link AgentRegistry} unless a worker installed a proxy.
+	 */
+	static global(): AgentRegistryApi {
 		const scoped = registryScope.getStore();
 		if (scoped) return scoped;
 		if (!AgentRegistry.#global) {
 			AgentRegistry.#global = new AgentRegistry();
 		}
 		return AgentRegistry.#global;
+	}
+
+	/**
+	 * {@link AgentRegistry.inheritedAdvisorScope} on the current registry. A worker's registry
+	 * proxy resolves to undefined: advisor scopes are live objects of their home thread.
+	 */
+	static inheritedAdvisorScope(fromId: string | undefined): AdvisorScope | undefined {
+		const registry = AgentRegistry.global();
+		return registry instanceof AgentRegistry ? registry.inheritedAdvisorScope(fromId) : undefined;
+	}
+
+	/** Install the process-global registry. Worker bootstrap only. */
+	static installGlobal(registry: AgentRegistryApi): void {
+		AgentRegistry.#global = registry;
 	}
 
 	/** Reset the fallback global registry. Test-only. */
@@ -156,8 +242,10 @@ export class AgentRegistry {
 
 	readonly #refs = new Map<string, AgentRef>();
 	readonly #listeners = new Set<RegistryListener>();
+	/** Last generation minted for a ref object of this registry. */
+	#generation = 0;
 	/** Which of these agents are blocked until others finish. */
-	readonly awaits = new AgentAwaits();
+	readonly awaits: AgentAwaitsApi = new AgentAwaits();
 
 	#matchesExpected(ref: AgentRef, expected?: AgentRefExpectation): boolean {
 		return expected === undefined || ref === expected || ref.session === expected;
@@ -172,6 +260,7 @@ export class AgentRegistry {
 		const now = Date.now();
 		const ref: AgentRef = {
 			id: input.id,
+			generation: ++this.#generation,
 			displayName: input.displayName,
 			kind: input.kind,
 			parentId: input.parentId,
@@ -184,6 +273,7 @@ export class AgentRegistry {
 			history: input.history,
 			lifecycle: input.lifecycle,
 		};
+		Object.defineProperty(ref, kMintedRef, { value: true });
 		this.#refs.set(ref.id, ref);
 		this.#emit({ type: "registered", ref });
 		return ref;
@@ -354,7 +444,7 @@ export class AgentRegistry {
 
 	attachSession(
 		id: string,
-		session: AgentSession,
+		session: AgentSessionHandle,
 		sessionFile?: string | null,
 		expected?: AgentRefExpectation,
 	): boolean {
@@ -398,14 +488,14 @@ export class AgentRegistry {
 	 * The nearest live ancestor's advisor scope, starting at `fromId` and walking up `parentId`. A cycle in the
 	 * parent chain ends the walk instead of looping. Callers supply their own fallback when none is found.
 	 */
-	inheritedAdvisorScope(fromId: string | undefined): AgentSession["advisorScope"] | undefined {
+	inheritedAdvisorScope(fromId: string | undefined): AdvisorScope | undefined {
 		const seen = new Set<string>();
 		let id = fromId;
 		while (id && !seen.has(id)) {
 			seen.add(id);
 			const ref = this.#refs.get(id);
 			if (!ref) return undefined;
-			const scope = ref.session?.advisorScope;
+			const scope = liveAdvisorScope(ref.session);
 			if (scope) return scope;
 			id = ref.parentId;
 		}
@@ -434,7 +524,7 @@ export class AgentRegistry {
 	}
 
 	/** Mirror a session's authoritative run-state notifications into its owned registry ref. */
-	syncSessionStatus(id: string, session: AgentSession): () => void {
+	syncSessionStatus(id: string, session: AgentSessionHandle): () => void {
 		const unsubscribe = session.subscribeRunState(status => {
 			this.setStatus(id, status, session);
 		});

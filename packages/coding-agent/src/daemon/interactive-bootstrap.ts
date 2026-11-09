@@ -2,7 +2,7 @@ import { ProcessTerminal } from "@oh-my-pi/pi-tui";
 import { APP_NAME, logger } from "@oh-my-pi/pi-utils";
 import { getActiveProfile, getProjectDir } from "@oh-my-pi/pi-utils/dirs";
 import { withFileLock } from "@oh-my-pi/pi-utils/file-lock";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { parseArgs } from "../cli/args";
 import { loadSessionPicker } from "../main";
 import { applyStartupCwd } from "../cli/startup-cwd";
@@ -111,11 +111,13 @@ export async function resolveDaemonInteractiveResume(
 			cwd: match.session.cwd || cwd,
 		};
 	}
-	const folderSessions = await SessionManager.listForPicker(cwd, parsed.sessionDir);
-	const allSessions = folderSessions.length === 0 ? await SessionManager.listAllForPicker() : undefined;
+	const folder = await SessionManager.listForPicker(cwd, parsed.sessionDir);
+	const allSessions = folder.sessions.length === 0 ? await SessionManager.listAllForPicker() : undefined;
 	await initTheme();
 	const selectSession = await loadSessionPicker();
-	const selected = await selectSession(folderSessions, { allSessions }).finally(stopThemeWatcher);
+	const selected = await selectSession(folder.sessions, { completeSessions: folder.complete, allSessions }).finally(
+		stopThemeWatcher,
+	);
 	if (!selected) return undefined;
 	const argv = [...options.argv];
 	const resumeIndex = argv.findIndex(

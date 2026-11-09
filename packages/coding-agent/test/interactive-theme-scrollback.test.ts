@@ -142,7 +142,6 @@ describe("InteractiveMode theme scrollback refresh", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
 			new Composer({ terminal }),
 		);
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});

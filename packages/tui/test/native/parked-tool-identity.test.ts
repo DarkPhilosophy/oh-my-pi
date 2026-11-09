@@ -25,7 +25,7 @@ test("parked streaming output keeps its native mounts until its final result", (
 	transcript.addChild(component);
 	const reconciler = new Reconciler("probe");
 	const cx = { cols: 80, dark: true, reduceMotion: true, supports: () => false, feature: () => false };
-	const frame = () => reconciler.reconcile({ main: transcript.nativeBlocks(), dock: [], layer: [] }, cx);
+	const frame = () => reconciler.reconcile({ main: transcript.nativeBlocks(cx), dock: [], layer: [] }, cx);
 	const result = (n: number) => ({
 		content: [{ type: "text" as const, text: Array.from({ length: n }, (_, j) => `synthetic line ${j}`).join("\n") }],
 	});

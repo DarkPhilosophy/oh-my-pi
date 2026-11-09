@@ -8,7 +8,6 @@ import {
 	isCompiledBinary,
 	logger,
 	untilAborted,
-	withTimeout,
 	workerHostEntry,
 } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
@@ -20,6 +19,7 @@ import type { CmuxKind } from "./cmux/rpc";
 import { CmuxSocketClient } from "./cmux/socket-client";
 import {
 	BROWSER_PROTOCOL_TIMEOUT_MS,
+	closeLaunchedBrowser,
 	connectPuppeteer,
 	DEFAULT_VIEWPORT,
 	launchHeadlessBrowser,
@@ -52,13 +52,6 @@ export type BrowserKind = PuppeteerBrowserKind | FirefoxRelayKind | CmuxKind | T
 
 export type BrowserKindTag = BrowserKind["kind"];
 
-/**
- * Upper bound on `browser.close()` for headless Chromium. Puppeteer waits for
- * the process to fully exit; a wedged Chromium would otherwise hang cleanup
- * forever (issue #5260), so we cap the wait and force-kill on timeout.
- */
-const HEADLESS_CLOSE_TIMEOUT_MS = 5_000;
-
 interface BrowserHandleCommon<TKind extends BrowserKind = BrowserKind> {
 	key: string;
 	kind: TKind;
@@ -67,6 +60,8 @@ interface BrowserHandleCommon<TKind extends BrowserKind = BrowserKind> {
 
 export interface PuppeteerBrowserHandle extends BrowserHandleCommon<PuppeteerBrowserKind> {
 	browser: Browser;
+	/** Browser-level WebSocket endpoint tab workers attach through. */
+	wsEndpoint: string;
 	cdpUrl?: string;
 	pid?: number;
 	/** OMP-owned temp Chromium profile directory removed on dispose (process-local headless launches). */
@@ -141,6 +136,8 @@ export interface AcquireBrowserOptions {
 	cwd: string;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
 	signal?: AbortSignal;
+	/** Start, or replace an outdated, loopback relay daemon when a relay is not serving. Default true. */
+	startRelay?: boolean;
 }
 
 export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOptions): Promise<BrowserHandle> {
@@ -252,7 +249,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		if (isCompiledBinary() || workerHostEntry() !== null) {
 			return await openSharedHeadlessHandle(kind, opts);
 		}
-		const { browser, userDataDir } = await launchHeadlessBrowser({
+		const { browser, wsEndpoint, userDataDir } = await launchHeadlessBrowser({
 			headless: kind.headless,
 			viewport: opts.viewport,
 			ignoreHttpsErrors: kind.ignoreHttpsErrors,
@@ -262,6 +259,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint,
 			userDataDir,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
@@ -280,6 +278,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint: browser.wsEndpoint(),
 			cdpUrl,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
@@ -313,7 +312,8 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		// on demand (the extension dials in on its own). Hosts without a CLI
 		// worker entry (bun test, SDK embedding) never spawn brokers. Remote
 		// relay URLs must already be serving.
-		const autoStart = isLoopbackRelayUrl(cdpUrl) && (isCompiledBinary() || workerHostEntry() !== null);
+		const autoStart =
+			opts.startRelay !== false && isLoopbackRelayUrl(cdpUrl) && (isCompiledBinary() || workerHostEntry() !== null);
 		if (autoStart) {
 			await ensureRelayDaemon({ cdpUrl, signal: opts.signal });
 		}
@@ -364,6 +364,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint: browser.wsEndpoint(),
 			cdpUrl,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
@@ -424,6 +425,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		key: browserKey(kind),
 		kind,
 		browser,
+		wsEndpoint: browser.wsEndpoint(),
 		cdpUrl,
 		pid,
 		subprocess,
@@ -484,20 +486,7 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 			}
 			return;
 		}
-		if (handle.browser.connected) {
-			// Puppeteer's `browser.close()` resolves only once the Chromium
-			// process fully exits. A wedged Chromium (a known Windows failure
-			// mode) leaves this await pending forever, freezing `releaseTab` in
-			// the "Closing tab" phase (issue #5260). Bound it, then SIGKILL the
-			// process tree so cleanup always completes.
-			const proc = handle.browser.process();
-			try {
-				await withTimeout(handle.browser.close(), HEADLESS_CLOSE_TIMEOUT_MS, "Timed out closing headless browser");
-			} catch (err) {
-				logger.debug("Failed to close headless browser; force-killing", { error: (err as Error).message });
-				if (proc?.pid !== undefined) await gracefulKillTreeOnce(proc.pid).catch(() => undefined);
-			}
-		}
+		if (handle.browser.connected) await closeLaunchedBrowser(handle.browser);
 		// OMP owns the profile directory (puppeteer's temp cleanup is disabled by
 		// our explicit --user-data-dir), so remove it now the process tree has
 		// exited. Tolerant of the Windows lock-held window (issue #7058).
@@ -577,6 +566,7 @@ async function openSharedHeadlessHandle(
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint: shared.wsEndpoint,
 			sharedDaemon: { name: shared.daemonName, projectDir: shared.projectDir },
 			refCount: 0,
 			stealth: { browserSession: null, override: null },

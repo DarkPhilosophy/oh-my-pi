@@ -49,7 +49,7 @@ describe("text-mode command reports on a real terminal core", () => {
 		});
 		term = new VirtualTerminal(120, ROWS);
 		const composer = new Composer({ terminal: term });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		mode = new InteractiveMode(session, "test", () => {}, undefined, undefined, undefined, composer);
 	});
 
 	afterEach(async () => {

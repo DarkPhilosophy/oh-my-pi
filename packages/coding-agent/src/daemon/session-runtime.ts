@@ -735,7 +735,6 @@ async function createAgentSessionRuntimeInScope(
 		const mode: InteractiveMode = new InteractiveMode(
 			result.session,
 			VERSION,
-			undefined,
 			result.setToolUIContext,
 			result.lspServers,
 			result.mcpManager,

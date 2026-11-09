@@ -60,7 +60,7 @@ describe("command entry preserves completed tool frames", () => {
 		});
 		terminal = new VirtualTerminal(COLS, ROWS);
 		const composer = new Composer({ terminal });
-		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		mode = new InteractiveMode(session, "test", () => {}, undefined, undefined, undefined, composer);
 		cards = [];
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();

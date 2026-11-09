@@ -73,6 +73,7 @@ function makeCtx(): RenderInitialMessagesTestContext {
 	const ctx = {
 		settings: Settings.isolated({}),
 		chatContainer,
+		pendingShellContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
 		pendingMessagesContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
 		updatePendingMessagesDisplay: vi.fn(),
 		pendingBashComponents: [],
@@ -89,6 +90,7 @@ function makeCtx(): RenderInitialMessagesTestContext {
 				buildSessionContext: llmContextSpy,
 				getEntries: vi.fn(() => []),
 				getCwd: vi.fn(() => "/tmp"),
+				getConversationTip: () => undefined,
 			},
 		},
 		sessionManager: {
@@ -156,6 +158,7 @@ function makeRenderCtx(
 	chatContainer.setToolActivityVisible(!hideToolActivity);
 	const ctx = {
 		chatContainer,
+		pendingShellContainer: new Container(),
 		pendingMessagesContainer: new Container(),
 		updatePendingMessagesDisplay: () => helpers.updatePendingMessagesDisplay(),
 		compactionQueuedMessages: [],
@@ -199,6 +202,7 @@ function makeRenderCtx(
 			sessionManager: {
 				getEntries: vi.fn(() => []),
 				getCwd: vi.fn(() => "/tmp"),
+				getConversationTip: () => undefined,
 				putBlobSync: vi.fn(() => ({
 					hash: "hash",
 					path: "/tmp/hash",
