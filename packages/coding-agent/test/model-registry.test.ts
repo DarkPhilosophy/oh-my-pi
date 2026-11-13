@@ -2932,10 +2932,10 @@ describe("ModelRegistry", () => {
 							.accounts(provider)
 							.findIndex(account => account.credentialId === credentialId);
 						if (position === 0) {
-							return { ok: true, accessToken: "tok-account-0" };
+							return { ok: true, apiKey: "tok-account-0", accessToken: "tok-account-0" };
 						}
 						if (position === 1) {
-							return { ok: true, accessToken: "tok-account-1" };
+							return { ok: true, apiKey: "tok-account-1", accessToken: "tok-account-1" };
 						}
 						return { ok: false, error: "mock-failure" };
 					},
@@ -3099,6 +3099,7 @@ describe("ModelRegistry", () => {
 
 				const getOAuthAccessAtSpy = spyOn(authStorage.oauth, "accessById").mockResolvedValue({
 					ok: true,
+					apiKey: activeAccess.accessToken,
 					...activeAccess,
 				});
 				const getOAuthAccessSpy = spyOn(authStorage.oauth, "access");

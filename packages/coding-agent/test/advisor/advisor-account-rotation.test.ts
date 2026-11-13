@@ -18,6 +18,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { fixedAdvisorTools } from "../helpers/agent-session-setup";
 
 const CODEX_DENIAL =
 	"Codex error event: The 'gpt-daybreak-blue-latest' model is not supported when using Codex with a ChatGPT account. (code=invalid_request_error)";
@@ -87,7 +88,7 @@ describe("advisor account-policy rotation", () => {
 			sessionManager,
 			settings,
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: fixedAdvisorTools(),
 			advisorStreamFn,
 		});
 		expect(session.setAdvisorEnabled(true)).toBe(true);

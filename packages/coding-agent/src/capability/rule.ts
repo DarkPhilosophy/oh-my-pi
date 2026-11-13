@@ -40,6 +40,8 @@ export interface RuleFrontmatter {
 	agents?: string[] | string;
 	/** Per-rule TTSR interrupt mode override. */
 	interruptMode?: "never" | "prose-only" | "tool-only" | "always";
+	/** Per-rule TTSR repeat override (falls back to global ttsr.repeatMode). */
+	repeatMode?: "once" | "after-gap" | "always";
 	[key: string]: unknown;
 }
 
@@ -75,6 +77,8 @@ export interface Rule {
 	agents?: string[];
 	/** Per-rule TTSR interrupt mode override (falls back to global ttsr.interruptMode). */
 	interruptMode?: "never" | "prose-only" | "tool-only" | "always";
+	/** Per-rule TTSR repeat override (falls back to global ttsr.repeatMode); `always` is a one-turn gap, so the retry or continuation its own reminder spawns cannot re-fire it. */
+	repeatMode?: "once" | "after-gap" | "always";
 	/** Source metadata */
 	_source: SourceMeta;
 }

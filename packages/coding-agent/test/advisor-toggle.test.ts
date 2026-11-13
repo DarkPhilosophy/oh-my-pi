@@ -30,7 +30,7 @@ function restoreEnv(key: string, value: string | undefined): void {
 	}
 }
 import * as advisorModule from "../src/advisor";
-import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
+import { createInMemoryAuthStorage, fixedAdvisorTools } from "./helpers/agent-session-setup";
 
 import {
 	cfgAdvisorCurator,
@@ -98,7 +98,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 	});
 
@@ -306,7 +305,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -346,7 +344,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: session.settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 		expect(customSession.isAdvisorEnabled()).toBe(false);
 
@@ -412,7 +409,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings,
 			modelRegistry: registry,
-			advisorTools: [],
 		});
 		try {
 			expect(raceSession.isAdvisorEnabled()).toBe(true);
@@ -446,14 +442,12 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorTools: [],
 		});
 		const sessionB = new AgentSession({
 			agent: session.agent,
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		expect(sessionA.isAdvisorEnabled()).toBe(false);
@@ -498,7 +492,7 @@ describe("AgentSession advisor toggle", () => {
 					modelRoles: { advisor: `${model.provider}/${model.id}` },
 				}),
 				modelRegistry,
-				advisorTools: [],
+				advisorTools: fixedAdvisorTools(),
 				advisorStreamFn: advisorMock.stream,
 				advisorScope: parent?.advisorScope,
 			});
@@ -568,7 +562,7 @@ describe("AgentSession advisor toggle", () => {
 				modelRoles: { advisor: `${model.provider}/${model.id}` },
 			}),
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: fixedAdvisorTools(),
 			advisorScope: session.advisorScope,
 		});
 		const entered = Promise.withResolvers<void>();
@@ -620,7 +614,7 @@ describe("AgentSession advisor toggle", () => {
 				modelRoles: { advisor: `${model.provider}/${model.id}` },
 			}),
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: fixedAdvisorTools(),
 			advisorScope: session.advisorScope,
 		});
 		const entered = Promise.withResolvers<void>();
@@ -671,7 +665,7 @@ describe("AgentSession advisor toggle", () => {
 				modelRoles: { advisor: `${model.provider}/${model.id}` },
 			}),
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: fixedAdvisorTools(),
 			advisorScope: session.advisorScope,
 		});
 		try {
@@ -756,7 +750,7 @@ describe("AgentSession advisor toggle", () => {
 					modelRoles: { advisor: `${model.provider}/${model.id}` },
 				}),
 				modelRegistry,
-				advisorTools: [],
+				advisorTools: fixedAdvisorTools(),
 				advisorStreamFn: advisorMock.stream,
 				advisorScope: parent?.advisorScope,
 			});
@@ -831,7 +825,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -1189,26 +1182,31 @@ describe("AgentSession advisor toggle", () => {
 
 			enableAdvisor();
 			expect(session.applyAdvisorConfigs([{ name: "Security" }, { name: "Testing" }], undefined)).toBe(2);
-			session.agent.state.isStreaming = true;
+			vi.useFakeTimers();
 			try {
-				await adviseToolOf("Security").execute("w1", { note: "Window finding one.", severity: "nit" });
-				await adviseToolOf("Testing").execute("w2", { note: "Window finding two.", severity: "nit" });
+				session.agent.state.isStreaming = true;
+				try {
+					await adviseToolOf("Security").execute("w1", { note: "Window finding one.", severity: "nit" });
+					await adviseToolOf("Testing").execute("w2", { note: "Window finding two.", severity: "nit" });
+				} finally {
+					session.agent.state.isStreaming = false;
+				}
+
+				// Hold the clock inside the window even if the test process is busy.
+				vi.advanceTimersByTime(40);
+				expect(judgeCalls).toBe(0);
+				expect(session.yieldQueue.drainLazy()).toHaveLength(0);
+
+				// After the window the pair is judged together and both notes are delivered.
+				vi.advanceTimersByTime(250);
+				vi.useRealTimers();
+				const delivered = (await waitForQueuedAdvisorNotes(2)).join("\n");
+				expect(judgeCalls).toBe(1);
+				expect(delivered).toContain("Window finding one");
+				expect(delivered).toContain("Window finding two");
 			} finally {
-				session.agent.state.isStreaming = false;
+				vi.useRealTimers();
 			}
-
-			// Well inside the window: nothing is judged and nothing has reached the queue yet, which is
-			// what lets two advisors raising the same issue be collapsed into one note. Without the
-			// window each note is enqueued the moment it is raised, and curation never sees a pair.
-			await Bun.sleep(40);
-			expect(judgeCalls).toBe(0);
-			expect(session.yieldQueue.drainLazy()).toHaveLength(0);
-
-			// After the window the pair is judged together and both notes are delivered.
-			const delivered = (await waitForQueuedAdvisorNotes(2)).join("\n");
-			expect(judgeCalls).toBe(1);
-			expect(delivered).toContain("Window finding one");
-			expect(delivered).toContain("Window finding two");
 		});
 
 		it("delivers both groups when a second batch starts while the first is still being judged", async () => {
@@ -1644,7 +1642,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: branchManager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
-			advisorTools: [],
 			extensionRunner,
 		});
 		try {
@@ -1687,7 +1684,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: branchManager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
-			advisorTools: [],
 			extensionRunner,
 		});
 		try {
@@ -1737,7 +1733,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -1809,7 +1804,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -1906,7 +1900,7 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: fixedAdvisorTools(),
 		});
 
 		try {
@@ -2023,7 +2017,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 			settings: subSettings,
 			modelRegistry,
-			advisorTools: [],
 			agentKind: "sub",
 			advisorConfigs: roster,
 		});

@@ -37,7 +37,7 @@ export function createRenderWorkflow(
 	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor" | "eval",
 	segment?: number,
 ): RenderWorkflow {
-	if (scenario === "ask" && (!context.hasUI || !context.ui?.askDialog)) {
+	if (scenario === "ask" && (!context.hasUI || !context.ui?.formDialog)) {
 		throw new Error("Render workflow requires interactive ask support.");
 	}
 	const directory = TempDir.createSync(path.join(os.tmpdir(), "omp-render-workflow-"));
@@ -172,26 +172,19 @@ export function createRenderWorkflow(
 	actions.push({
 		name: "ask",
 		args: () => ({
-			questions: [
-				{
-					id: "render-workflow",
-					question: `Repetition ${repetition}/${repeat}: continue after inspecting the rendering?`,
-					options: [
-						{
-							label: "Continue",
-							description:
-								scenario === "ask"
-									? "Close the question and stream a short continuation."
-									: "Resume reads, edits and streamed output.",
-						},
-						{
-							label: "Continue with another selection",
-							description: "Exercise a different selection before resuming.",
-						},
-					],
-					recommended: 0,
-				},
-			],
+			html: [
+				"<form>",
+				"<fieldset>",
+				`<legend>Repetition ${repetition}/${repeat}: continue after inspecting the rendering?</legend>`,
+				`<label><input type="radio" name="render-workflow" value="continue" checked> Continue: ${
+					scenario === "ask"
+						? "Close the question and stream a short continuation."
+						: "Resume reads, edits and streamed output."
+				}</label>`,
+				'<label><input type="radio" name="render-workflow" value="another"> Continue with another selection: Exercise a different selection before resuming.</label>',
+				"</fieldset>",
+				"</form>",
+			].join("\n"),
 		}),
 	});
 	actions.push({ name: "todo", args: () => ({ op: "done", task: tasks[2] }) });

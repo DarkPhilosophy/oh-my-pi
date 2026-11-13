@@ -11,7 +11,7 @@ import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { ExtensionRuntime, loadExtensionFromFactory } from "../src/extensibility/extensions/loader";
 import { ExtensionRunner } from "../src/extensibility/extensions/runner";
 import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
-import { AskDialogComponent } from "@oh-my-pi/pi-tui/overlays/ask-dialog";
+import { HtmlFormDialog } from "@oh-my-pi/pi-tui/html-form/dialog";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
@@ -619,10 +619,14 @@ it.each([
 		try {
 			const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "ask" }, mode.getToolUIContext());
 			await question.promise;
-			await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
-			expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
-			expect(terminal.getViewport().some(row => row.includes("select") && row.includes("cancel"))).toBeTrue();
-			terminal.sendInput(key);
+			await terminal.waitForRender(() => mode.ui.getFocused() instanceof HtmlFormDialog);
+			expect(mode.ui.getFocused()).toBeInstanceOf(HtmlFormDialog);
+			expect(terminal.getViewport().some(row => row.includes("choose") && row.includes("cancel"))).toBeTrue();
+			// Enter picks the preselected radio and moves on; a second Enter submits from the Submit row.
+			for (const input of key === "\r" ? ["\r", "\r"] : [key]) {
+				terminal.sendInput(input);
+				await terminal.waitForRender();
+			}
 			await running;
 			await session.waitForIdle();
 			for (let frame = 0; frame < 3; frame++) {
@@ -679,7 +683,7 @@ it("keeps a very long ask clipped and uncommitted until every answer is submitte
 	const checkPending = async () => {
 		mode.ui.renderNow();
 		await terminal.waitForRender();
-		expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
+		expect(mode.ui.getFocused()).toBeInstanceOf(HtmlFormDialog);
 		expect(assistantEnded).toBeTrue();
 		expect(askResults).toBe(0);
 		const viewport = terminal.getViewport().map(row => Bun.stripANSI(row));
@@ -694,7 +698,7 @@ it("keeps a very long ask clipped and uncommitted until every answer is submitte
 	try {
 		const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "ask" }, mode.getToolUIContext());
 		await questionReady.promise;
-		await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
+		await terminal.waitForRender(() => mode.ui.getFocused() instanceof HtmlFormDialog);
 		await checkPending();
 		terminal.sendInput("\r");
 		await checkPending();
@@ -897,8 +901,10 @@ it.each(["ask", "job", "markdown", "eval"] as const)(
 			const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario }, mode.getToolUIContext());
 			if (scenario === "ask") {
 				await question.promise;
-				await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
-				expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
+				await terminal.waitForRender(() => mode.ui.getFocused() instanceof HtmlFormDialog);
+				expect(mode.ui.getFocused()).toBeInstanceOf(HtmlFormDialog);
+				terminal.sendInput("\r");
+				await terminal.waitForRender();
 				terminal.sendInput("\r");
 			}
 			await running;
@@ -1119,8 +1125,8 @@ it.each([20, 40, 100])(
 				expect(terminal.getViewport().some(row => row.includes("Finish or clear the current prompt"))).toBeTrue();
 				terminal.sendInput("\r");
 			}
-			await terminal.waitForRender(() => mode.ui.getFocused() instanceof AskDialogComponent);
-			expect(mode.ui.getFocused()).toBeInstanceOf(AskDialogComponent);
+			await terminal.waitForRender(() => mode.ui.getFocused() instanceof HtmlFormDialog);
+			expect(mode.ui.getFocused()).toBeInstanceOf(HtmlFormDialog);
 			const count = assistantStarts;
 			await Bun.sleep(100);
 			expect(assistantStarts).toBe(count);

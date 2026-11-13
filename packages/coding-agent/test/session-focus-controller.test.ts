@@ -107,6 +107,7 @@ function makeHarness(options: { renderInitialMessages?: () => void | Promise<voi
 				resetTranscriptAnchors++;
 			},
 			restorePendingToolResults() {},
+			runSerialized: (run: () => Promise<void>) => run(),
 		},
 		statusLine: {
 			setSession: (session: AgentSession, focusedAgentId?: string) => {

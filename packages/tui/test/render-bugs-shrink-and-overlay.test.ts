@@ -129,7 +129,7 @@ describe("bug 1: slot shrink (ask answered) must return chat and editor to the b
 		const h = makeHarness(0, rows);
 		const ask = new ToolExecutionComponent(
 			"ask",
-			{ questions: [{ id: "q", question: "ASK_REAL_QUESTION", options: [{ label: "Choice" }] }] },
+			{ html: '<form><label>ASK_REAL_QUESTION<select name="q"><option>Choice</option></select></label></form>' },
 			{},
 			undefined,
 			h.composer.ui,
@@ -149,9 +149,7 @@ describe("bug 1: slot shrink (ask answered) must return chat and editor to the b
 				{
 					content: [{ type: "text", text: "Choice" }],
 					details: {
-						results: [
-							{ id: "q", question: "ASK_REAL_QUESTION", options: ["Choice"], selectedOptions: ["Choice"] },
-						],
+						answers: [{ name: "q", question: "ASK_REAL_QUESTION", answer: "Choice" }],
 					},
 				},
 				false,

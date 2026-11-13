@@ -736,21 +736,25 @@ fn run_boundary(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>) -> bool {
 		let mode = run.mode;
 		super::mode::set_mode(&mut k.root, cx.store, vp, mode);
 	}
+	if vp.parent.is_none() {
+		k.note_prior_jobs(vp);
+	}
 	let run = vp.runs.front_mut().expect("present");
-	if vp.overlay.is_none() {
+	if vp.image.is_none() {
 		if let Some(args) = run.args.take() {
 			k.root.set_positional(cx.store, args);
 		}
 		if let Some(cwd) = run.cwd.take() {
-			k.root.set_misc(cx.store, MiscKey::Cwd, cwd.clone());
-			k.root
-				.set_var(cx.store, b"PWD", Some(Var::scalar(cwd.clone(), Attrs::EXPORT)));
+			if !matches!(state::root_misc(cx.store, MiscKey::Cwd), Ok(Some(v)) if v == cwd.as_slice())
+			{
+				k.root.set_misc(cx.store, MiscKey::Cwd, cwd.clone());
+			}
+			set_root_global(k, cx.store, b"PWD", Var::scalar(cwd.clone(), Attrs::EXPORT));
 			vp.cwd = cwd;
 		}
 		for (name, value) in std::mem::take(&mut run.env) {
 			if is_ident(&name) {
-				k.root
-					.set_var(cx.store, &name, Some(Var::scalar(value, Attrs::EXPORT)));
+				set_root_global(k, cx.store, &name, Var::scalar(value, Attrs::EXPORT));
 			}
 		}
 		// `$-` shows `c` for a `-c` string, `s` for a script on stdin.
@@ -759,7 +763,12 @@ fn run_boundary(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>) -> bool {
 			Origin::Stdin => "s",
 			_ => "",
 		};
-		k.root.set_misc(cx.store, MiscKey::RunOrigin, flag);
+		// Unchanged (the common case): no write, so the forks that share the
+		// root's records keep sharing them.
+		if !matches!(state::root_misc(cx.store, MiscKey::RunOrigin), Ok(Some(v)) if v == flag.as_bytes())
+		{
+			k.root.set_misc(cx.store, MiscKey::RunOrigin, flag);
+		}
 	}
 	let from_stdin = matches!(run.chain.links[0].origin, Origin::Stdin);
 	let mut kind = FrameKind::script(&run.src, Pos::START, ScriptKind::Run);
@@ -769,7 +778,7 @@ fn run_boundary(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>) -> bool {
 	vp.frames.push(Frame::new(None, 0, kind));
 	// zsh `parseargs`: commands read from standard input set `shinstdin`.
 	if from_stdin
-		&& vp.overlay.is_none()
+		&& vp.image.is_none()
 		&& vp.mode.dialect() == Dialect::Zsh
 		&& let Err(err) = state::set_zsh_option(&mut k.root, cx.store, vp, ZshOpt::Shinstdin, true)
 	{
@@ -2174,7 +2183,9 @@ pub fn stop_flow(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, line: u32, sto
 			// bash exits 127 from a `-c` string (`run_one_command`), 1 from a
 			// script and from a subshell (`execute_in_subshell` keeps the
 			// failure status); a nested shell (depth 0) is its own `-c` shell.
-			let command = super::subshell_depth(vp) == 0
+			// zsh exits 1 from any of them (`errflag` ends `loop` with 1).
+			let command = vp.mode.dialect() != Dialect::Zsh
+				&& super::subshell_depth(vp) == 0
 				&& matches!(
 					state::record(cx.store, vp, Key::Misc(MiscKey::RunOrigin)),
 					Ok(Some(Record::Misc(origin))) if origin.as_slice() == b"c"
@@ -2440,7 +2451,10 @@ pub fn start_zsh_procsub(
 	let mut fds = vp.fds.clone();
 	fds.set(their_fd, Some(theirs));
 	let line = line_of(vp, 0);
-	let child = vp.child_text(k, cx.store, text, line, fds);
+	let mut child = vp.child_text(k, cx.store, text, line, fds);
+	if !job_control(k, cx, vp) {
+		ignore_async_signals(k, cx, &mut child);
+	}
 	let vpid = child.vpid;
 	// Not a job: its externals stay in the shell's group, without the
 	// terminal (zsh `ESUB_ASYNC`).
@@ -3909,13 +3923,36 @@ fn stage_level(unit: &Unit, entry: u32, background: bool) -> u32 {
 
 /// Whether the background job whose body starts at `entry` may be known by
 /// its program's OS pid ([`Bang`]): its body is one simple command
-/// ([`BangStage::Lone`]), or a group that `exec`s one (`{ exec cmd; }`,
-/// [`BangStage::Exec`]). Any other compound job keeps its virtual pid at
-/// once: its readers never wait.
+/// ([`BangStage::Lone`]), a group that `exec`s one (`{ exec cmd; }`,
+/// [`BangStage::Exec`]), or a pipeline, whose last stage decides
+/// ([`BangStage::Pipeline`], [`retarget_bang`]). Any other compound job
+/// keeps its virtual pid at once: its readers never wait.
 fn bang_stage(unit: &Unit, entry: u32) -> Option<BangStage> {
 	let code = |at: u32| unit.ops.get(at as usize).map(|op| op.code);
 	if code(entry) == Some(Opcode::Exec) && code(entry + 1) == Some(Opcode::SubExit) {
 		return Some(BangStage::Lone);
+	}
+	// `time` and `!` wrap the pipeline's spawn: `[TimeStart] Spawn …
+	// [Not] [TimeEnd]`, then the job's `SubExit`.
+	let at = if code(entry) == Some(Opcode::TimeStart) {
+		entry + 1
+	} else {
+		entry
+	};
+	if let Some(op) = unit.ops.get(at as usize)
+		&& op.code == Opcode::Spawn
+		&& let Some(spawn) = unit.spawns.get(op.a as usize)
+		&& spawn.kind == SpawnKind::Pipeline
+	{
+		let mut end = spawn.end;
+		for wrap in [Opcode::Not, Opcode::TimeEnd] {
+			if code(end) == Some(wrap) {
+				end += 1;
+			}
+		}
+		if code(end) == Some(Opcode::SubExit) {
+			return Some(BangStage::Pipeline);
+		}
 	}
 	let group = [Opcode::Enter, Opcode::Exec, Opcode::Leave, Opcode::SubExit]
 		.iter()
@@ -3932,6 +3969,47 @@ fn bang_stage(unit: &Unit, entry: u32) -> Option<BangStage> {
 			|w| matches!(w.parts.as_slice(), [ir::Part::Lit(name)] if name.as_slice() == b"exec"),
 		);
 	(group && exec).then_some(BangStage::Exec)
+}
+
+/// The pipeline a background job's body is ([`BangStage::Pipeline`])
+/// started `stages` (`(vproc, entry)`; the last one a child, or the job's
+/// own vproc under `lastpipe`): its last stage decides the job's pid as a
+/// job body of its own would (bash and zsh name the last process in `$!`).
+/// While the job's `[n] pid…` line waits, every earlier stage decides the
+/// pid that line shows for it the same way (zsh names each process).
+fn retarget_bang(k: &mut Kernel, job_vproc: Vpid, unit: &Unit, stages: &[(Vpid, u32)]) {
+	let Some(i) = k
+		.bangs
+		.iter()
+		.position(|b| b.vproc == job_vproc && b.stage == BangStage::Pipeline)
+	else {
+		return;
+	};
+	let Some(&(last, last_entry)) = stages.last() else {
+		return;
+	};
+	let lone = |entry: u32| bang_stage(unit, entry).filter(|s| *s != BangStage::Pipeline);
+	if super::jobctl::announcing(k, job_vproc) {
+		let mut pids = Vec::with_capacity(stages.len());
+		for &(stage, entry) in stages {
+			let decides = lone(entry);
+			if let Some(kind) = decides
+				&& stage != last
+			{
+				k.bangs.push(Bang { vproc: stage, job: stage, stage: kind });
+			}
+			pids.push((stage, decides.is_some()));
+		}
+		super::jobctl::pipeline_started(k, job_vproc, &pids);
+	}
+	match lone(last_entry) {
+		Some(stage) => {
+			let bang = &mut k.bangs[i];
+			bang.vproc = last;
+			bang.stage = stage;
+		},
+		None => k.settle_bang(job_vproc, None),
+	}
 }
 
 /// Source text of stage `i` of pipeline `info`, for a pipe tap: the node of
@@ -3954,8 +4032,15 @@ fn spawn(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, unit: &Arc<Unit>, op: 
 		.is_some_and(|s| !s.children.is_empty());
 	if !started {
 		// A job that forks (a subshell, pipeline, job or coprocess of its
-		// own) is not just one program: it keeps its virtual pid.
-		if !k.bangs.is_empty() {
+		// own) is not just one program: it keeps its virtual pid. The
+		// pipeline a job's body is passes the decision to its last stage
+		// ([`retarget_bang`]).
+		let own_pipeline = info.kind == SpawnKind::Pipeline
+			&& k
+				.bangs
+				.iter()
+				.any(|b| b.vproc == vp.vpid && b.stage == BangStage::Pipeline);
+		if !k.bangs.is_empty() && !own_pipeline {
 			k.settle_bang(vp.vpid, None);
 		}
 		let mut children = Vec::with_capacity(info.stages.len());
@@ -3985,6 +4070,9 @@ fn spawn(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, unit: &Arc<Unit>, op: 
 					fds.set(0, Some(null.clone()));
 				}
 				let mut child = vp.child(k, cx.store, Arc::clone(unit), info.stages[0].entry, fds);
+				if info.kind == SpawnKind::Background && !control {
+					ignore_async_signals(k, cx, &mut child);
+				}
 				if info.kind == SpawnKind::Background {
 					let level = stage_level(unit, info.stages[0].entry, true);
 					super::set_subshell_depth(&mut child, super::subshell_depth(vp) + level);
@@ -4039,6 +4127,15 @@ fn spawn(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, unit: &Arc<Unit>, op: 
 				let mut stdin = vp.fds.get(0).cloned();
 				for (i, stage) in info.stages.iter().enumerate() {
 					if lastpipe && i + 1 == n {
+						if !k.bangs.is_empty() {
+							let stages: Vec<(Vpid, u32)> = children
+								.iter()
+								.zip(&info.stages)
+								.map(|(&child, s)| (child, s.entry))
+								.chain([(vp.vpid, stage.entry)])
+								.collect();
+							retarget_bang(k, vp.vpid, unit, &stages);
+						}
 						k.emit_op(cx, vp, op.node, EventData::Pipeline { stages: &children });
 						let line_shift = top_frame(vp).line_shift;
 						let sc = scratch(vp);
@@ -4081,6 +4178,14 @@ fn spawn(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, unit: &Arc<Unit>, op: 
 					}
 					children.push(child.vpid);
 					k.spawned.push(Box::new(child));
+				}
+				if !k.bangs.is_empty() {
+					let stages: Vec<(Vpid, u32)> = children
+						.iter()
+						.zip(&info.stages)
+						.map(|(&child, s)| (child, s.entry))
+						.collect();
+					retarget_bang(k, vp.vpid, unit, &stages);
 				}
 				k.emit_op(cx, vp, op.node, EventData::Pipeline { stages: &children });
 			},
@@ -4170,6 +4275,82 @@ pub fn job_control(k: &mut Kernel, cx: &mut Cx<'_>, vp: &Vproc) -> bool {
 	!vp.jobs.subshell && state::option(&mut k.root, cx.store, vp, OptId::Monitor).unwrap_or(false)
 }
 
+/// Set root global `name` to `var` unless it already holds it: the forks
+/// sharing the root's records keep sharing them, and a saved state stays
+/// unchanged.
+fn set_root_global(k: &mut Kernel, store: &mut dyn StateStore, name: &[u8], var: Var) {
+	if !matches!(state::global(store, name), Ok(Some(v)) if *v == var) {
+		k.root.set_var(store, name, Some(var));
+	}
+}
+
+/// On Windows, an asynchronous command without job control ignores
+/// `SIGINT` (and in zsh `SIGQUIT`), as zsh (`entersubsh` with
+/// `ESUB_ASYNC`) and bash (`setup_async_signals`) have it: the keyboard's
+/// Ctrl-C leaves it running (its programs lead console groups of their
+/// own, out of the console's Ctrl-C). Ignored traps it lists (`trap -- ''
+/// INT`) and may replace, and its programs start with them ignored
+/// ([`SpawnSpec::sigmask_ign`](crate::bash::SpawnSpec)). bash's ignored
+/// `SIGQUIT`, which it does not list, is not modelled. A bash subshell cannot
+/// trap the ignore away (it was ignored on entry, [`MiscKey::HardIgnored`]);
+/// zsh's can. Elsewhere the dispositions are left as they are.
+///
+/// Every asynchronous command forked from the same records gets the same
+/// ones back: the first one's are kept ([`Kernel::async_ignored`]) and
+/// shared by the next while one of them lives, rather than each copying its
+/// parent's.
+fn ignore_async_signals(k: &mut Kernel, cx: &mut Cx<'_>, child: &mut Vproc) {
+	use crate::bash::Signal;
+	if k.engine.config().platform != crate::bash::ids::Platform::Windows {
+		return;
+	}
+	let sigs: &[Signal] = if child.mode.dialect() == Dialect::Zsh {
+		&[Signal::Int, Signal::Quit]
+	} else {
+		&[Signal::Int]
+	};
+	for &sig in sigs {
+		child.own_traps = child.own_traps.with(TrapKey::Signal(sig));
+	}
+	let Some(image) = child.image.as_mut() else {
+		return;
+	};
+	if let Some((mode, from, to)) = &k.async_ignored
+		&& *mode == child.mode
+		&& image.shares_records(from)
+		&& image.set_records(to)
+	{
+		return;
+	}
+	let from = image.records();
+	for &sig in sigs {
+		let key = TrapKey::Signal(sig);
+		let record = Record::Trap { mode: child.mode, action: BString::default() };
+		state::store_record(&mut k.root, cx.store, child, KeyBuf::Trap(key), Some(record));
+	}
+	if child.mode.dialect() != Dialect::Zsh {
+		let mut names = match state::record(cx.store, child, Key::Misc(MiscKey::HardIgnored)) {
+			Ok(Some(Record::Words(names))) => names.clone(),
+			_ => Vec::new(),
+		};
+		let int = BString::from(Signal::Int.to_string());
+		if !names.contains(&int) {
+			names.push(int);
+		}
+		let record = Record::Words(names);
+		state::store_record(
+			&mut k.root,
+			cx.store,
+			child,
+			KeyBuf::Misc(MiscKey::HardIgnored),
+			Some(record),
+		);
+	}
+	if let Some(image) = &child.image {
+		k.async_ignored = Some((child.mode, from, image.records()));
+	}
+}
+
 /// The job table a child that lists its parent's jobs starts with (a
 /// command substitution, a `jobs` pipeline stage): copies of them, which
 /// are not its children; `subshell` turns job control off.
@@ -4227,7 +4408,10 @@ fn start_coproc(
 	let mut fds = vp.fds.clone();
 	fds.set(0, Some(FdRef::mem(in_r)));
 	fds.set(1, Some(FdRef::mem(out_w)));
-	let child = vp.child(k, cx.store, Arc::clone(unit), entry, fds);
+	let mut child = vp.child(k, cx.store, Arc::clone(unit), entry, fds);
+	if !job_control(k, cx, vp) {
+		ignore_async_signals(k, cx, &mut child);
+	}
 	// A job of its own under job control (never in the foreground).
 	super::jobctl::own_job(k, child.vpid);
 	let vpid = child.vpid;
@@ -4638,11 +4822,11 @@ fn push_trap(
 }
 
 /// Which of the DEBUG, ERR and RETURN traps may have an action somewhere
-/// (the store or a vproc's overlay). [`start_trap`] asks
+/// (the store or a vproc's image). [`start_trap`] asks
 /// before each command and each function return; with no such trap set
 /// (the common case) it answers without frame scans, option reads or
 /// store lookups. Bits are only ever set: `trap` sets the key's bit when
-/// it installs an action, a restore sets all (restored overlays), and the
+/// it installs an action, a restore sets all (restored images), and the
 /// store's own records are read once per store epoch. A trap reset
 /// later keeps its bit; the full check then decides, as before.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -4664,12 +4848,12 @@ impl PseudoTraps {
 		}
 	}
 
-	/// `trap` installed an action for `key` (in the root or an overlay).
+	/// `trap` installed an action for `key` (in the root or an image).
 	pub const fn note(&mut self, key: TrapKey) {
 		self.bits |= Self::bit(key);
 	}
 
-	/// Any pseudo-trap may be set (restored overlays are not inspected).
+	/// Any pseudo-trap may be set (restored images are not inspected).
 	pub const fn note_all(&mut self) {
 		self.bits = 7;
 	}

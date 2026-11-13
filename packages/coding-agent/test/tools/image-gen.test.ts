@@ -156,6 +156,34 @@ describe("imageGenTool", () => {
 		);
 	});
 
+	it("offline skips a foreign image backend and uses a same-provider fallback", async () => {
+		const foreign = catalogModel("deepinfra", "foreign-image", "openai-images");
+		const local = catalogModel("xai", "same-image", "openai-images");
+		const active = catalogModel("xai", "active-chat", "openai-responses", "chat");
+		const urls: string[] = [];
+		const settings = Settings.isolated({
+			"models.offline": true,
+			modelRoles: { image: "deepinfra/foreign-image" },
+			"retry.fallbackChains": { image: ["xai/same-image"] },
+		});
+		const ctx = createContext({
+			models: [foreign, local, active],
+			settings,
+			activeModel: active,
+			fetch: async input => {
+				urls.push(input.toString());
+				return new Response(JSON.stringify({ data: [{ b64_json: WEBP_DATA }] }), {
+					headers: { "content-type": "application/json" },
+				});
+			},
+		});
+
+		const result = await imageGenTool.execute("offline", { subject: "a harbor" }, undefined, ctx);
+		generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+		expect(urls).toEqual(["https://xai.example/v1/images/generations"]);
+		expect(result.details?.model).toBe("same-image");
+	});
+
 	it("generates through a Factory Droid image model chosen for the image role", async () => {
 		const factory = factoryDroidRegistry()
 			.filter(({ spec }) => spec.id === "kimi-k3" || spec.id === "gpt-image-2.5-sunburst")

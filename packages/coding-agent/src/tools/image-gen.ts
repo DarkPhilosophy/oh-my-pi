@@ -42,10 +42,11 @@ import {
 	untilAborted,
 } from "@oh-my-pi/pi-utils";
 import { getEffectiveTokenCost } from "@oh-my-pi/pi-catalog/models";
+import { cfgOffline } from "../config/auxiliary-model-policy";
 import { type RoleChainCandidate, resolveModelRoleValue, resolveRoleChain } from "../config/model-resolver";
 import { roleCandidatePool } from "../config/model-roles";
 import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
-import { settings } from "../config/settings";
+import { isSettingsInitialized, settings } from "../config/settings";
 import type { CustomTool, CustomToolContext } from "../extensibility/custom-tools/types";
 import { resolveXAIHttpCredentials } from "../lib/xai-http";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
@@ -1428,8 +1429,14 @@ async function executeCatalogImageGeneration(
 
 		const failures: ProviderHttpError[] = [];
 		const skipped: string[] = [];
+		const offline = cfgOffline.get(effectiveSettings);
+		const activeProvider = ctx.model?.provider;
 		let inputImages: ImageGenerationRequest["inputImages"];
 		for (const model of candidates) {
+			if (offline && (!activeProvider || model.provider !== activeProvider)) {
+				skipped.push(`${model.provider}/${model.id} (offline provider restriction)`);
+				continue;
+			}
 			if (!isImageGenerationApi(model.api)) {
 				logger.warn("Skipping unsupported image model API", {
 					provider: model.provider,
@@ -1456,6 +1463,10 @@ async function executeCatalogImageGeneration(
 				carrier = model.hostedImage ? model : resolveHostedImageCarrier(ctx.modelRegistry, model, ctx.model);
 				if (!carrier) {
 					skipped.push(`${model.provider}/${model.id} (hosted chat carrier unavailable)`);
+					continue;
+				}
+				if (offline && carrier.provider !== activeProvider) {
+					skipped.push(`${carrier.provider}/${carrier.id} (offline provider restriction)`);
 					continue;
 				}
 				const carrierKey = await ctx.modelRegistry.getApiKey(carrier, sessionId, { signal: requestSignal });
@@ -1531,7 +1542,9 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 	description: prompt.render(imageGenDescription),
 	parameters: imageGenSchema,
 	async execute(_toolCallId, params, _onUpdate, ctx, signal) {
+		const offline = ctx.settings ? cfgOffline.get(ctx.settings) : isSettingsInitialized() && cfgOffline.get(settings);
 		if (
+			offline ||
 			params.model ||
 			(params.provider === undefined &&
 				configuredImageProviderOrder.length === 0 &&

@@ -33,7 +33,7 @@
 import { vi } from "bun:test";
 import * as runStatusModule from "@oh-my-pi/pi-coding-agent/utils/run-status";
 import * as titleGeneratorModule from "@oh-my-pi/pi-coding-agent/utils/title-generator";
-import type { RunStatus } from "@oh-my-pi/pi-coding-agent/utils/run-status";
+import type { BlockedStatus, RunFlowStatus } from "@oh-my-pi/pi-coding-agent/utils/run-status";
 import { isSettingsInitialized, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import type { MCPServerConnection } from "@oh-my-pi/pi-coding-agent/mcp/types";
@@ -118,8 +118,6 @@ export function createSessionStub(
 		effectiveExtensionRoots: { explicit: [], mode: "merge", configured: [], configuredLevel: "user" },
 		modelRegistry: {},
 		getToolByName: () => undefined,
-		hasSessionApproval: () => false,
-		getApprovalGrants: () => ({ present: () => new Set<string>() }),
 		hasBuiltInTool: () => true,
 		getLastAssistantMessage: () => undefined,
 		agent: {
@@ -230,6 +228,8 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		chatContainer,
 		statusContainer: new Container(),
 		editorContainer: new Container(),
+		editorTopGapContainer: new Container(),
+		statusRowOccupied: false,
 		pendingShellContainer: new Container(),
 		pendingMessagesContainer: new Container(),
 		todoContainer: new Container(),
@@ -310,7 +310,8 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		setTerminalTitleState: (state: "idle" | "working" | "attention") =>
 			titleGeneratorModule.setTerminalTitleState(state),
 		// The real context routes through the run-status module; keep that path observable to spies.
-		setRunStatus: (status: RunStatus) => runStatusModule.setRunStatus(status),
+		setRunStatus: (status: RunFlowStatus) => runStatusModule.setRunStatus(status),
+		holdBlockedStatus: (status: BlockedStatus) => runStatusModule.holdBlockedStatus(status),
 		syncRetryHintRow: vi.fn(),
 		clearTransientSessionUi: vi.fn(),
 		prepareSessionSwitch: vi.fn(async () => {}),

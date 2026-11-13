@@ -984,6 +984,9 @@ export const evalToolRenderer = {
 			invalidate: () => {
 				cached = undefined;
 			},
+			releaseRenderCaches: () => {
+				cached = undefined;
+			},
 		});
 	},
 
@@ -994,12 +997,6 @@ export const evalToolRenderer = {
 		_args?: EvalRenderArgs,
 	): Component {
 		const details = result.details;
-
-		const rawOutput =
-			options.renderContext?.output ?? (result.content?.find(c => c.type === "text")?.text ?? "").trimEnd();
-		// Strip the LLM-facing notice (appended by wrappedExecute) before display;
-		// the styled `warningLine` below carries the same text in ⟨…⟩ form.
-		const output = stripOutputNotice(rawOutput, details?.meta).trimEnd();
 
 		const timeoutSeconds = options.renderContext?.timeout;
 		const timeoutLine =
@@ -1119,8 +1116,20 @@ export const evalToolRenderer = {
 				invalidate: () => {
 					cached = undefined;
 				},
+				releaseRenderCaches: () => {
+					cached = undefined;
+				},
 			});
 		}
+
+		// Strip the LLM-facing notice (appended by wrappedExecute) before display;
+		// the styled `warningLine` below carries the same text in ⟨…⟩ form.
+		const readOutput = (): string => {
+			const rawOutput =
+				options.renderContext?.output ?? (result.content?.find(c => c.type === "text")?.text ?? "").trimEnd();
+			return stripOutputNotice(rawOutput, details?.meta).trimEnd();
+		};
+		const output = readOutput();
 
 		const statusEvents = details?.statusEvents ?? [];
 		const statusLines = renderStatusEvents(
@@ -1163,16 +1172,14 @@ export const evalToolRenderer = {
 			return new Text(lines.join("\n"), 0, 0);
 		}
 
-		const styledOutput = output
-			.split("\n")
-			.map(line => uiTheme.fg("toolOutput", line))
-			.join("\n");
-		const textContent = `\n${styledOutput}`;
-
 		let cachedWidth: number | undefined;
-		let cachedLines: readonly string[] | undefined;
-		let cachedSkipped: number | undefined;
 		let cachedPreviewLines: number | undefined;
+		let cachedRows: readonly string[] | undefined;
+		const dropCache = () => {
+			cachedWidth = undefined;
+			cachedPreviewLines = undefined;
+			cachedRows = undefined;
+		};
 
 		return {
 			render: (width: number): readonly string[] => {
@@ -1180,23 +1187,26 @@ export const evalToolRenderer = {
 					options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES,
 					previewWindowRows(),
 				);
-				if (cachedLines === undefined || cachedWidth !== width || cachedPreviewLines !== previewLines) {
-					const result = truncateToVisualLines(textContent, previewLines, width);
-					cachedLines = result.visualLines;
-					cachedSkipped = result.skippedCount;
-					cachedWidth = width;
-					cachedPreviewLines = previewLines;
+				if (cachedRows !== undefined && cachedWidth === width && cachedPreviewLines === previewLines) {
+					return cachedRows;
 				}
+				// Styled from the result on each miss, never captured, so a retired
+				// card's released caches hold no copy of the output.
+				const styledOutput = readOutput()
+					.split("\n")
+					.map(line => uiTheme.fg("toolOutput", line))
+					.join("\n");
+				const result = truncateToVisualLines(`\n${styledOutput}`, previewLines, width);
 				const outputLines: string[] = [];
-				if (cachedSkipped && cachedSkipped > 0) {
+				if (result.skippedCount > 0) {
 					outputLines.push("");
 					const skippedLine = uiTheme.fg(
 						"dim",
-						`${formatEarlierLines({ hidden: cachedSkipped, shown: cachedLines.length })} (${expandKeyHint()} to expand)`,
+						`${formatEarlierLines({ hidden: result.skippedCount, shown: result.visualLines.length })} (${expandKeyHint()} to expand)`,
 					);
 					outputLines.push(truncateToWidth(skippedLine, width));
 				}
-				outputLines.push(...cachedLines);
+				outputLines.push(...result.visualLines);
 				if (statusLines.length > 0) {
 					outputLines.push(truncateToWidth(uiTheme.fg("dim", "Status"), width));
 					for (const statusLine of statusLines) {
@@ -1215,14 +1225,13 @@ export const evalToolRenderer = {
 				if (warningLine) {
 					outputLines.push(truncateToWidth(warningLine, width));
 				}
+				cachedWidth = width;
+				cachedPreviewLines = previewLines;
+				cachedRows = outputLines;
 				return outputLines;
 			},
-			invalidate: () => {
-				cachedWidth = undefined;
-				cachedLines = undefined;
-				cachedSkipped = undefined;
-				cachedPreviewLines = undefined;
-			},
+			invalidate: dropCache,
+			releaseRenderCaches: dropCache,
 		};
 	},
 

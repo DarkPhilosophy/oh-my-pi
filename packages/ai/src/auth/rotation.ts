@@ -139,19 +139,17 @@ export class RateLimits implements LimitsApi {
 		credentialType: AuthCredential["type"],
 		modelId: string | undefined,
 		blockScopeOverride?: string,
-		siblingScopesOverride?: readonly string[],
 	): CredentialBlockRouting {
 		const providerKey = providerTypeKey(provider, credentialType);
 		const strategy = this.#deps.strategies(provider);
 		const rankingContext: CredentialRankingContext = { modelId };
 		const defaultBlockScope = strategy?.blockScope?.(rankingContext);
 		const blockScope = blockScopeOverride ?? defaultBlockScope;
-		const requestBlockScopes = credentialBlockScopesForRequest(provider, strategy, rankingContext, defaultBlockScope);
+		const requestBlockScopes = credentialBlockScopesForRequest(strategy, rankingContext, defaultBlockScope);
 		const siblingBlockScopes =
-			siblingScopesOverride ??
-			(blockScopeOverride && !requestBlockScopes.includes(blockScopeOverride)
+			blockScopeOverride && !requestBlockScopes.includes(blockScopeOverride)
 				? [...requestBlockScopes, blockScopeOverride]
-				: requestBlockScopes);
+				: requestBlockScopes;
 		return {
 			providerKey,
 			strategy,
@@ -160,7 +158,7 @@ export class RateLimits implements LimitsApi {
 			siblingBlockScopes,
 		};
 	}
-	#blockCredentialForRotation(
+	async #blockCredentialForRotation(
 		provider: string,
 		sessionId: string | undefined,
 		credentialType: AuthCredential["type"],
@@ -168,7 +166,8 @@ export class RateLimits implements LimitsApi {
 		blockedUntil: number,
 		routing: CredentialBlockRouting,
 		providerTimed: boolean,
-	): UsageLimitMarkResult {
+		probe: { baseUrl?: string; signal?: AbortSignal } = {},
+	): Promise<UsageLimitMarkResult> {
 		// Snapshot the live block deadline BEFORE this call's mark: the merged
 		// value below masks a pre-existing block shorter than this call's own
 		// request (longest-wins), and recovery that replaces this call's
@@ -215,32 +214,100 @@ export class RateLimits implements LimitsApi {
 					this.#deps.affinity.allows(provider, sessionId, entry.credential),
 			);
 
-		let retryAtMs: number | undefined;
-		for (const candidate of remainingCredentials) {
-			// Sibling availability must use the same scope set selection reads, or
-			// this reports a sibling as free that selection will then refuse.
-			const candidateBlockedUntil = this.#deps.blocks.blockedUntil(
-				provider,
-				routing.providerKey,
-				candidate.index,
-				routing.siblingBlockScopes,
-			);
-			if (candidateBlockedUntil === undefined)
-				return {
-					switched: true,
+		let availability = this.#siblingAvailability(provider, routing, remainingCredentials);
+		// Selection re-checks live usage for a blocked account whose block a
+		// healthy report may lift; rotation must judge siblings the same way, or
+		// a stale block reports "no sibling" while the next resolve would happily
+		// serve that account.
+		if (!availability.free && (await this.#probeHealableSiblings(provider, routing, remainingCredentials, probe))) {
+			availability = this.#siblingAvailability(provider, routing, remainingCredentials);
+		}
+		return availability.free
+			? { switched: true, blockedUntilMs: mergedBlockedUntil, priorBlockedUntilMs, priorBlockedUntilTimed }
+			: {
+					switched: false,
+					retryAtMs: availability.retryAtMs,
 					blockedUntilMs: mergedBlockedUntil,
 					priorBlockedUntilMs,
 					priorBlockedUntilTimed,
 				};
-			if (retryAtMs === undefined || candidateBlockedUntil < retryAtMs) retryAtMs = candidateBlockedUntil;
+	}
+
+	/**
+	 * Whether any sibling is unblocked under the scopes selection reads; else the
+	 * earliest unblock. A sibling with a live model-policy block was refused the
+	 * requested model, and no block expiry restores that, so it adds no unblock
+	 * time a caller could usefully wait for.
+	 */
+	#siblingAvailability(
+		provider: string,
+		routing: CredentialBlockRouting,
+		siblings: readonly { credential: AuthCredential; index: number }[],
+	): { free: boolean; retryAtMs?: number } {
+		const modelPolicyScope = modelAccountPolicyBlockScope(routing.rankingContext.modelId);
+		let retryAtMs: number | undefined;
+		let quotaFallback = false;
+		for (const sibling of siblings) {
+			// Sibling availability must use the same scope set selection reads, or
+			// this reports a sibling as free that selection will then refuse.
+			const siblingBlockedUntil = this.#deps.blocks.blockedUntil(
+				provider,
+				routing.providerKey,
+				sibling.index,
+				routing.siblingBlockScopes,
+			);
+			if (siblingBlockedUntil === undefined) return { free: true };
+			if (
+				modelPolicyScope !== undefined &&
+				this.#deps.blocks.isScopeBlocked(provider, routing.providerKey, sibling.index, modelPolicyScope)
+			) {
+				continue;
+			}
+			if (
+				modelPolicyScope !== undefined &&
+				routing.blockScope === modelPolicyScope &&
+				!this.#deps.blocks.isBlocked(provider, routing.providerKey, sibling.index, [modelPolicyScope])
+			) {
+				quotaFallback = true;
+			}
+			if (retryAtMs === undefined || siblingBlockedUntil < retryAtMs) retryAtMs = siblingBlockedUntil;
 		}
-		return {
-			switched: false,
-			retryAtMs,
-			blockedUntilMs: mergedBlockedUntil,
-			priorBlockedUntilMs,
-			priorBlockedUntilTimed,
-		};
+		// Wait out short quota blocks before retrying a previously tried sibling.
+		// For a longer quota window, preserve selection's last resort: an entitled
+		// account still outranks an account known not to own the requested model.
+		const waitForQuota = retryAtMs !== undefined && retryAtMs - Date.now() <= SIBLING_UNBLOCK_WAIT_MAX_MS;
+		return { free: quotaFallback && !waitForQuota, retryAtMs };
+	}
+
+	/**
+	 * Re-check blocked OAuth siblings whose block a healthy live report can
+	 * lift, exactly as selection does. Returns whether any probe ran.
+	 */
+	async #probeHealableSiblings(
+		provider: string,
+		routing: CredentialBlockRouting,
+		siblings: readonly { credential: AuthCredential; index: number }[],
+		probe: { baseUrl?: string; signal?: AbortSignal },
+	): Promise<boolean> {
+		const reports = await raceSignal(
+			Promise.all(
+				siblings
+					.filter(sibling => sibling.credential.type === "oauth")
+					.map(sibling =>
+						this.#deps.usage.probeBlocked(
+							provider,
+							routing.providerKey,
+							sibling.index,
+							sibling.credential,
+							routing.siblingBlockScopes,
+							probe,
+						),
+					),
+			),
+			probe.signal,
+			"usage fetch aborted",
+		);
+		return reports.some(report => report !== undefined);
 	}
 
 	/**
@@ -314,7 +381,7 @@ export class RateLimits implements LimitsApi {
 		const targetIndex = this.#deps.pool
 			.entries(provider)
 			.findIndex(entry => entry.id === targetCredentialId && entry.credential.type === credentialType);
-		const rotation = this.#blockCredentialForRotation(
+		const rotation = await this.#blockCredentialForRotation(
 			provider,
 			sessionId,
 			credentialType,
@@ -322,6 +389,7 @@ export class RateLimits implements LimitsApi {
 			blockedUntil,
 			routing,
 			providerTimed,
+			{ baseUrl: options?.baseUrl, signal: options?.signal },
 		);
 		return {
 			...rotation,
@@ -405,8 +473,9 @@ export class RateLimits implements LimitsApi {
 	 * - usage-limit / account-rate-limit error → {@link RateLimits.markReached}
 	 *   (temporary block via its own backoff — default plus server usage-report
 	 *   reset; sticky left intact so the next resolve re-ranks around the block).
-	 * - exact model-entitlement denial (Codex ChatGPT account or Cursor plan) →
-	 *   temporarily block only that requested model, then rotate.
+	 * - exact model-entitlement denial (Codex ChatGPT account, Cursor plan, or
+	 *   Anthropic model-not-found 404) → temporarily block only that requested
+	 *   model, then rotate. A denial naming another model or provider changes nothing.
 	 * - other account-scoped policy denial → temporarily block that account
 	 *   without marking its credential suspect, then rotate through siblings.
 	 * - otherwise (hard 401 / auth failure) → mark the credential suspect (or
@@ -428,8 +497,10 @@ export class RateLimits implements LimitsApi {
 		const error = options?.error;
 		const status = AIError.status(error);
 		const message = error instanceof Error ? error.message : typeof error === "string" ? error : undefined;
-		const exactCursorModelPolicy = AIError.isCursorPlanAccountPolicyError(error, provider);
-		const accountPolicy = exactCursorModelPolicy || AIError.isAccountPolicyError(error);
+		// A provider-controlled model id must match the provider and request before any mutation.
+		if (AIError.isMismatchedModelEntitlementDenial(error, provider, options?.modelId)) return { switched: false };
+		const modelPolicy = AIError.isModelEntitlementDenial(error, provider, options?.modelId);
+		const accountPolicy = modelPolicy || AIError.isAccountPolicyError(error);
 		if (!accountPolicy && (AIError.isUsageLimit(error) || isUsageLimitOutcome(status, message))) {
 			// Thread the provider-specified reset window (e.g. Devin "Your limit
 			// will reset in 13 minutes") into the block duration so the credential
@@ -438,6 +509,7 @@ export class RateLimits implements LimitsApi {
 			const mark = await this.markReached(provider, sessionId, {
 				retryAfterMs,
 				providerTimed: retryAfterMs !== undefined,
+				baseUrl: options?.baseUrl,
 				modelId: options?.modelId,
 				apiKey: options?.apiKey,
 				credentialId: options?.credentialId,
@@ -446,18 +518,15 @@ export class RateLimits implements LimitsApi {
 			return awaitSiblingUnblock(mark, options?.signal, options?.waitForSibling);
 		}
 
-		const deniedModel = AIError.codexChatGPTAccountPolicyModel(error);
-		const exactCodexModelPolicy =
-			deniedModel !== undefined && AIError.isCodexChatGPTAccountPolicyError(error, provider, options?.modelId);
-		const exactModelPolicy = exactCodexModelPolicy || exactCursorModelPolicy;
+		const exactCodexModelPolicy = AIError.isCodexChatGPTAccountPolicyError(error, provider, options?.modelId);
 		let sessionCredential = await this.#resolveCredentialTarget(provider, sessionId, {
 			credentialId: options?.credentialId,
 			apiKey: options?.apiKey,
-			allowStaleOAuthBearer: accountPolicy || deniedModel !== undefined,
+			allowStaleOAuthBearer: accountPolicy,
 		});
 		if (
 			!sessionCredential &&
-			(accountPolicy || deniedModel !== undefined) &&
+			accountPolicy &&
 			sessionId !== undefined &&
 			options?.credentialId === undefined &&
 			options?.apiKey === undefined &&
@@ -475,29 +544,16 @@ export class RateLimits implements LimitsApi {
 			sessionCredential = await this.#resolveCredentialTarget(provider, sessionId);
 		}
 		if (!sessionCredential) return { switched: false };
-		// The exact sentence is provider-controlled input. A non-Codex provider,
-		// absent request model, or mismatched model must not turn it into either a
-		// global block or a hard-auth invalidation.
-		if (deniedModel !== undefined && !exactCodexModelPolicy) return { switched: false };
-		if (exactModelPolicy || accountPolicy) {
-			const modelPolicyScope = exactModelPolicy
-				? modelAccountPolicyBlockScope(provider, options?.modelId)
-				: undefined;
-			if (exactModelPolicy && modelPolicyScope === undefined) return { switched: false };
-			// An entitlement denial is about *which account owns the model*, not
-			// about usage windows. Judging sibling availability with the request's
-			// usage scopes (chat/spark/shared) made a sibling that merely hit its
-			// ordinary chat cap look unavailable, so the rotation reported
-			// "no sibling" and the session stayed pinned to the account that does
-			// not have the model at all. Only a sibling already denied for THIS
-			// model counts as unavailable here; a quota-capped sibling still gets
-			// selected and surfaces real usage-limit semantics from the wire.
+		if (accountPolicy) {
+			const modelPolicyScope = modelPolicy ? modelAccountPolicyBlockScope(options?.modelId) : undefined;
+			if (modelPolicy && modelPolicyScope === undefined) return { switched: false };
+			// Keep quota scopes when checking siblings: an entitled sibling may
+			// need its short usage block to expire before selection can retry it.
 			const routing = this.#credentialBlockRouting(
 				provider,
 				sessionCredential.type,
 				options?.modelId,
 				modelPolicyScope,
-				modelPolicyScope === undefined ? undefined : [modelPolicyScope],
 			);
 			// Account-wide denials must not inherit a quota scope that healthy usage can heal.
 			routing.blockScope = modelPolicyScope ?? ACCOUNT_POLICY_BLOCK_SCOPE;
@@ -508,7 +564,7 @@ export class RateLimits implements LimitsApi {
 			) {
 				this.#deps.affinity.clear(provider, sessionId);
 			}
-			const mark = this.#blockCredentialForRotation(
+			const mark = await this.#blockCredentialForRotation(
 				provider,
 				sessionId,
 				sessionCredential.type,
@@ -519,6 +575,7 @@ export class RateLimits implements LimitsApi {
 				Date.now() + (exactCodexModelPolicy ? MODEL_POLICY_BLOCK_MS : DEFAULT_BLOCK_MS),
 				routing,
 				false,
+				{ signal: options?.signal },
 			);
 			return awaitSiblingUnblock(mark, options?.signal, options?.waitForSibling);
 		}

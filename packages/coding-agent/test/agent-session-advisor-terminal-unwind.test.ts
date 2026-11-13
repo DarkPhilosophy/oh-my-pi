@@ -3,6 +3,7 @@ import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { AdviseTool } from "../src/advisor/advise-tool";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as judgment from "@oh-my-pi/pi-coding-agent/judgment";
@@ -11,6 +12,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { fixedAdvisorTools } from "./helpers/agent-session-setup";
 
 const boundaryToolSchema = type({});
 type BoundaryTool = AgentTool<typeof boundaryToolSchema, undefined>;
@@ -111,7 +113,6 @@ it.each([
 		const advisorStarted = Promise.withResolvers<void>();
 		const releaseAdvisor = Promise.withResolvers<void>();
 		const adviceAccepted = Promise.withResolvers<boolean>();
-		const completedReviewStarted = Promise.withResolvers<void>();
 		const continuationStarted = Promise.withResolvers<void>();
 		const releaseContinuation = Promise.withResolvers<void>();
 		const thirdTurnStart = Promise.withResolvers<void>();
@@ -156,7 +157,6 @@ it.each([
 						severity,
 					});
 				}
-				completedReviewStarted.resolve();
 				return textResponse("advisor quiet");
 			},
 		});
@@ -204,7 +204,6 @@ it.each([
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry: new ModelRegistry(auth, temp.join("models.yml")),
-			advisorTools: [],
 			advisorStreamFn: advisorMock.stream,
 		});
 		active = { session, auth, temp };
@@ -221,7 +220,7 @@ it.each([
 		const advisor = session.getAdvisorAgent();
 		if (!advisor) throw new Error("Expected advisor agent");
 		const advise = advisor.state.tools.find(tool => tool.name === "advise");
-		if (!advise) throw new Error("Expected advise tool");
+		if (!(advise instanceof AdviseTool)) throw new Error("Expected advise tool");
 		const originalExecute = advise.execute.bind(advise);
 		advise.execute = async (...args) => {
 			const result = await originalExecute(...args);
@@ -237,9 +236,6 @@ it.each([
 			if (continuation) {
 				await continuationStarted.promise;
 				await thirdTurnStart.promise;
-				// Accept live notes only after the queued completed update has reset
-				// AdviseTool's in-progress deferral state.
-				await completedReviewStarted.promise;
 				expect(agent.state.isStreaming).toBe(true);
 				expect(agentStarts).toBe(1);
 				expect(turnStarts).toBe(3);
@@ -248,6 +244,9 @@ it.each([
 					releaseContinuation.resolve();
 					await aborted;
 				}
+				// Continuations no longer schedule reviews themselves. This injected
+				// finding belongs to a separate update, not a second emergency in the first.
+				advise.beginUpdate(false);
 				await advise.execute("live-continuation", { note: continuationMarker, severity: continuation });
 				releaseContinuation.resolve();
 			}
@@ -364,7 +363,6 @@ it("continues once on a late nit at advisor.continueSeverity=nit without re-revi
 		sessionManager: SessionManager.inMemory(),
 		settings,
 		modelRegistry: new ModelRegistry(auth, temp.join("models.yml")),
-		advisorTools: [],
 		advisorStreamFn: (advisorModel, context, options) => {
 			if (context.messages.at(-1)?.role === "user") reviewStarts++;
 			return advisorMock.stream(advisorModel, context, options);
@@ -447,7 +445,7 @@ it.each([true, false])("delivers only surviving terminal advice (all dropped: %s
 		sessionManager: SessionManager.inMemory(),
 		settings,
 		modelRegistry: new ModelRegistry(auth, temp.join("models.yml")),
-		advisorTools: [],
+		advisorTools: fixedAdvisorTools(),
 		advisorStreamFn: reviewer.stream,
 	});
 	active = { session, auth, temp };
@@ -501,7 +499,7 @@ it("preserves advice arriving after the final yield poll without starting anothe
 		sessionManager: SessionManager.inMemory(),
 		settings,
 		modelRegistry: new ModelRegistry(auth, temp.join("models.yml")),
-		advisorTools: [],
+		advisorTools: fixedAdvisorTools(),
 		advisorStreamFn: reviewer.stream,
 	});
 	active = { session, auth, temp };

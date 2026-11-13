@@ -20,6 +20,7 @@ import { isNativeRendering, onNativeRenderingChange } from "@oh-my-pi/pi-tui/nat
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import { SPINNER_FRAMES } from "@oh-my-pi/pi-tui/theme/symbols";
 import { $env, isTerminalHeadless, isWsl, logger, prompt } from "@oh-my-pi/pi-utils";
+import { cfgOffline } from "../config/auxiliary-model-policy";
 import type { ModelRegistry } from "../config/model-registry";
 
 import { roleCandidatePool } from "../config/model-roles";
@@ -180,15 +181,29 @@ const LEADING_PROSE_THINKING_PREAMBLE_RE =
 	/^[ \t]*(?:(?:here(?:['’]s| is)[ \t]+(?:a|the|my)[ \t]+)|my[ \t]+)?(?:thinking|thought|reasoning)[ \t]+process[ \t]*:?[ \t]*(?:\r?\n|$)/i;
 
 function getTitleModels(registry: ModelRegistry, settings: Settings, currentModel?: Model<Api>): Model<Api>[] {
+	const offline = cfgOffline.get(settings);
+	if (offline && !currentModel?.provider) return [];
 	const availableModels = roleCandidatePool("tiny", settings, registry);
 	if (availableModels.length === 0) return [];
 
 	const models = collectOnlineTinyCandidates(["tiny", "commit", "smol"], settings, availableModels).map(
 		candidate => candidate.model,
 	);
+	if (offline) {
+		const seen = new Set(models.map(formatModelStringWithRouting));
+		const sameProviderModels = availableModels.filter(model => model.provider === currentModel?.provider);
+		for (const { model } of collectOnlineTinyCandidates(["tiny", "commit", "smol"], settings, sameProviderModels)) {
+			const key = formatModelStringWithRouting(model);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			models.push(model);
+		}
+	}
 	if (
 		currentModel &&
-		(models.length === 0 || cfgRetryModelFallback.get(settings) !== false) &&
+		(models.length === 0 ||
+			(offline && !models.some(model => model.provider === currentModel.provider)) ||
+			cfgRetryModelFallback.get(settings) !== false) &&
 		!models.some(model => formatModelStringWithRouting(model) === formatModelStringWithRouting(currentModel))
 	) {
 		// Append currentModel and expand its own chain separately — never merge it
@@ -201,8 +216,14 @@ function getTitleModels(registry: ModelRegistry, settings: Settings, currentMode
 			models.push(model);
 		}
 	}
-	return models;
+	return offline ? models.filter(model => model.provider === currentModel?.provider) : models;
 }
+
+/**
+ * Receives each title request the provider billed, for the caller's usage
+ * ledger. Must not throw: accounting never fails a title.
+ */
+export type TitleUsageReporter = (message: AssistantMessage) => void;
 
 /**
  * Generate a title for a session based on the first user message.
@@ -220,6 +241,8 @@ function getTitleModels(registry: ModelRegistry, settings: Settings, currentMode
  * @param signal Session-lifecycle cancellation for background title requests
  * @param credentialSourceSessionId Optional foreground session whose selected
  *   OAuth credential should seed an isolated title-request session.
+ * @param onUsage Optional reporter for every title attempt the provider billed,
+ *   so the caller can record its usage on the session's cost ledger.
  */
 export async function generateSessionTitle(
 	firstMessage: string,
@@ -231,6 +254,7 @@ export async function generateSessionTitle(
 	customSystemPrompt?: string,
 	signal?: AbortSignal,
 	credentialSourceSessionId?: string,
+	onUsage?: TitleUsageReporter,
 ): Promise<string | null> {
 	// Defer titling for greetings / acknowledgements / empty input. The default
 	// tiny title model can't reliably decline trivial input, so this happens
@@ -259,6 +283,7 @@ export async function generateSessionTitle(
 			signal,
 			titleSystemPrompt,
 			credentialSourceSessionId,
+			onUsage,
 		);
 	}
 
@@ -309,6 +334,7 @@ export async function generateTitleOnline(
 	signal?: AbortSignal,
 	customSystemPrompt?: string,
 	credentialSourceSessionId?: string,
+	onUsage?: TitleUsageReporter,
 ): Promise<string | null> {
 	const models = getTitleModels(registry, settings, currentModel);
 	if (models.length === 0) {
@@ -324,6 +350,7 @@ export async function generateTitleOnline(
 		signal,
 		customSystemPrompt,
 		credentialSourceSessionId,
+		onUsage,
 	);
 }
 
@@ -336,6 +363,7 @@ async function generateTitleOnlineWithModels(
 	signal?: AbortSignal,
 	customSystemPrompt?: string,
 	credentialSourceSessionId?: string,
+	onUsage?: TitleUsageReporter,
 ): Promise<string | null> {
 	const titleSystemPrompt = customSystemPrompt?.trim() || undefined;
 	// The model is always asked to wrap the title in `<title>...</title>` and
@@ -399,8 +427,8 @@ async function generateTitleOnlineWithModels(
 			if (model.supportsAssistantPrefill) messages.push(titlePrefill(model));
 
 			const response = await retryTransientCompletion(
-				() =>
-					completeSimple(
+				async () => {
+					const message = await completeSimple(
 						model,
 						{
 							systemPrompt,
@@ -419,7 +447,20 @@ async function generateTitleOnlineWithModels(
 							metadata,
 							signal,
 						},
-					),
+					);
+					// Every attempt that reached the provider was billed, failures included,
+					// so a transient retry must not discard the attempt it replaced. Reporting
+					// is best-effort: accounting can never fail the title.
+					try {
+						onUsage?.(message);
+					} catch (err) {
+						logger.debug("title-generator: usage report failed", {
+							...modelContext,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+					return message;
+				},
 				{ signal, provider: model.provider },
 			);
 
@@ -956,6 +997,7 @@ export class TerminalTitleController {
 	readonly #sink: TerminalTitleSink;
 	#label: string | undefined;
 	#state: TerminalTitleState = "idle";
+	readonly #attentionHolds = new Set<symbol>();
 	#frame = 0;
 	#enabled = true;
 	#timer: NodeJS.Timeout | undefined;
@@ -967,9 +1009,7 @@ export class TerminalTitleController {
 
 	setEnabled(enabled: boolean): void {
 		this.#enabled = enabled;
-		if (!enabled) this.#stopSpinner();
-		else if (this.#state === "working") this.#startSpinner();
-		this.#emit();
+		this.#refreshState();
 	}
 
 	setSessionTitle(sessionName: string | undefined, cwd?: string): void {
@@ -979,19 +1019,38 @@ export class TerminalTitleController {
 
 	setState(state: TerminalTitleState): void {
 		this.#state = state;
-		if (state === "working" && this.#enabled) this.#startSpinner();
+		this.#refreshState();
+	}
+
+	/** Keep an open dialog visible over run-state updates without affecting other hosted sessions. */
+	holdAttention(): () => void {
+		const hold = Symbol();
+		this.#attentionHolds.add(hold);
+		this.#refreshState();
+		return () => {
+			if (this.#attentionHolds.delete(hold)) this.#refreshState();
+		};
+	}
+
+	get #shownState(): TerminalTitleState {
+		return this.#attentionHolds.size > 0 ? "attention" : this.#state;
+	}
+
+	#refreshState(): void {
+		if (this.#shownState === "working" && this.#enabled) this.#startSpinner();
 		else this.#stopSpinner();
 		this.#emit();
 	}
 
 	dispose(): void {
+		this.#attentionHolds.clear();
 		this.#stopSpinner();
 	}
 
 	#emit(): void {
 		const title = buildTerminalTitleWithState(
 			this.#label,
-			this.#state,
+			this.#shownState,
 			this.#frame,
 			this.#enabled,
 			process.platform,

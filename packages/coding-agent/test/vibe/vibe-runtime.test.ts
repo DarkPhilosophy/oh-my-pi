@@ -40,6 +40,7 @@ import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentProgress, SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { VibeSessionRegistry } from "@oh-my-pi/pi-coding-agent/vibe/runtime";
+import { createSessionDefaults } from "../helpers/session-defaults";
 
 const PERSISTED_WORKER_SYSTEM_PROMPT = "Persisted vibe worker";
 const PERSISTED_WORKER_TOOLS = ["read", "yield"];
@@ -252,6 +253,7 @@ function createFakeWorkerSession(options: { streaming?: boolean; onDispose?: () 
 	let lastAssistant: { stopReason: string; content: Array<{ type: string; text: string }> } | undefined;
 	let script: { events: unknown[]; responseText: string } | undefined;
 	const fake = {
+		...createSessionDefaults(),
 		isStreaming: options.streaming ?? false,
 		model: undefined,
 		subscribe(listener: (event: unknown) => void): () => void {

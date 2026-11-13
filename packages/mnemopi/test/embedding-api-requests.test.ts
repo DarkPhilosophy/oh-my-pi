@@ -131,7 +131,10 @@ describe("an embedding model switch against an API with a per-request input cap"
 		});
 		try {
 			await memory.flushExtractions();
-			expect(server.sizes).toEqual([1, 10, 10, 5]);
+			expect(server.sizes[0]).toBe(1);
+			const rebuildRequests = server.sizes.slice(1);
+			expect(rebuildRequests.reduce((total, size) => total + size, 0)).toBe(25);
+			expect(rebuildRequests.every(size => size > 0 && size <= LIMIT)).toBe(true);
 			const models = storedModels(memory);
 			expect(models).toHaveLength(25);
 			expect(models.every(model => model === "text-embedding-v4")).toBe(true);

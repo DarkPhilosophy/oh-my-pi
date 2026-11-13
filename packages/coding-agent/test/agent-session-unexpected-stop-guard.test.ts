@@ -237,11 +237,9 @@ describe("AgentSession unexpected stop guard", () => {
 		expect(mock.calls).toHaveLength(2);
 		expect(assistantText(session.agent.state.messages)).toContain("finished after reasoning-only stop");
 		expect(reminderMessages(session.agent.state.messages)).toHaveLength(1);
-		// The signed reasoning stays in context so the continuation replays it.
-		const assistants = session.agent.state.messages.filter(message => message.role === "assistant");
-		expect(assistants[0]?.content).toEqual([
-			{ type: "thinking", thinking: "", thinkingSignature: "reasoning_content" },
-		]);
+		// Empty-stop cleanup removes the abandoned turn before the next provider
+		// request, including signed reasoning without actionable output.
+		expect(mock.calls[1]?.context.messages.filter(message => message.role === "assistant")).toEqual([]);
 	});
 
 	it("does not retry in mechanical mode when text message was delivered", async () => {

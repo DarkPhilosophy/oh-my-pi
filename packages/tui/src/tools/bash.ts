@@ -512,55 +512,67 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			// expensive part: defer it to the first paint, once per component,
 			// so a rebuild that is replaced before painting never pays for it.
 			let cmdLines: string[] | undefined;
-			return framedToolCard(uiTheme, ({ contentWidth }) => {
-				// The command stage is committed to native history as soon as its arguments
-				// are final, so it must keep the same bytes once a result (and its trace)
-				// arrives: the ANSI card always draws the plain command; the shell
-				// visualization rides the native view and the traced output.
-				cmdLines ??= formatBashCommandLines(renderArgs, uiTheme);
-				const header =
-					config.showHeader === false
-						? undefined
-						: renderStatusLine(
-								{
-									// Static glyph: the head row is the card's first native-history
-									// row, and a spinner there would change it every frame.
-									// Same glyph as a successful result, so the head row is
-									// byte-identical before and after execution.
-									iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
-									title: config.resolveTitle(args, options),
-								},
-								uiTheme,
-							);
-				const elapsedMs = options.executionStarted ? options.elapsedMs : undefined;
-				return {
-					header,
-					phase: options.spinnerFrame !== undefined ? "running" : "pending",
-					// Same neutral, unwashed frame as the result card in every phase.
-					applyBg: false,
-					// The command is final once its arguments are complete: it keeps one neutral frame
-					// through every later state, so the same bytes can sit in native history.
-					stageTone: "success",
-					footerMeta:
-						elapsedMs === undefined || elapsedMs < 1000
+			const dropCommandCache = () => {
+				cmdLines = undefined;
+			};
+			return framedToolCard(
+				uiTheme,
+				({ contentWidth }) => {
+					// The command stage is committed to native history as soon as its arguments
+					// are final, so it must keep the same bytes once a result (and its trace)
+					// arrives: the ANSI card always draws the plain command; the shell
+					// visualization rides the native view and the traced output.
+					cmdLines ??= formatBashCommandLines(renderArgs, uiTheme);
+					const header =
+						config.showHeader === false
 							? undefined
-							: uiTheme.fg("dim", `elapsed ${formatDuration(Math.floor(elapsedMs / 1000) * 1000)}`),
-					sections: [
-						{
-							content: capPreviewLines(cmdLines, uiTheme, {
-								expanded: options.expanded,
-								keepHead: true,
-								width: contentWidth,
-							}),
-						},
-						// From execution start the live stage exists even with no output yet (a `sleep`), so
-						// the call reads as running; the label is the one `renderResult` draws for a partial.
-						...(options.executionStarted === true
-							? [{ label: bashOutputLabel(uiTheme, "Running", options.spinnerFrame), content: [] as string[] }]
-							: []),
-					],
-				};
-			});
+							: renderStatusLine(
+									{
+										// Static glyph: the head row is the card's first native-history
+										// row, and a spinner there would change it every frame.
+										// Same glyph as a successful result, so the head row is
+										// byte-identical before and after execution.
+										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+										title: config.resolveTitle(args, options),
+									},
+									uiTheme,
+								);
+					const elapsedMs = options.executionStarted ? options.elapsedMs : undefined;
+					return {
+						header,
+						phase: options.spinnerFrame !== undefined ? "running" : "pending",
+						// Same neutral, unwashed frame as the result card in every phase.
+						applyBg: false,
+						// The command is final once its arguments are complete: it keeps one neutral frame
+						// through every later state, so the same bytes can sit in native history.
+						stageTone: "success",
+						footerMeta:
+							elapsedMs === undefined || elapsedMs < 1000
+								? undefined
+								: uiTheme.fg("dim", `elapsed ${formatDuration(Math.floor(elapsedMs / 1000) * 1000)}`),
+						sections: [
+							{
+								content: capPreviewLines(cmdLines, uiTheme, {
+									expanded: options.expanded,
+									keepHead: true,
+									width: contentWidth,
+								}),
+							},
+							// From execution start the live stage exists even with no output yet (a `sleep`), so
+							// the call reads as running; the label is the one `renderResult` draws for a partial.
+							...(options.executionStarted === true
+								? [
+										{
+											label: bashOutputLabel(uiTheme, "Running", options.spinnerFrame),
+											content: [] as string[],
+										},
+									]
+								: []),
+						],
+					};
+				},
+				{ onInvalidate: dropCommandCache, onReleaseRenderCaches: dropCommandCache },
+			);
 		},
 
 		renderResult(
@@ -616,6 +628,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedTraceKey: string | undefined;
 			let cachedPresentation: ShellVizPresentation | undefined;
 			const dropSnapshot = () => {
+				cmdLines = undefined;
 				cachedSnapshot = undefined;
 				cachedWidth = undefined;
 				cachedPreviewLines = undefined;
@@ -639,13 +652,17 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const { renderContext } = options;
 					const expanded = renderContext?.expanded ?? options.expanded;
 					const previewLines = renderContext?.previewLines ?? BASH_DEFAULT_PREVIEW_LINES;
+					// A traced command redraws on every folded event; its running
+					// glyphs spin with the frame (only while the run is live).
+					const trace = options.shellTrace ?? details?.trace;
+					const presentation = trace === undefined ? undefined : options.shellPresentation;
 
 					// Get output from context (preferred) or fall back to result content.
 					// Strip the LLM-facing notice appended by wrappedExecute so we don't
 					// double-print it alongside the styled warning line below.
 					const rawOutput =
-						options.shellTrace && options.shellPresentation
-							? sanitizeText(options.shellPresentation.output)
+						options.shellTrace && presentation
+							? sanitizeText(presentation.output)
 							: (renderContext?.output ?? result.content?.find(c => c.type === "text")?.text ?? "");
 
 					const isPartial = options.isPartial === true;
@@ -655,9 +672,6 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					// second instead of rebuilding every spinner frame.
 					const liveElapsedMs = isPartial && details?.wallTimeMs === undefined ? options.elapsedMs : undefined;
 					const elapsedSecond = liveElapsedMs === undefined ? undefined : Math.floor(liveElapsedMs / 1000);
-					// A traced command redraws on every folded event; its running
-					// glyphs spin with the frame (only while the run is live).
-					const trace = options.shellTrace ?? details?.trace;
 					const traceKey =
 						trace === undefined
 							? undefined
@@ -677,7 +691,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedSpinnerFrame === (isPartial ? options.spinnerFrame : undefined) &&
 						cachedElapsedSecond === elapsedSecond &&
 						cachedTraceKey === traceKey &&
-						cachedPresentation === options.shellPresentation
+						cachedPresentation === presentation
 					) {
 						return cachedSnapshot;
 					}
@@ -781,7 +795,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedSpinnerFrame = isPartial ? options.spinnerFrame : undefined;
 					cachedElapsedSecond = elapsedSecond;
 					cachedTraceKey = traceKey;
-					cachedPresentation = options.shellPresentation;
+					cachedPresentation = presentation;
 					cachedSnapshot = snapshot;
 					return snapshot;
 				},
@@ -806,6 +820,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 											lang: "bash",
 											replayEpoch: options.shellReplayEpoch,
 											liveOrigin: options.executionStarted,
+											stream: options.argsComplete !== true && options.cancelled !== true,
 											preview: { lines: RUN_INPUT_PREVIEW_LINES },
 										},
 										undefined,

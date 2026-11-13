@@ -74,6 +74,7 @@ function fixture(failure?: "unavailable" | "partial" | "abort") {
 					expect(id).toBe(7);
 					return {
 						ok: true,
+						apiKey: "reserve-account-token",
 						accessToken: "reserve-account-token",
 						accountId: "reserve-account",
 						credentialId: id,
@@ -119,6 +120,7 @@ describe("reserve-first routing", () => {
 					},
 					accessById: async (_provider, id) => ({
 						ok: true,
+						apiKey: `reserve-${id}`,
 						accessToken: `reserve-${id}`,
 						credentialId: id,
 					}),
@@ -148,6 +150,7 @@ describe("reserve-first routing", () => {
 					},
 					accessById: async (_provider, id) => ({
 						ok: true,
+						apiKey: `account-${id}`,
 						accessToken: `account-${id}`,
 						credentialId: id,
 					}),

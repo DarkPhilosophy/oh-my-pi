@@ -695,10 +695,17 @@ describe("interactive /usage account visibility", () => {
 
 	it("renders advisor status before usage refresh returns", async () => {
 		const refresh = Promise.withResolvers<UsageReport[] | null>();
+		let report: { render(width: number): readonly string[]; dispose?(): void } | undefined;
 		const ctx = createInteractiveModeContext({
 			reportContainer: new Container(),
 			commandReportRows: () => 20,
-			ui: { terminal: { columns: 120, rows: 30 } },
+			ui: {
+				terminal: { columns: 120, rows: 30 },
+				showOverlay: component => {
+					report = component;
+					return { hide: () => {}, setHidden: () => {}, isHidden: () => false };
+				},
+			},
 			session: {
 				getAdvisorStats: () => ({
 					configured: true,
@@ -715,9 +722,11 @@ describe("interactive /usage account visibility", () => {
 			},
 		});
 		const result = new CommandController(ctx).handleAdvisorStatusCommand();
-		expect(stripVTControlCharacters(ctx.reportContainer.render(120).join("\n"))).toContain("Advisor Status");
+		expect(report).toBeDefined();
+		expect(stripVTControlCharacters(report?.render(120).join("\n") ?? "")).toContain("Advisor Status");
 		refresh.resolve([]);
 		await result;
+		report?.dispose?.();
 	});
 
 	it("warns without opening the dashboard when usage reporting is not configured", async () => {

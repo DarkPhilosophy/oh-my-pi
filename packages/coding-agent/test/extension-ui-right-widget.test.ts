@@ -23,6 +23,7 @@ function makeCtx(): {
 			provider = typeof blocks === "function" ? blocks : blocks === undefined ? undefined : () => blocks;
 			rightInfo.push(snapshot());
 		},
+		editorTopGapContainer: new Container(),
 	} as unknown as InteractiveModeContext;
 	return { ctx, rightInfo, currentRightInfo: snapshot };
 }
@@ -329,6 +330,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 			hookWidgetContainerBelow: new Container(),
 			ui: fakeTui,
 			setRightInfo: () => {},
+			editorTopGapContainer: new Container(),
 		} as unknown as InteractiveModeContext;
 		const c = new ExtensionUiController(ctx);
 		let caught: unknown;
@@ -366,6 +368,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 				provider = typeof p === "function" ? (p as (width: number) => string[][]) : undefined;
 				layoutCb = onLayout;
 			},
+			editorTopGapContainer: new Container(),
 		} as unknown as InteractiveModeContext;
 		const c = new ExtensionUiController(ctx);
 		const layouts: string[] = [];
@@ -412,6 +415,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 				provider = typeof p === "function" ? (p as (width: number) => string[][]) : undefined;
 				layoutCb = onLayout;
 			},
+			editorTopGapContainer: new Container(),
 		} as unknown as InteractiveModeContext;
 		const c = new ExtensionUiController(ctx);
 		const layouts: string[] = [];
@@ -458,6 +462,7 @@ describe("ExtensionUiController rightEditor widgets", () => {
 				provider = typeof p === "function" ? (p as (width: number) => string[][]) : undefined;
 				layoutCb = onLayout;
 			},
+			editorTopGapContainer: new Container(),
 		} as unknown as InteractiveModeContext;
 		const c = new ExtensionUiController(ctx);
 		const layouts: string[] = [];

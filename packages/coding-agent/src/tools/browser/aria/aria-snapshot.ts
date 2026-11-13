@@ -1,4 +1,4 @@
-import type { ElementHandle, JSHandle, Page } from "puppeteer-core";
+import type { ElementHandle, Frame, JSHandle, Page } from "puppeteer-core";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import {
 	type AriaHrefMap,
@@ -71,7 +71,7 @@ const evaluateAriaHrefs = new Function(
  * on each call and remain valid until the next snapshot.
  */
 export async function captureAriaSnapshot(
-	page: Page,
+	page: Page | Frame,
 	root: ElementHandle | null,
 	options: AriaSnapshotOptions = {},
 	owner?: string,
@@ -96,7 +96,11 @@ export async function captureAriaSnapshot(
  * null when the ref no longer matches any element. It uses the same isolated
  * world as capture, where that snapshot wrote its `_ariaRef` expandos.
  */
-export async function resolveAriaRefHandle(page: Page, ref: string, owner?: string): Promise<ElementHandle | null> {
+export async function resolveAriaRefHandle(
+	page: Page | Frame,
+	ref: string,
+	owner?: string,
+): Promise<ElementHandle | null> {
 	const handle = (await page.evaluateHandle(evaluateResolveRef as never, ref as never, owner as never)) as JSHandle;
 	const element = handle.asElement();
 	if (!element) {

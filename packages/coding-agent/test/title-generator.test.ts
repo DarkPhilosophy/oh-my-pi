@@ -960,6 +960,35 @@ describe("terminal title runtime", () => {
 		secondController.dispose();
 	});
 
+	it("holds hosted dialog attention through turn completion until the last dialog closes", () => {
+		const first: string[] = [];
+		const second: string[] = [];
+		const firstController = new TerminalTitleController({ setTitle: title => first.push(title) });
+		const secondController = new TerminalTitleController({ setTitle: title => second.push(title) });
+		try {
+			firstController.setSessionTitle("first");
+			secondController.setSessionTitle("second");
+			secondController.setState("working");
+			const siblingTitle = second.at(-1);
+			const writesBefore = writes.length;
+			const releaseFirst = firstController.holdAttention();
+			const releaseSecond = firstController.holdAttention();
+			firstController.setState("idle");
+			expect(first.at(-1)).toBe("π ! first");
+			releaseFirst();
+			expect(first.at(-1)).toBe("π ! first");
+			releaseFirst();
+			expect(first.at(-1)).toBe("π ! first");
+			releaseSecond();
+			expect(first.at(-1)).toBe("π > first");
+			expect(second.at(-1)).toBe(siblingTitle);
+			expect(writes.length).toBe(writesBefore);
+		} finally {
+			firstController.dispose();
+			secondController.dispose();
+		}
+	});
+
 	it("keeps an extension override verbatim across a run-state change (spinner never clobbers it)", () => {
 		// CONTRACT (core regression): once an extension owns the title, flipping
 		// the run state to `working` must NOT re-emit the base title with a
