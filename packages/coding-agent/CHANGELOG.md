@@ -28,9 +28,13 @@
 ### Changed
 
 - Browser `waitForUrl`, `waitForResponse` and `requests({ filter })` treat a URL string containing `*` as a glob, like `tab.route()`; other strings still match as substrings
+- omp's WebKit browser engine now installs and updates to the newest stable ABKit release instead of the one each omp release pinned; the first WebKit open in a process checks for a newer one
+- omp keeps each ABKit version in `~/.o2/lib/abkit-versions/<version>` and links `~/.o2/lib/abkit` to the current one, so an engine update no longer waits for running browser hosts to exit
 
 ### Fixed
 
+- `ida` `exec` output no longer starts with IDA 9.5 `DeprecationWarning`s from omp's preloaded helpers; on IDA 9.5+ `func()` returns a `func_entry_info_t` (same `start_ea`/`end_ea`/`size()`) instead of `func_t`
+- `web_search` no longer returns Perplexity's "Sign up and repeat your request." wall as an answer when the stored Perplexity login or `PERPLEXITY_COOKIES` has expired; it reports the expired login and moves on to the next provider in the chain
 - `edit` rejections of an unknown tag now offer the file's current tag for the rows shown, instead of only sending the model back to output it already copied from ([#19332](https://github.com/can1357/oh-my-pi/pull/19332) by [@Xytronix](https://github.com/Xytronix))
 - The browser tool's `webmcpList` and `webmcpInvoke` now find the tools a page registers in Chrome and Chromium 157 and later, instead of reporting that Chrome does not expose WebMCP to the page ([#19232](https://github.com/can1357/oh-my-pi/pull/19232) by [@tuschla](https://github.com/tuschla))
 - Ask and remember (`always-ask-cached`) now prompts before `read`, `grep`, `glob`, `find` and `ast_grep` reach a private host written with a trailing dot (`http://intranet./`, `http://localhost.:8080/`, `http://db.corp.internal./`) instead of treating it as a public page ([#19228](https://github.com/can1357/oh-my-pi/pull/19228) by [@XYZ1024-alt](https://github.com/XYZ1024-alt))
@@ -65,6 +69,10 @@
 - Fixed `page.on()` and other event-listener methods inside `tab.run` on Tern and WebKit tabs throwing `page.on is not a function`; they now name the backend and the helpers to use instead (`tab.requests()`, `tab.waitForResponse()`, `tab.console()`)
 
 - Fixed `read` line selectors on `xd://` docs (`xd://eval/browser:1-200`) failing with `Unknown topic`; `write` now rejects a selector on an `xd://` device URL instead of treating it as part of the device name
+
+### Removed
+
+- Removed the `seance` agent, the `/seance` command, and the task tool's `sourceSession` parameter
 
 ## [18.20.2] - 2026-11-14
 

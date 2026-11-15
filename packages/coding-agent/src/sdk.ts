@@ -2662,9 +2662,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				);
 			},
 			restrictToolNames,
-			get seanceSourceArtifactsDir() {
-				return sessionManager.getSeanceSourceArtifactsDir() ?? undefined;
-			},
 			get hasEditTool() {
 				const requestedToolNames = options.toolNames ? normalizeToolNames(options.toolNames) : undefined;
 				return restrictToolNames
