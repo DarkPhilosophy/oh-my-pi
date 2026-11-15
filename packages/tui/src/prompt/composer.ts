@@ -241,6 +241,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				id: number;
 				rows: readonly string[];
 				kind: "append" | "replay";
+				/** The transcript batch rewrote rows already in history; see {@link HistoryBatch.divergent}. */
+				divergent?: boolean;
 				source: {
 					transcript: TranscriptContainer;
 					transcriptId?: number;
@@ -766,13 +768,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		width: number,
 		rows: number,
 		chromeRows: number,
-	): { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined {
+	): { id: number; rows: readonly string[]; kind: "append" | "replay"; divergent?: boolean } | undefined {
 		if (this.#offeredHistory !== undefined) {
 			this.#rerenderOfferedHistory(width);
 			return {
 				id: this.#offeredHistory.id,
 				rows: this.#offeredHistory.rows,
 				kind: this.#offeredHistory.kind,
+				divergent: this.#offeredHistory.divergent,
 			};
 		}
 		if (this.#headerReplayPending) {
@@ -820,12 +823,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 					id: this.#nextHistoryId++,
 					rows: [...headerRows, ...(childBatch?.rows ?? [])],
 					kind: "append",
+					divergent: childBatch?.divergent,
 					source: { transcript, transcriptId: childBatch?.id, header: "append", headerRows },
 				};
 				return {
 					id: this.#offeredHistory.id,
 					rows: this.#offeredHistory.rows,
 					kind: this.#offeredHistory.kind,
+					divergent: this.#offeredHistory.divergent,
 				};
 			}
 			this.#headerRetired = true;
@@ -839,12 +844,14 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			id: this.#nextHistoryId++,
 			rows: batch.rows,
 			kind: batch.kind ?? "append",
+			divergent: batch.divergent,
 			source: { transcript, transcriptId: batch.id, header: "none" },
 		};
 		return {
 			id: this.#offeredHistory.id,
 			rows: this.#offeredHistory.rows,
 			kind: this.#offeredHistory.kind,
+			divergent: this.#offeredHistory.divergent,
 		};
 	}
 

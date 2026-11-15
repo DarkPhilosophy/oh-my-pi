@@ -49,7 +49,10 @@ function reply(text: string): AssistantMessage {
 }
 
 /** Streams `body` line by line past a 12-row screen, then finalizes; returns mid-session scrollback clears. */
-async function streamPastViewport(open: string, close: string): Promise<{ clears: number; tape: string }> {
+async function streamPastViewport(
+	open: string,
+	close: string,
+): Promise<{ clears: number; tape: string; openTape: string }> {
 	const terminal = new CountingTerminal(60, 12);
 	composer = new Composer({ preferences: { quiet: true }, terminal });
 	const transcript = new TranscriptContainer();
@@ -66,7 +69,12 @@ async function streamPastViewport(open: string, close: string): Promise<{ clears
 		text += `MARKER_${String(index).padStart(2, "0")} ${"x".repeat(40)}\n`;
 		message.updateContent(reply(text), { transient: true });
 		composer.ui.renderNow();
+		await terminal.waitForRender();
 	}
+	const openTape = terminal
+		.getScrollBuffer()
+		.map(row => Bun.stripANSI(row))
+		.join("\n");
 	text += close;
 	message.updateContent(reply(text), { transient: true });
 	composer.ui.renderNow();
@@ -83,20 +91,26 @@ async function streamPastViewport(open: string, close: string): Promise<{ clears
 			.getScrollBuffer()
 			.map(row => Bun.stripANSI(row))
 			.join("\n"),
+		openTape,
 	};
 }
 
-// Open fences keep their unstable presentation live. Closing the fence can
-// publish the framed result without clearing or rewriting prior history.
-it("publishes a closed markdown fence as a frame without rewriting history", async () => {
-	const { clears, tape } = await streamPastViewport("```text\n", "```");
+// While a fence is open, its finished lines stream into native scrollback as
+// raw lines, so none leave the screen unrecorded. When it closes, the
+// finalized render frames the block; scrollback cannot be edited in place, so
+// that one block needs exactly one history rewrite. Plain streamed text never
+// changes form and must not pay it.
+it("streams an open fence into history, then rewrites it once as a frame", async () => {
+	const { clears, tape, openTape } = await streamPastViewport("```text\n", "```");
 
+	// MARKER_01 left the 12-row screen long before the fence closed.
+	expect(openTape).toContain("MARKER_01");
 	expect(tape).not.toContain("```text");
 	const markers = Array.from(tape.match(/MARKER_\d{2}/g) ?? []);
 	expect(markers).toEqual(Array.from({ length: 30 }, (_, i) => `MARKER_${String(i + 1).padStart(2, "0")}`));
 	const framedRows = tape.split("\n").filter(row => /MARKER_\d{2}/.test(row) && row.includes("│"));
 	expect(framedRows).toHaveLength(30);
-	expect(clears).toBe(0);
+	expect(clears).toBe(1);
 });
 
 it("does not rewrite history for plain streamed text that overflows the screen", async () => {

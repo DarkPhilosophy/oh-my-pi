@@ -1525,7 +1525,8 @@ export class AssistantMessageComponent extends Container {
 		if (this.#transcriptBlockFinalized) {
 			const md = this.#createMarkdown(kind, trimmed, locks);
 			md.openTableTail = openTable;
-			return md.render(width);
+			// Rows published while the fence was open never held its fabricated closer.
+			return trimFabricatedCloser(md.render(width), trimmed);
 		}
 		const head = this.#stableHeadRenderer;
 		const replay = this.#stableReplayRenderer;

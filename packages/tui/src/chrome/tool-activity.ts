@@ -3,6 +3,14 @@ import { col } from "../native/describe";
 import type { NativeNode } from "../native/node";
 export interface ToolActivityComponent {
 	setToolActivityVisible(visible: boolean): void;
+	/**
+	 * Whether this card keeps its full height while unfinished. A running tool is
+	 * otherwise cut to a few rows when another block follows it (see
+	 * TranscriptContainer); a card that only waits for its result (an edit or a
+	 * write whose body already streamed) gains nothing from that, and the cut
+	 * shows as a third, shrunken stage between its preview and its result.
+	 */
+	keepsHeightWhileActive?(): boolean;
 }
 
 export function isToolActivityComponent(component: Component): component is Component & ToolActivityComponent {

@@ -707,7 +707,7 @@ describe("EventController mixed assistant text/tool rendering", () => {
 	});
 
 	it.each(["write", "edit", "edit-multi"] as const)(
-		"keeps four closed %s previews accessible before execution starts",
+		"keeps four closed %s previews out of history until each result finishes its card",
 		async kind => {
 			const toolName = kind === "write" ? "write" : "edit";
 			const terminal = new VirtualTerminal(120, 14);
@@ -733,7 +733,6 @@ describe("EventController mixed assistant text/tool rendering", () => {
 			);
 			ctx.toolOutputExpanded = true;
 			const content: AssistantMessage["content"] = [{ type: "text", text: INTRO_MARKER }];
-			const expected: string[] = [];
 			composer.setRuntimeChildren([chatContainer, new Text("EDITOR", 0, 0)]);
 			composer.start({ playWelcomeIntro: false });
 			try {
@@ -808,9 +807,10 @@ describe("EventController mixed assistant text/tool rendering", () => {
 					}
 					composer.ui.requestRender();
 					await scheduler.settle(terminal);
-					expected.push(...rows);
-					const tape = terminal.getScrollBuffer().join("\n");
-					expect(Array.from(tape.matchAll(/CLOSED_PREVIEW_\d_\d{2}/g), match => match[0])).toEqual(expected);
+					// An unfinished card never reaches history: rows pushed above the viewport are
+					// clipped while it waits, not committed in their pending state.
+					const history = terminal.getScrollBuffer().slice(0, -terminal.rows).join("\n");
+					expect(history).not.toMatch(/CLOSED_PREVIEW_\d_\d{2}/);
 					expect(ctx.pendingTools.has(call.id)).toBeTrue();
 				}
 				await controller.handleEvent({
@@ -864,6 +864,11 @@ describe("EventController mixed assistant text/tool rendering", () => {
 						}
 					}
 					expect(ctx.pendingTools.has(call.id)).toBeFalse();
+					// The finished card is the only copy: none of its preview rows repeat.
+					const tape = after.join("\n");
+					for (const row of new Set(tape.match(new RegExp(`CLOSED_PREVIEW_${index}_\\d{2}`, "g")) ?? [])) {
+						expect({ row, count: tape.split(row).length - 1 }).toEqual({ row, count: 1 });
+					}
 				}
 			} finally {
 				for (const card of ctx.pendingTools.values()) card.seal();
@@ -871,6 +876,157 @@ describe("EventController mixed assistant text/tool rendering", () => {
 			}
 		},
 	);
+
+	it("finishes an on-screen write preview in place when a later call follows it in the same message", async () => {
+		const terminal = new VirtualTerminal(120, 40);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			preferences: { quiet: true },
+			tuiOptions: { renderScheduler: scheduler },
+		});
+		const { controller, chatContainer, ctx } = createFixture(false, () => undefined, true, composer.ui);
+		composer.setRuntimeChildren([chatContainer, new Text("EDITOR", 0, 0)]);
+		composer.start({ playWelcomeIntro: false });
+		const rows = Array.from({ length: 5 }, (_, row) => `SINGLE_CARD_${row}`);
+		const write: ToolCall = {
+			type: "toolCall",
+			id: "single-write",
+			name: "write",
+			arguments: { path: "single.txt", content: rows.join("\n") },
+		};
+		const bash: ToolCall = { type: "toolCall", id: "later-bash", name: "bash", arguments: { command: "true" } };
+		try {
+			await scheduler.settle(terminal);
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			const content: AssistantMessage["content"] = [];
+			for (const call of [write, bash]) {
+				content.push(call);
+				const partial = assistantMessage([...content]);
+				await controller.handleEvent({
+					type: "message_update",
+					message: partial,
+					assistantMessageEvent: {
+						type: "toolcall_end",
+						contentIndex: content.length - 1,
+						toolCall: call,
+						partial,
+					},
+				});
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+			}
+			const preview = ctx.pendingTools.get(write.id);
+			if (!(preview instanceof ToolExecutionComponent)) throw new Error("Expected write preview card");
+			await controller.handleEvent({
+				type: "message_end",
+				message: { ...assistantMessage([...content]), stopReason: "toolUse" },
+			});
+			await controller.handleEvent({
+				type: "tool_execution_start",
+				toolCallId: write.id,
+				toolName: "write",
+				args: write.arguments,
+			});
+			await controller.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: write.id,
+				toolName: "write",
+				isError: false,
+				result: { content: [{ type: "text", text: "WRITE_DONE" }] },
+			});
+			composer.ui.requestRender();
+			await scheduler.settle(terminal);
+
+			// The result lands on the preview card itself: no second card repeats its body.
+			const writeCards = chatContainer.children.filter(
+				child => child instanceof ToolExecutionComponent && child.render(120).join("\n").includes(rows[0]!),
+			);
+			expect(writeCards).toEqual([preview]);
+			const tape = terminal.getScrollBuffer().join("\n");
+			expect(tape.match(/SINGLE_CARD_0/g)).toHaveLength(1);
+		} finally {
+			for (const card of ctx.pendingTools.values()) card.seal();
+			composer.stop();
+		}
+	});
+
+	it("commits writes that overflow the screen only as finished cards, once each", async () => {
+		const terminal = new VirtualTerminal(100, 22);
+		const scheduler = new VirtualRenderScheduler();
+		const composer = new Composer({
+			terminal,
+			preferences: { quiet: true },
+			tuiOptions: { renderScheduler: scheduler },
+		});
+		const { controller, chatContainer, ctx } = createFixture(false, () => undefined, true, composer.ui);
+		composer.setRuntimeChildren([chatContainer, new Text("EDITOR", 0, 0)]);
+		composer.start({ playWelcomeIntro: false });
+		const calls: ToolCall[] = [1, 2, 3].map(n => ({
+			type: "toolCall",
+			id: `w${n}`,
+			name: "write",
+			arguments: {
+				path: `f${n}.txt`,
+				content: Array.from({ length: 10 }, (_, r) => `W${n}_ROW_${r + 1}`).join("\n"),
+			},
+		}));
+		try {
+			await scheduler.settle(terminal);
+			await controller.handleEvent({ type: "message_start", message: assistantMessage([]) });
+			const content: AssistantMessage["content"] = [];
+			for (const call of calls) {
+				content.push(call);
+				const partial = assistantMessage([...content]);
+				await controller.handleEvent({
+					type: "message_update",
+					message: partial,
+					assistantMessageEvent: {
+						type: "toolcall_end",
+						contentIndex: content.length - 1,
+						toolCall: call,
+						partial,
+					},
+				});
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+			}
+			await controller.handleEvent({
+				type: "message_end",
+				message: { ...assistantMessage([...content]), stopReason: "toolUse" },
+			});
+			for (const call of calls) {
+				await controller.handleEvent({
+					type: "tool_execution_start",
+					toolCallId: call.id,
+					toolName: "write",
+					args: call.arguments,
+				});
+				await controller.handleEvent({
+					type: "tool_execution_end",
+					toolCallId: call.id,
+					toolName: "write",
+					isError: false,
+					result: { content: [{ type: "text", text: "ok" }] },
+				});
+				composer.ui.requestRender();
+				await scheduler.settle(terminal);
+			}
+			const tape = terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
+			for (const n of [1, 2, 3]) {
+				// One card per write, drawn finished: its header carries the done glyph and its
+				// bottom border the line count; no pending copy was committed before the result.
+				expect(tape.filter(row => row.includes(`W${n}_ROW_10`))).toHaveLength(1);
+				const headers = tape.filter(row => row.includes(`Write:`) && row.includes(`f${n}.txt`));
+				expect(headers).toHaveLength(1);
+				expect(headers[0]).toContain("✎");
+			}
+			expect(tape.filter(row => row.startsWith("╰") && row.includes("10 lines"))).toHaveLength(3);
+		} finally {
+			for (const card of ctx.pendingTools.values()) card.seal();
+			composer.stop();
+		}
+	});
 
 	it.each(["read", "write", "edit"] as const)(
 		"publishes each of four sequential %s results before the assistant message ends",

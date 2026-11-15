@@ -596,7 +596,15 @@ export interface InteractiveModeContext {
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
-	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
+	/** The transcript a rebuild would replay right now: collapsed per settings, in-flight calls kept while streaming. */
+	buildLiveTranscriptContext(): SessionContext;
+	/**
+	 * Replay the transcript. `sessionContext` replays a transcript captured
+	 * earlier — when the event that requested the rebuild was emitted — instead
+	 * of the session's current one, which may already hold later turns whose
+	 * own queued events will draw them.
+	 */
+	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean; sessionContext?: SessionContext }): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(source?: AgentViewSession): Promise<void>;
 	toggleTodoExpansion(): void;

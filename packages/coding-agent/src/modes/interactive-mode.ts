@@ -5131,7 +5131,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
-	rebuildChatFromMessages(options: { reuseSettledComponents?: boolean } = {}): void {
+	buildLiveTranscriptContext(): SessionContext {
+		// Live display collapses to the compacted transcript tail unless the
+		// user opted into the full inline history; export/resume callers choose
+		// their own mode.
+		return this.viewSession.buildTranscriptSessionContext({
+			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(this.settings),
+			keepInFlightToolCalls: this.viewSession.isStreaming,
+		});
+	}
+
+	rebuildChatFromMessages(options: { reuseSettledComponents?: boolean; sessionContext?: SessionContext } = {}): void {
 		this.#extensionLinkRebuildPending = false;
 		// A transcript setting may draw links it did not before.
 		this.#linkBrowserMiss = undefined;
@@ -5188,13 +5198,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		}
 		this.chatContainer.clear();
-		// Live display collapses to the compacted transcript tail unless the
-		// user opted into the full inline history; export/resume callers choose
-		// their own mode.
-		const context = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(this.settings),
-			keepInFlightToolCalls: this.viewSession.isStreaming,
-		});
+		const context = options.sessionContext ?? this.buildLiveTranscriptContext();
 		const preservedLiveToolCallIds = new Set(livePendingTools.keys());
 		const replayedLiveToolResultIndices = new Map<string, number>();
 		// A preserved pending-tool component whose result has already landed in

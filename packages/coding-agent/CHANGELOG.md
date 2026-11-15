@@ -5,14 +5,18 @@
 ### Added
 
 - Added experimental, configurable advisory context checkpoints beside notes-backed context windows, with todo-independent growth detection, a cooldown, and a per-window reminder limit.
+- Added a Settings option to raise the context notes size limit to 32, 64 or 128 KiB.
+- Added `/render all` to run every render scenario end to end, and `/render --edits` to exercise edit and write cards in mixed responses.
 
 ### Fixed
 
 - Fixed completed tool results remaining pending after a mid-run transcript rebuild until the agent finished.
 - Fixed abandoned thinking blocks staying active after a failed stream and preventing later transcript output from reaching scrollback.
+- Fixed tool cards appearing twice after a context rollover or compaction when the display was running behind the agent.
 - Experimental context checkpoints recommend a fresh context at completed-work boundaries; post-save reminders are delivered as model-only messages instead of appearing in tool output.
 - Fixed colliding plugin skills failing to reload after an upgrade when their installation path contains a symbolic link.
 - Fixed tracked queued prompts losing their identity when adjacent messages are coalesced.
+
 ### Added
 
 - Subagents now preserve @upstream provider pinning on inherited models

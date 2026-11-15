@@ -5,11 +5,7 @@ import { isJsonSchemaValueValid } from "@oh-my-pi/pi-ai/utils/schema";
 import { validateToolCall } from "@oh-my-pi/pi-ai/utils/validation";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import {
-	CONTEXT_NOTES_ENTRY_TYPE,
-	getContextNotes,
-	MAX_CONTEXT_NOTES_BYTES,
-} from "@oh-my-pi/pi-coding-agent/session/context-notes";
+import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { ContextNotesEntry } from "@oh-my-pi/pi-coding-agent/session/context-notes";
 import type { CustomEntry, ResetBoundaryEntry, SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -17,7 +13,12 @@ import { ContextNotesTool, NewContextTool } from "@oh-my-pi/pi-coding-agent/tool
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
-import { cfgCompactionExperimentalContextManagement } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import {
+	cfgCompactionContextNotesMaxBytes,
+	cfgCompactionExperimentalContextManagement,
+} from "@oh-my-pi/pi-coding-agent/session/context-settings";
+
+const DEFAULT_NOTES_BYTES = 16_384;
 
 const NOW = "2026-09-04T00:00:00.000Z";
 
@@ -116,12 +117,10 @@ describe("experimental context notes", () => {
 		await tool.execute("initial", { text: "Retain this notebook after an invalid replacement." });
 		const multibyteCharacter = "€";
 		const oversized = multibyteCharacter.repeat(
-			Math.floor(MAX_CONTEXT_NOTES_BYTES / Buffer.byteLength(multibyteCharacter, "utf8")) + 1,
+			Math.floor(DEFAULT_NOTES_BYTES / Buffer.byteLength(multibyteCharacter, "utf8")) + 1,
 		);
-		await expect(tool.execute("overflow", { text: oversized })).rejects.toThrow(
-			`${MAX_CONTEXT_NOTES_BYTES} UTF-8 bytes`,
-		);
-		expect(Buffer.byteLength(oversized, "utf8")).toBeGreaterThan(MAX_CONTEXT_NOTES_BYTES);
+		await expect(tool.execute("overflow", { text: oversized })).rejects.toThrow(`${DEFAULT_NOTES_BYTES} UTF-8 bytes`);
+		expect(Buffer.byteLength(oversized, "utf8")).toBeGreaterThan(DEFAULT_NOTES_BYTES);
 		expect(getContextNotes(sessionManager.getBranch())?.text).toBe(
 			"Retain this notebook after an invalid replacement.",
 		);
@@ -130,6 +129,27 @@ describe("experimental context notes", () => {
 				.getBranch()
 				.filter(entry => entry.type === "custom" && entry.customType === CONTEXT_NOTES_ENTRY_TYPE),
 		).toHaveLength(1);
+	});
+
+	it("saves past 16 KiB under a raised limit and keeps that notebook readable after the limit is lowered", async () => {
+		const sessionManager = SessionManager.inMemory();
+		const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+		const tool = ContextNotesTool.createIf(toolSession(settings, sessionManager));
+		if (!tool) throw new Error("expected context notes tool");
+		const large = "n".repeat(20_000);
+
+		await expect(tool.execute("default-limit", { text: large })).rejects.toThrow(
+			`${DEFAULT_NOTES_BYTES} UTF-8 bytes`,
+		);
+		cfgCompactionContextNotesMaxBytes.override(settings, 32_768);
+		await tool.execute("raised-limit", { text: large });
+		expect(getContextNotes(sessionManager.getBranch())?.text).toBe(large);
+
+		cfgCompactionContextNotesMaxBytes.override(settings, DEFAULT_NOTES_BYTES);
+		expect(getContextNotes(sessionManager.getBranch())?.text).toBe(large);
+		await expect(tool.execute("lowered-limit", { text: `${large}!` })).rejects.toThrow(
+			`${DEFAULT_NOTES_BYTES} UTF-8 bytes`,
+		);
 	});
 
 	it("leaves the branch journal unchanged when reading a missing notebook", async () => {

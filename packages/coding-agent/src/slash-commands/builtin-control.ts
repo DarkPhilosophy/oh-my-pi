@@ -3,11 +3,17 @@ import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionHandle } from "../session/agent-session-handle";
 import type { RenderTestOptions } from "../session/render-test";
+import { isRenderScenario, RENDER_SCENARIOS } from "../session/render-workflow";
 import { clearApprovalGrants } from "../tools/approval-cache";
 import { clearSubmittedText } from "./helpers/draft";
 import { shutdownHandlerTui } from "./builtin-lifecycle";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
+
+const RENDER_USAGE_HINT = `[all|${Object.keys(RENDER_SCENARIOS)
+	.filter(name => name !== "all")
+	.map(name => `--${name}`)
+	.join("|")}] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]`;
 
 function parseRenderTestArgs(args: string): RenderTestOptions {
 	const parts = args.trim() ? args.trim().split(/\s+/) : [];
@@ -15,13 +21,11 @@ function parseRenderTestArgs(args: string): RenderTestOptions {
 	let segment: number | undefined;
 	const positional: string[] = [];
 	for (const part of parts) {
-		if (
-			["--ask", "--job", "--markdown", "--todo", "--large-edit", "--edit-error", "--advisor", "--eval"].includes(
-				part,
-			)
-		) {
+		// `all` reads naturally as a word; every scenario also takes its `--name` flag form.
+		const name = part.startsWith("--") ? part.slice(2) : part;
+		if (isRenderScenario(name) && (part.startsWith("--") || name === "all")) {
 			if (scenario) throw new Error("Choose only one render scenario.");
-			scenario = part.slice(2) as NonNullable<RenderTestOptions["scenario"]>;
+			scenario = name;
 		} else if (part.startsWith("--segment")) {
 			const value = part.includes("=") ? part.slice(part.indexOf("=") + 1) : "";
 			if (!/^\d+$/.test(value)) throw new Error("Usage: --segment=<n> selects a single scripted response.");
@@ -31,9 +35,7 @@ function parseRenderTestArgs(args: string): RenderTestOptions {
 		}
 	}
 	if (positional.length > 2 || positional.some(part => !/^\d+$/.test(part))) {
-		throw new Error(
-			"Usage: /render [--ask|--job|--markdown|--todo|--large-edit|--edit-error|--advisor|--eval] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]",
-		);
+		throw new Error(`Usage: /render ${RENDER_USAGE_HINT}`);
 	}
 	return { repeat: Number(positional[0] ?? 1), delayMs: Number(positional[1] ?? 25), scenario, segment };
 }
@@ -76,8 +78,7 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		description:
 			"Exercise streaming Markdown, large edits, edit failures, advisor display, and interactive cards without tokens",
 		allowArgs: true,
-		inlineHint:
-			"[--ask|--job|--markdown|--todo|--large-edit|--edit-error|--advisor|--eval] [--segment=<n>] [repeat=1] [chunk-delay-ms=25]",
+		inlineHint: RENDER_USAGE_HINT,
 		handleTui: async (command, { ctx }) => {
 			ctx.editor.setText("");
 			try {

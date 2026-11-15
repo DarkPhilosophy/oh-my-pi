@@ -495,7 +495,7 @@ describe("editToolRenderer", () => {
 		expect(addedRow).toContain(addedColor);
 	});
 
-	it("renders change stats inline on the result header with no separate metadata or stats row", async () => {
+	it("renders change stats in the result card's bottom border with no separate stats row", async () => {
 		const uiTheme = await getUiTheme();
 		const diff = [" 115│ ctx", "-116│ old", "+117│ new one", "+118│ new two"].join("\n");
 		const component = editToolRenderer.renderResult(
@@ -509,11 +509,10 @@ describe("editToolRenderer", () => {
 		);
 
 		const lines = Bun.stripANSI(component.render(160).join("\n")).split("\n");
-		// Stats ride on the header line next to the path…
+		// The header names the file; the stats ride in the bottom border, under the diff.
 		expect(lines[0]).toContain("demo.go");
-		expect(lines[0]).toContain("+2");
-		expect(lines[0]).toContain("-1");
-		expect(lines[0]).toContain("+2/-1");
+		expect(lines[0]).not.toContain("+2/-1");
+		expect(lines.at(-1)).toContain("+2/-1");
 		// …only there (no standalone stats row), and the diff starts immediately
 		// below the header (no blank line, no lone lang-icon metadata row).
 		expect(lines[1]).toContain("115│ ctx");

@@ -970,6 +970,67 @@ it.each(["large-edit", "edit-error", "advisor"] as const)(
 	60_000,
 );
 
+it("runs the edits scenario through real edit, bash, read and write calls", async () => {
+	const tools: string[] = [];
+	const failures: string[] = [];
+	const unsubscribe = session.subscribe(event => {
+		if (event.type === "tool_execution_start") tools.push(event.toolName);
+		if (event.type === "tool_execution_end" && event.isError) failures.push(event.toolName);
+	});
+	try {
+		await session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "edits" }, mode.getToolUIContext());
+		await session.waitForIdle();
+		const reads = ["read", "read", "read"];
+		expect(tools).toEqual([
+			...reads,
+			"edit",
+			"bash",
+			...reads,
+			"edit",
+			...reads,
+			"edit",
+			"edit",
+			"edit",
+			"edit",
+			"read",
+			"write",
+			"bash",
+		]);
+		// Only the stale-snapshot edit fails.
+		expect(failures).toEqual(["edit"]);
+		expect(providerCalls).toBe(0);
+		expect(credentialCalls).toBe(0);
+	} finally {
+		unsubscribe();
+	}
+}, 60_000);
+
+it("runs every scripted scenario after the default pass for /render all", async () => {
+	const tools = new Set<string>();
+	const question = Promise.withResolvers<void>();
+	const unsubscribe = session.subscribe(event => {
+		if (event.type !== "tool_execution_start") return;
+		tools.add(event.toolName);
+		if (event.toolName === "ask") question.resolve();
+	});
+	try {
+		const running = session.runRenderTest({ repeat: 1, delayMs: 1, scenario: "all" }, mode.getToolUIContext());
+		// The interactive question comes last; answer it so the run can finish.
+		await question.promise;
+		await terminal.waitForRender(() => mode.ui.getFocused() instanceof HtmlFormDialog);
+		terminal.sendInput("\r");
+		await terminal.waitForRender();
+		terminal.sendInput("\r");
+		await running;
+		await session.waitForIdle();
+		for (const tool of ["todo", "write", "read", "edit", "eval", "bash", "ask"]) expect(tools).toContain(tool);
+		expect(providerCalls).toBe(0);
+		expect(credentialCalls).toBe(0);
+	} finally {
+		unsubscribe();
+	}
+}, 120_000);
+
 it.each([20, 30, 40, 60])(
 	"keeps concurrent job cards adjacent in a %i-row terminal",
 	async height => {
@@ -1175,7 +1236,7 @@ it.each([20, 40, 100])(
 			expect(calls.filter(call => call.name === "edit")).toHaveLength(5);
 		}
 		expect(advisorNotes).toHaveLength(4);
-		expect(advisorNotes.map(note => note.severity)).toEqual(["concern", "warning", "blocker", "concern"]);
+		expect(advisorNotes.map(note => note.severity)).toEqual(["concern", "nit", "blocker", "concern"]);
 		expect(
 			session.agent.state.messages.some(message => message.role === "custom" && message.customType === "advisor"),
 		).toBeFalse();

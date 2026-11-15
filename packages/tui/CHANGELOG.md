@@ -4,13 +4,24 @@
 
 ### Fixed
 
+- Fixed long streamed code blocks landing in scrollback twice: once as raw lines while open, then again as the finished box. Scrollback is now rewritten once when the block closes, so it shows only the box.
+- Fixed unfinished tool cards shrinking despite available space, and previews losing their header when another tool followed them or the terminal resized; cards now keep their frame within the actual viewport space.
+- Fixed an edit or write card being drawn twice when another tool call followed it in the same response.
+- Fixed a multi-file edit result splitting into separate cards with blank rows between them.
+- Fixed edit and write cards from consecutive separate calls being split by blank rows instead of stacking together like grouped reads.
 - Fixed unfinished thinking and text disappearing above a tall active tool preview before their final row could reach scrollback.
 - Fixed settled conversation history briefly collapsing into one-line summaries while session loading or transcript rebuilding fills scrollback.
 - Fixed transcript rebuilds compressing settled history or failing while a Bash command is still running.
 - Fixed blank separators around turn statistics disappearing when long tool previews squeeze the viewport.
+
+### Changed
+
+- Edit result cards show their `+N/-M` change counts in the bottom border instead of the header.
+
 ### Added
 
 - Press Delete at the end of the Ctrl+R search field to remove the selected prompt from history
+- Consecutive edit or write cards show their total under the last card (`• Edit (3)`), like grouped reads
 - Markdown links an extension handles itself (a registered extension scheme) get their own `mdExtensionLink` theme color, so they no longer look like links that open a URL; themes that omit it get a muted blend of `mdLink` and `text` ([#19167](https://github.com/can1357/oh-my-pi/pull/19167) by [@materemias](https://github.com/materemias))
 
 ## [18.20.0] - 2026-11-12

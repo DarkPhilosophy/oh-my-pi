@@ -117,7 +117,7 @@ import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 import { frameDataBytesBudget, readerIncludesThinking } from "@oh-my-pi/snapcompact";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { formatUsageResetWindow } from "@oh-my-pi/pi-tui/overlays/usage-display";
-import { loadAdvisorTranscriptCosts } from "../advisor";
+import { type AdvisorMessageDetails, loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager, type AsyncJobManagerApi } from "../async";
 import { planParallel } from "../auto-parallel/planner";
 import { classifyAutoPrewalk } from "../auto-prewalk/classifier";
@@ -460,7 +460,12 @@ import {
 	toRestoredQueuedMessage,
 	withQueuedUserContent,
 } from "./queued-messages";
-import { createRenderTestAgent, type RenderTestOptions, validateRenderTestOptions } from "./render-test";
+import {
+	createRenderTestAgent,
+	type RenderTestOptions,
+	runsDefaultPass,
+	validateRenderTestOptions,
+} from "./render-test";
 import { createRenderWorkflow } from "./render-workflow";
 import { checkCodexBalance, readResetMarker, resetLockPath, withResetFence } from "./reset-fence";
 import type { ServingModel } from "./retry-fallback-chains";
@@ -7440,7 +7445,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		let advisorEmitted = false;
 		let transientIrcEmitted = false;
 		const emitTransientIrc = async (): Promise<void> => {
-			if (transientIrcEmitted || options.scenario !== undefined) return;
+			if (transientIrcEmitted || !runsDefaultPass(options.scenario)) return;
 			transientIrcEmitted = true;
 			for (let index = 0; index < 5; index++) {
 				await this.#emitSessionEvent({
@@ -7461,7 +7466,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 		};
 		const emitAdvisor = async (): Promise<void> => {
-			if (advisorEmitted || (options.scenario !== undefined && options.scenario !== "advisor")) return;
+			if (advisorEmitted || (!runsDefaultPass(options.scenario) && options.scenario !== "advisor")) return;
 			advisorEmitted = true;
 			// Display-only: bypasses persistence, queuing, steering, and agent wake-up.
 			await this.#emitSessionEvent({
@@ -7476,7 +7481,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 							{ note: "Inspect the streamed write card before its large preview settles.", severity: "concern" },
 							{
 								note: "The multi-hunk edit should replace the earlier card without a viewport gap.",
-								severity: "warning",
+								severity: "nit",
 							},
 							{
 								note: "The failed edit must collapse to its compact production error card.",
@@ -7484,7 +7489,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 							},
 							{ note: "This advisor event is display-only; it cannot affect a live turn.", severity: "concern" },
 						],
-					},
+					} satisfies AdvisorMessageDetails,
 					timestamp: Date.now(),
 				},
 			});
@@ -7498,7 +7503,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.agent.emitExternalEvent(event);
 			if (event.type === "message_end" && event.message.role === "assistant") {
 				assistantMessages++;
-				if (assistantMessages === 3 && options.scenario === undefined)
+				if (assistantMessages === 3 && runsDefaultPass(options.scenario))
 					this.#renderTestPendingEvents?.push(emitTransientIrc());
 				if (assistantMessages === (options.scenario === "advisor" ? 1 : 3))
 					this.#renderTestPendingEvents?.push(emitAdvisor());

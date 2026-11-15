@@ -1,13 +1,13 @@
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
-import type { RenderWorkflow } from "./render-workflow";
+import type { RenderScenario, RenderWorkflow } from "./render-workflow";
 
 export interface RenderTestOptions {
 	repeat: number;
 	/** Delay between simulated provider chunks, in milliseconds. */
 	delayMs: number;
-	scenario?: "ask" | "job" | "markdown" | "todo" | "large-edit" | "edit-error" | "advisor" | "eval";
+	scenario?: RenderScenario;
 	/** Isolate a single scripted response (1-based); labels keep the original number. */
 	segment?: number;
 }
@@ -25,6 +25,49 @@ export function validateRenderTestOptions(options: RenderTestOptions): void {
 	if (options.segment !== undefined && (!Number.isInteger(options.segment) || options.segment < 1)) {
 		throw new RangeError("Render segment must be a positive integer.");
 	}
+}
+
+/** Whether a run opens with the default pass, which starts with a viewport-spanning introduction. */
+export function runsDefaultPass(scenario: RenderScenario | undefined): boolean {
+	return scenario === undefined || scenario === "all";
+}
+
+/** Heading for one scripted response, named after the tools it calls. */
+function batchTitle(tools: readonly string[], scripted: boolean, introduction: boolean): string {
+	if (introduction) return "Analysis, long-form text and one viewport-spanning code block";
+	if (tools.includes("ask")) return "Interactive question — draft input, submission and dialog restoration";
+	if (tools.includes("edit")) return "File changes — real snapshot validation and edit results";
+	if (tools.includes("read")) return "File inspection — read the current contents before the next change";
+	if (tools.includes("bash")) return "Background processing — foreground handoff and concurrent jobs";
+	return scripted ? "Workflow progress" : "Completed workflow";
+}
+
+/** The line that tells the person watching what this response is about to show. */
+function stepDetail(
+	tools: readonly string[],
+	scripted: boolean,
+	streamNumber: number,
+	scenario?: RenderScenario,
+): string {
+	if (tools.includes("ask")) {
+		return "The next tool opens the question. Try draft input and submission before answering; the workflow then resumes.";
+	}
+	if (tools.includes("edit") && tools.length === 3) {
+		return "Three edits belong to this one response. The second deliberately fails hash validation; recovery happens in a later response.";
+	}
+	if (tools.includes("bash") && tools.length === 10) {
+		return `Ten jobs launch in this batch. Streaming ${streamNumber + 1}–${streamNumber + 4} are tool-only wait responses, with no narration between them.`;
+	}
+	if (scripted) {
+		return `This response calls: ${tools.join(" → ")}. The next response begins only after these tool results return.`;
+	}
+	if (scenario === "ask") {
+		return "The question has closed. Inspect this continuation and the restored editor for missing rows or a blank band.";
+	}
+	if (scenario === "job") {
+		return "Background waits have finished. Inspect the job cards and this continuation for missing rows or a blank band.";
+	}
+	return "All stages finished. Review the transcript, including code finalization, job-card contraction and the answered question.";
 }
 
 /** Scripted provider deltas decoded by agent-core, followed by real sandboxed tool execution. */
@@ -92,25 +135,12 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 				const step = await workflow.next(context);
 				const currentStream = ++streamNumber;
 				const tools = step?.calls.map(call => call.name) ?? [];
-				const batch =
-					step?.introduction && !options.scenario
-						? "Analysis, long-form text and one viewport-spanning code block"
-						: tools.includes("ask")
-							? "Interactive question — draft input, submission and dialog restoration"
-							: tools.includes("edit")
-								? "File changes — real snapshot validation and edit results"
-								: tools.includes("read")
-									? "File inspection — read the current contents before the next change"
-									: tools.includes("bash")
-										? "Background processing — foreground handoff and concurrent jobs"
-										: step
-											? "Workflow progress"
-											: "Completed workflow";
+				const introduction = step?.introduction === true && runsDefaultPass(options.scenario);
+				const batch = batchTitle(tools, step !== undefined, introduction);
 				// Separate provider responses from chunk pacing so tool results can settle visibly.
 				await pause(300);
 				stream.push({ type: "start", partial: message });
 				const textParts: string[] = [];
-				const introduction = step?.introduction === true && !options.scenario;
 				if (!step?.silent && !introduction) {
 					textParts.push(
 						`\n## Streaming ${currentStream} — BEGIN · ${step ? `Repetition ${step.repetition}` : "Summary"}\n\n**Batch: ${batch}.**\n\n`,
@@ -139,20 +169,9 @@ export function createRenderTestAgent(model: Model, options: RenderTestOptions, 
 					);
 					textParts.push(`\`\`\`markdown\n${body.join("\n")}\n\`\`\`\n`);
 				} else if (!step?.silent) {
-					const detail = tools.includes("ask")
-						? "The next tool opens the question. Try draft input and submission before answering; the workflow then resumes."
-						: tools.includes("edit") && tools.length === 3
-							? "Three edits belong to this one response. The second deliberately fails hash validation; recovery happens in a later response."
-							: tools.includes("bash") && tools.length === 10
-								? `Ten jobs launch in this batch. Streaming ${currentStream + 1}–${currentStream + 4} are tool-only wait responses, with no narration between them.`
-								: step
-									? `This response calls: ${tools.join(" → ")}. The next response begins only after these tool results return.`
-									: options.scenario === "ask"
-										? "The question has closed. Inspect this continuation and the restored editor for missing rows or a blank band."
-										: options.scenario === "job"
-											? "Background waits have finished. Inspect the job cards and this continuation for missing rows or a blank band."
-											: "All stages finished. Review the transcript, including code finalization, job-card contraction and the answered question.";
-					textParts.push(`STEP_${++outputRow}: ${detail}\n`);
+					textParts.push(
+						`STEP_${++outputRow}: ${stepDetail(tools, step !== undefined, currentStream, options.scenario)}\n`,
+					);
 				}
 				if (!step?.silent && options.scenario !== "markdown" && options.scenario !== "advisor") {
 					if (!introduction)

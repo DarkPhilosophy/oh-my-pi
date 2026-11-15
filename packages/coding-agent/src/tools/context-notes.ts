@@ -14,7 +14,6 @@ import {
 	checkContextRolloverGrowth,
 	type ContextNotesEntry,
 	getContextNotes,
-	MAX_CONTEXT_NOTES_BYTES,
 } from "../session/context-notes";
 import contextNotesDescription from "../prompts/tools/context-notes.md" with { type: "text" };
 import newContextDescription from "../prompts/tools/new-context.md" with { type: "text" };
@@ -23,16 +22,27 @@ import type { ToolSession } from ".";
 import { throwIfAborted } from "./tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
-import { cfgCompactionExperimentalContextManagement, cfgCompactionKeepRecentTokens } from "../session/context-settings";
+import {
+	cfgCompactionContextNotesMaxBytes,
+	cfgCompactionExperimentalContextManagement,
+	cfgCompactionKeepRecentTokens,
+} from "../session/context-settings";
 import { resolveSpeculationLeadTokens } from "../session/speculation-lead";
 
-const contextNotesSchema = type({
-	"text?": type("string").describe(prompt.render(contextNotesTextDescription, { maxBytes: MAX_CONTEXT_NOTES_BYTES })),
-});
+const contextNotesSchema = type({ "text?": type("string") });
+
+/** Parameter schema of `context_notes`; its description carries the session's live size limit. */
+export type ContextNotesSchema = typeof contextNotesSchema;
+
+function createContextNotesSchema(maxBytes: number): ContextNotesSchema {
+	return type({
+		"text?": type("string").describe(prompt.render(contextNotesTextDescription, { maxBytes })),
+	});
+}
 
 const newContextSchema = type({});
 
-export type ContextNotesParams = typeof contextNotesSchema.infer;
+export type ContextNotesParams = ContextNotesSchema["infer"];
 export type NewContextParams = typeof newContextSchema.infer;
 
 export interface ContextNotesToolDetails {
@@ -85,13 +95,12 @@ function createIfSupported<T extends ContextNotesTool | NewContextTool>(
 }
 
 /** Reads or replaces the current branch's durable experimental notebook. */
-export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, ContextNotesToolDetails> {
+export class ContextNotesTool implements AgentTool<ContextNotesSchema, ContextNotesToolDetails> {
 	readonly name = "context_notes";
 	readonly approval = (args: unknown): ToolApprovalDecision =>
 		args !== null && typeof args === "object" && Object.hasOwn(args, "text") ? "write" : "read";
 	readonly label = "Context Notes";
-	readonly description = contextNotesDescription;
-	readonly parameters = contextNotesSchema;
+	#rendered: { maxBytes: number; description: string; parameters: ContextNotesSchema } | undefined;
 	// Strict-mode providers mark every property required, so an optional `text`
 	// would force models to send `""` (a clear) just to read. Stay non-strict
 	// so omitted `text` keeps meaning "read" while an explicit empty string clears.
@@ -100,6 +109,27 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 	readonly summary = "Read or replace persistent experimental context notes";
 
 	constructor(private readonly session: ToolSession) {}
+
+	/** Model-facing description and schema for the live size limit, re-rendered only when it changes. */
+	#forLimit(): { description: string; parameters: ContextNotesSchema } {
+		const maxBytes = cfgCompactionContextNotesMaxBytes.get(this.session.settings);
+		if (this.#rendered?.maxBytes !== maxBytes) {
+			this.#rendered = {
+				maxBytes,
+				description: prompt.render(contextNotesDescription, { maxKiB: Math.floor(maxBytes / 1024) }),
+				parameters: createContextNotesSchema(maxBytes),
+			};
+		}
+		return this.#rendered;
+	}
+
+	get description(): string {
+		return this.#forLimit().description;
+	}
+
+	get parameters(): ContextNotesSchema {
+		return this.#forLimit().parameters;
+	}
 
 	static createIf(session: ToolSession): ContextNotesTool | null {
 		return createIfSupported(session, ContextNotesTool);
@@ -126,9 +156,11 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		}
 
 		const bytes = Buffer.byteLength(params.text, "utf8");
-		if (bytes > MAX_CONTEXT_NOTES_BYTES) {
+		// Read live: a Settings change applies to the next save without rebuilding the tool.
+		const maxBytes = cfgCompactionContextNotesMaxBytes.get(this.session.settings);
+		if (bytes > maxBytes) {
 			throw new ToolError(
-				`Context notes are ${bytes} bytes; the limit is ${MAX_CONTEXT_NOTES_BYTES} UTF-8 bytes. Shorten the notebook and use history://current/full to recover raw detail.`,
+				`Context notes are ${bytes} bytes; the limit is ${maxBytes} UTF-8 bytes. Shorten the notebook and use history://current/full to recover raw detail.`,
 			);
 		}
 

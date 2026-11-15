@@ -460,6 +460,8 @@ export class ToolExecutionComponent extends Container {
 	#args: unknown;
 	#expanded = false;
 	#allocation = Number.POSITIVE_INFINITY;
+	/** The run total this card draws under itself as its run's last card; see setTranscriptJoinRun. */
+	#joinRunTotal: number | undefined;
 
 	/** Widest lower box drawn at `width` with `expanded` as it was; only grows, restarts on a width or expand change. */
 	#liveWidthMax: { width: number; expanded: boolean; value: number } | undefined;
@@ -887,6 +889,11 @@ export class ToolExecutionComponent extends Container {
 		this.#updateDisplay();
 	}
 
+	/** Edit and write cards stream their whole body before running, so they never shrink while waiting for the result. */
+	keepsHeightWhileActive(): boolean {
+		return streamsBody(this.#toolName);
+	}
+
 	/**
 	 * Signal that args are complete (tool is about to execute).
 	 * This triggers an immediate final diff computation for edit-like tools.
@@ -1283,17 +1290,10 @@ export class ToolExecutionComponent extends Container {
 	isTranscriptBlockFinalized(native = false): boolean {
 		if (!this.#toolActivityVisible) return true;
 		if (this.#sealed) return true;
-		if (this.#result === undefined) {
-			// The call preview and its execution have different lifetimes. Once
-			// the argument stream (including asynchronous diff preparation) closes,
-			// its card may retire; execution gets a continuation if it has retired.
-			return (
-				streamsBody(this.#toolName) &&
-				this.#argsComplete &&
-				!this.#executionStarted &&
-				(!isEditLikeToolName(this.#toolName) || this.#previewStreamSettled)
-			);
-		}
+		// A call card without its result is unfinished, however settled its argument preview
+		// looks: history only ever receives the finished card. A preview taller than the
+		// viewport is clipped while it waits, then commits whole once its result lands.
+		if (this.#result === undefined) return false;
 		// Terminal history may retire a parked call, but the native document
 		// still receives its job frames. Keep its diff state until the final
 		// result so streaming updates do not remount the output subtree.
@@ -1483,6 +1483,34 @@ export class ToolExecutionComponent extends Container {
 			return false;
 		}
 		return this.#presentation.shown.mode === "compact";
+	}
+
+	/**
+	 * Edit (and apply_patch) cards, and write cards, from separate calls stack flush with their own
+	 * kind, the way one call's per-file cards do; the key is also the title of the run's total.
+	 */
+	transcriptJoinKey(): string | undefined {
+		if (!this.#toolActivityVisible || this.#allocation === 0 || !streamsBody(this.#toolName)) return undefined;
+		if (this.#presentation.shown.mode !== "full") return undefined;
+		return this.#toolName === "write" ? "Write" : "Edit";
+	}
+
+	/** Files this card shows: one per per-file result of a multi-file edit, else one. */
+	transcriptJoinCount(): number {
+		const details = this.#result?.details;
+		const perFile = isRecord(details) ? details.perFileResults : undefined;
+		return Array.isArray(perFile) && perFile.length > 1 ? perFile.length : 1;
+	}
+
+	setTranscriptJoinRun(total: number | undefined): void {
+		if (this.#joinRunTotal === total) return;
+		this.#joinRunTotal = total;
+		this.#blockVersion++;
+		super.invalidate();
+	}
+
+	transcriptJoinRun(): number | undefined {
+		return this.#joinRunTotal;
 	}
 
 	/** The file paths this call targets (edit/write/apply_patch args), display-relative. */
@@ -1971,7 +1999,14 @@ export class ToolExecutionComponent extends Container {
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
 		this.#recordLiveWidth(width);
-		return lines;
+		const total = this.#joinRunTotal;
+		const key = total === undefined ? undefined : this.transcriptJoinKey();
+		if (total === undefined || key === undefined) return lines;
+		// The run's total sits right under its last card, the way a read group's does.
+		let end = lines.length;
+		while (end > 0 && lines[end - 1]!.trim() === "") end--;
+		const header = `${theme.fg("toolTitle", theme.bold(key))}${theme.fg("dim", ` (${total})`)}`;
+		return [...lines.slice(0, end), truncateToWidth(` ${theme.format.bullet} ${header}`, width)];
 	}
 
 	/** Keep the widest lower box drawn at this width, so the box only grows while output streams. */
@@ -2218,7 +2253,8 @@ export class ToolExecutionComponent extends Container {
 				| Array<{ path: string; isError?: boolean }>
 				| undefined;
 			if (perFileResults && perFileResults.length > 1) {
-				// Multi-file: render each file as its own Box (identical to separate tool calls)
+				// Multi-file: each file as its own Box, stacked flush like separate edit calls
+				// (see transcriptJoinKey): a blank row would split one call into unrelated results.
 				this.#contentBox.setBgFn(undefined);
 				this.#contentBox.clear();
 
@@ -2231,11 +2267,6 @@ export class ToolExecutionComponent extends Container {
 
 				for (let i = 0; i < perFileResults.length; i++) {
 					const fileResult = perFileResults[i];
-					if (i > 0) {
-						const spacer = new Spacer(1);
-						this.#multiFileBoxes.push(spacer);
-						this.addChild(spacer);
-					}
 					const fileBox = new Box(0, 0);
 					try {
 						const fileOptions = {

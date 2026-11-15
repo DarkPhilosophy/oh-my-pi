@@ -127,6 +127,30 @@ export const cfgCompactionExperimentalContextManagement = register({
 	},
 });
 
+/** Largest notebook the context-notes setting may allow; persisted revisions up to it stay readable. */
+export const CONTEXT_NOTES_MAX_BYTES_CEILING = 131_072;
+
+export const cfgCompactionContextNotesMaxBytes = register({
+	id: "compaction.contextNotesMaxBytes",
+	type: "number",
+	default: 16_384,
+	validate: raw => {
+		if (raw === undefined) return;
+		if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1024 || raw > CONTEXT_NOTES_MAX_BYTES_CEILING) {
+			throw new Error(
+				`Context notes size limit must be an integer between 1024 and ${CONTEXT_NOTES_MAX_BYTES_CEILING} bytes`,
+			);
+		}
+	},
+	ui: {
+		tab: "context",
+		group: "Compaction",
+		label: "Context notes size limit (experimental)",
+		description: "Largest notebook the context_notes tool accepts, in UTF-8 bytes.",
+		options: [16, 32, 64, 128].map(kib => ({ value: String(kib * 1024), label: `${kib} KiB` })),
+	},
+});
+
 function validateContextReminderNumber(raw: unknown): void {
 	if (raw === undefined) return;
 	if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 1) {

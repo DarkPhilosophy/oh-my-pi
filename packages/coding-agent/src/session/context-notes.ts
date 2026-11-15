@@ -3,9 +3,9 @@ import type { Tokenizer } from "@oh-my-pi/pi-agent-core/tokenizer";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import type { CustomEntry, SessionEntry } from "./session-entries";
 import contextNotesPrompt from "../prompts/system/context-notes.md" with { type: "text" };
+import { CONTEXT_NOTES_MAX_BYTES_CEILING } from "./context-settings";
 
 export const CONTEXT_NOTES_ENTRY_TYPE = "experimental_context_notes";
-export const MAX_CONTEXT_NOTES_BYTES = 16_384;
 
 export interface ContextNotesEntry {
 	version: 1;
@@ -31,7 +31,8 @@ function isContextNotesData(data: unknown): data is ContextNotesEntry {
 		keys.includes("text") &&
 		candidate.version === 1 &&
 		typeof candidate.text === "string" &&
-		Buffer.byteLength(candidate.text, "utf8") <= MAX_CONTEXT_NOTES_BYTES
+		// Accept every size a session could have saved, so lowering the limit never hides a notebook.
+		Buffer.byteLength(candidate.text, "utf8") <= CONTEXT_NOTES_MAX_BYTES_CEILING
 	);
 }
 

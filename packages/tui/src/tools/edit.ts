@@ -1661,7 +1661,7 @@ function renderSingleFileResult(
 				? (rawPaths.sourcePath ?? moveSource ?? rawPaths.path ?? detailPath)
 				: (rawPaths.path ?? detailPath);
 
-			// Change stats ride inline on the header bar next to the path.
+			// Change stats sit in the bottom border, under the diff they summarize.
 			const previewDiff = editDiffPreview && !("error" in editDiffPreview) ? editDiffPreview.diff : undefined;
 			const headerDiff = isError ? undefined : details?.diff || previewDiff;
 			const statsSuffix = headerDiff
@@ -1678,7 +1678,6 @@ function renderSingleFileResult(
 				firstChangedLine,
 				linkPath,
 				renameLinkPath: rename ? (rawPaths.path ?? detailPath) : undefined,
-				statsSuffix,
 			});
 			const innerWidth = Math.max(1, width - 2);
 
@@ -1738,6 +1737,7 @@ function renderSingleFileResult(
 
 			return {
 				header,
+				footerMeta: statsSuffix ? statsSuffix.trimStart() : undefined,
 				sections: bodyLines.length > 0 ? [{ content: bodyLines }] : [],
 				phase: isError ? "error" : options.isPartial ? "partial" : "success",
 				borderColor: isError ? "error" : "borderMuted",
@@ -1781,17 +1781,13 @@ function renderMultiFileResult(
 			const key = new Hasher().bool(options.expanded).u32(width).u32(perFileResults.length).u32(remaining).digest();
 			if (cached?.key === key) return cached.lines;
 
+			// Per-file cards stack flush, the way the streamed preview showed them; a blank row
+			// between files would split one call into what reads as separate results.
 			const allLines: string[] = [];
-			for (let i = 0; i < fileComponents.length; i++) {
-				if (i > 0) {
-					allLines.push("");
-				}
-				allLines.push(...fileComponents[i].render(width));
-			}
+			for (const component of fileComponents) allLines.push(...component.render(width));
 
 			// Show pending indicator for files still being processed
 			if (remaining > 0) {
-				if (allLines.length > 0) allLines.push("");
 				const spinnerFrame = options.spinnerFrame;
 				const spinner = spinnerFrame !== undefined ? formatStatusIcon("running", uiTheme, spinnerFrame) : "";
 				// Spinner while actively rendering, otherwise no icon — never the

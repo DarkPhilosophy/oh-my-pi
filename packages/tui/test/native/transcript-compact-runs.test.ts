@@ -157,4 +157,19 @@ describe("native compact runs", () => {
 		}
 		expect(h.errors).toEqual([]);
 	});
+
+	it("draws consecutive blocks sharing a join key as one gapless entry, apart from other blocks", async () => {
+		// Tern spaces every top-level entry: separate edit/write calls gapped apart instead of stacking like one call's cards.
+		const joined = (label: string): Line =>
+			Object.assign(new Line(label, false), { transcriptJoinKey: () => "file-change" });
+		const [e1, e2, n, e3, c1] = [joined("e1"), joined("e2"), new Line("n", false), joined("e3"), new Line("c1")];
+		const { h } = await mount([e1, new EmptyReply(), e2, n, e3, c1]);
+		const id = (block: Component) => nativeComponentId(block);
+		const root = h.find(node => node.p?.role === "omp.transcript")!;
+		const run = (root.c ?? [])[0]!;
+		expect(run.p).toMatchObject({ role: "omp.joined", gap: "none" });
+		expect(run.c?.map(member => member.id)).toContain(id(e2));
+		expect((root.c ?? []).slice(1).map(node => node.id)).toEqual([id(n), id(e3), id(c1)]);
+		expect(h.errors).toEqual([]);
+	});
 });

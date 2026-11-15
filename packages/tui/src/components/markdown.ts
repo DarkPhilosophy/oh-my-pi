@@ -4659,7 +4659,12 @@ export class Markdown implements Component {
 
 		const rawLines = tokenText.split("\n");
 		const streaming = this.transientRenderCache && !this.#renderingStablePrefix;
-		if (this.#theme.highlightCode && (!streaming || this.#codeTokenHasClosingFence(token))) {
+		const closed = this.#codeTokenHasClosingFence(token);
+		// An open fence streams plain where no highlight stream takes its language;
+		// its settled prefix, rendered outside the stream, must draw those rows the
+		// same or it never publishes and the block's rows never reach scrollback.
+		const plainOpen = !closed && this.#isFencedCodeToken(token) && this.#createHighlightStream(lang) === null;
+		if (this.#theme.highlightCode && !plainOpen && (!streaming || closed)) {
 			// Finalized content — or a fence that closed mid-stream, which
 			// highlights through the same whole-block call the finalized render
 			// uses so cached stable rows byte-match it.

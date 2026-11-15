@@ -13,7 +13,11 @@ import { Row } from "@oh-my-pi/pi-tui/components/layout/row";
 import { Stack } from "@oh-my-pi/pi-tui/components/layout/stack";
 import { clearRenderCache, Markdown } from "@oh-my-pi/pi-tui/components/markdown";
 import { Section } from "@oh-my-pi/pi-tui/components/section";
-import { TranscriptContainer, trimBlankEdges } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import {
+	type CompactTranscriptBlock,
+	TranscriptContainer,
+	trimBlankEdges,
+} from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { getMarkdownTheme, getThemeByName, initTheme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import * as themeModule from "@oh-my-pi/pi-tui/theme/theme";
 import * as renderUtils from "@oh-my-pi/pi-tui/render/render-utils";
@@ -202,7 +206,9 @@ function expectReplayContract(committed: Component, twin: Component): void {
 	expect(afterCommit).toEqual(live);
 
 	expect(replay(transcript, 80)).toEqual(retired);
-	expect(replay(transcript, 52)).toEqual([...trimBlankEdges(twin.render(52)), ""]);
+	// History owes the next block a separator, unless this block could join it (an edit/write card).
+	const owed = (twin as Component & CompactTranscriptBlock).transcriptJoinKey?.() === undefined ? [""] : [];
+	expect(replay(transcript, 52)).toEqual([...trimBlankEdges(twin.render(52)), ...owed]);
 	const beforeReplay = committed.render(80);
 	expect(replay(transcript, 80)).toEqual(retired);
 	const afterReplay = committed.render(80);

@@ -178,11 +178,6 @@ function countLines(text: string): number {
 	return text.split("\n").length;
 }
 
-function formatLineCountSuffix(lineCount: number, uiTheme: Theme): string {
-	if (lineCount <= 0) return "";
-	return uiTheme.fg("dim", ` · ${lineCount} line${lineCount === 1 ? "" : "s"}`);
-}
-
 function normalizeDisplayText(text: unknown): string {
 	let displayText = "";
 	if (typeof text === "string") {
@@ -747,18 +742,19 @@ export const writeToolRenderer = {
 		const isPartial = options.isPartial === true;
 		const progressText = result.content?.find(c => c.type === "text")?.text ?? "";
 		const lineCount = countLines(fileContent);
-		const lineSuffix = formatLineCountSuffix(lineCount, uiTheme);
-		const execSuffix =
-			!isPartial && result.details?.madeExecutable
-				? `${uiTheme.fg("dim", " · ")}${uiTheme.fg("success", "made executable!")}`
-				: "";
+		// Like an edit's change counts, the written size sits in the bottom border under the content.
+		const footerParts = [
+			lineCount > 0 ? uiTheme.fg("success", `${lineCount} line${lineCount === 1 ? "" : "s"}`) : undefined,
+			!isPartial && result.details?.madeExecutable ? uiTheme.fg("success", "made executable!") : undefined,
+		].filter(part => part !== undefined);
+		const footerMeta = footerParts.length > 0 ? footerParts.join(uiTheme.fg("dim", " · ")) : undefined;
 		const header = renderStatusLine(
 			{
 				icon: isPartial ? "running" : undefined,
 				iconOverride: isPartial ? undefined : uiTheme.styledSymbol("tool.write", "accent"),
 				spinnerFrame: options.spinnerFrame,
 				title: "Write",
-				description: `${langIcon} ${pathDisplay}${lineSuffix}${execSuffix}`,
+				description: `${langIcon} ${pathDisplay}`,
 			},
 			uiTheme,
 		);
@@ -792,6 +788,7 @@ export const writeToolRenderer = {
 				while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
 				return {
 					header,
+					footerMeta,
 					sections: bodyLines.length > 0 ? [{ content: wrapWritePreviewRows(bodyLines, contentWidth) }] : [],
 					phase: isPartial ? "partial" : "success",
 					borderColor: "borderMuted",

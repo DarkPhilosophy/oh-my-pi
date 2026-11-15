@@ -52,6 +52,7 @@ import {
 	isUserInterruptAbort,
 	USER_INTERRUPT_LABEL,
 } from "../../session/messages";
+import type { SessionContext } from "../../session/session-context";
 import { previewLine, PREVIEW_LIMITS, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { writeDeviceDispatch } from "../../tools/resolve";
@@ -352,6 +353,8 @@ export class EventController {
 	#dispatchTail: Promise<void> = Promise.resolve();
 	/** Whether a chained run is currently in flight (awaiting its own awaits). */
 	#dispatchInFlight = false;
+	/** Transcript each compaction committed, captured when its end event was emitted; see dispatchSessionEvent. */
+	#compactedTranscripts = new WeakMap<AgentSessionEvent, SessionContext>();
 	#dispatchGeneration = 0;
 	// Deltas already fed to speech at arrival by the coalescer. `#handleMessageUpdate`
 	// also vocalizes so the direct `handleEvent` path (tests, session focus replay)
@@ -960,6 +963,13 @@ export class EventController {
 		if (event.type === "message_update") {
 			this.#enqueueMessageUpdate(event);
 			return;
+		}
+		// Serialized handling can run behind the agent; by the time a compaction's
+		// rebuild runs, the session may hold later turns whose queued events still
+		// have to draw them. Capture what the compaction committed now, while the
+		// session matches the event stream.
+		if (event.type === "auto_compaction_end" && !event.aborted) {
+			this.#compactedTranscripts.set(event, this.ctx.buildLiveTranscriptContext());
 		}
 		await this.runSerialized(async () => {
 			await this.#startEventHandling(event);
@@ -2822,6 +2832,8 @@ export class EventController {
 			this.ctx.autoCompactionLoader = undefined;
 			this.ctx.statusContainer.disposeChildren();
 		}
+		const sessionContext = this.#compactedTranscripts.get(event);
+		this.#compactedTranscripts.delete(event);
 		const isHandoffAction = event.action === "handoff";
 		const isRemoteAction = event.action === "remote";
 		const isShakeAction = event.action === "shake";
@@ -2845,21 +2857,21 @@ export class EventController {
 			// the chat reflects the dropped regions even though a context-full pass follows.
 			if (event.errorMessage) {
 				if (!event.skipped) {
-					this.ctx.rebuildChatFromMessages();
+					this.ctx.rebuildChatFromMessages({ sessionContext });
 					this.ctx.statusLine.invalidate();
 					this.ctx.ui.requestRender(true, { clearScrollback: true });
 				}
 				this.ctx.showWarning(event.errorMessage);
 			} else if (!event.skipped) {
 				this.ctx.lastAssistantUsage = undefined;
-				this.ctx.rebuildChatFromMessages();
+				this.ctx.rebuildChatFromMessages({ sessionContext });
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
 				this.ctx.showStatus("Auto-shake completed");
 			}
 		} else if (event.result) {
 			this.ctx.lastAssistantUsage = undefined;
-			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
+			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true, sessionContext });
 			this.ctx.statusLine.invalidate();
 			// rebuildChatFromMessages clears the container's emission ledger,
 			// so every block re-emits on this frame while the previous copy is
