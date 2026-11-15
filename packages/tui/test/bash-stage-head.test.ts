@@ -4,6 +4,8 @@ import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/displ
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { RunTrace, Shell } from "@oh-my-pi/pi-natives";
+import type { ShellTrace } from "@oh-my-pi/pi-wire";
 
 // The command half keeps stable framing across execution states; the status
 // lives on the Output separator below. Actual publication belongs to the
@@ -199,6 +201,39 @@ describe("bash card before execution starts has no lower stage and closes at its
 		expect(rows.join("\n")).not.toContain("STAGE_MARKER");
 		expect(rows.some(row => row.startsWith("├") && row.includes("Output"))).toBe(true);
 		expect(rows.filter(row => row.startsWith("╰"))).toHaveLength(1);
+	});
+
+	it("keeps an interpreted command immutable after publication when the execution trace arrives", async () => {
+		setChatTranscriptDisplayPreferences({ shellVisualization: true });
+		const command = "STAGE_MARKER=1; printf OUTPUT_LINE";
+		const card = new ToolExecutionComponent("bash", { command }, {}, undefined, ui);
+		cards.push(card);
+		card.setArgsComplete();
+		card.setExecutionStarted();
+		const transcript = new TranscriptContainer();
+		transcript.addChild(card);
+		const stage = transcript.peekFinalizedBatch(WIDTH, 100)!;
+		expect(stage.rows.map(row => Bun.stripANSI(row)).join("\n")).toContain("STAGE_MARKER");
+		transcript.acknowledgeFinalizedBatch(stage.id);
+
+		const trace = new RunTrace(command);
+		const result = await new Shell().run({ command, trace, timeoutMs: 5_000 });
+		expect(result.exitCode).toBe(0);
+		card.updateResult(
+			{
+				content: [{ type: "text", text: "OUTPUT_LINE" }],
+				details: { trace: JSON.parse(trace.snapshot()) as ShellTrace },
+			},
+			false,
+		);
+		const rendered = card.render(WIDTH);
+		const start = rendered.findIndex(row => Bun.stripANSI(row).trim() !== "");
+		expect(rendered.slice(start, start + stage.rows.length)).toEqual([...stage.rows]);
+		const final = transcript.peekFinalizedBatch(WIDTH, 0)!;
+		expect(final.divergent).not.toBe(true);
+		const tail = final.rows.map(row => Bun.stripANSI(row)).join("\n");
+		expect(tail).toContain("OUTPUT_LINE");
+		expect(tail).not.toContain("STAGE_MARKER");
 	});
 
 	it("while the arguments are still forming the box is closed at its own width too", () => {

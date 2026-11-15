@@ -1,6 +1,10 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { type Component, Container, Text } from "@oh-my-pi/pi-tui";
+import {
+	chatTranscriptDisplayPreferences,
+	setChatTranscriptDisplayPreferences,
+} from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
@@ -119,7 +123,14 @@ beforeAll(async () => {
 	await initTheme();
 });
 
+let previousShellVisualization: boolean;
+beforeEach(() => {
+	previousShellVisualization = chatTranscriptDisplayPreferences.shellVisualization;
+	setChatTranscriptDisplayPreferences({ shellVisualization: false });
+});
+
 afterEach(() => {
+	setChatTranscriptDisplayPreferences({ shellVisualization: previousShellVisualization });
 	for (const card of cards) card.stopAnimation();
 	cards.length = 0;
 });

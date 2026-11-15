@@ -104,7 +104,7 @@ const LAG_POINTS = ["none", "next-turn", "mid-tool"] as const;
  * "next-turn" lets the post-rollover grep finish first, "mid-tool" holds the
  * grep running while the rebuild replays the session.
  */
-it.each(LAG_POINTS)(
+it.each([...LAG_POINTS])(
 	"draws each post-rollover tool once and settles it before the turn ends (UI lag: %s)",
 	async lagPoint => {
 		await Bun.write(

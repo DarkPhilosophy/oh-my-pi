@@ -845,10 +845,9 @@ export class TranscriptContainer extends Container {
 		const firstUnsettled = live.findIndex(({ entry }) => entry.state !== "settled");
 		let naturalTail = firstUnsettled < 0;
 
-		// Collect newest-first and stop one block past what the viewport can
-		// hold: beyond that the emergency layout is already certain, and every
-		// further block would cost a full render to produce rows no frame can
-		// show — the whole ledger on a resumed session's first paint (#12933).
+		// Collect newest-first and stop one block past the viewport's row budget.
+		// Older settled blocks cannot affect its natural tail; measuring the
+		// whole ledger would stall a resumed session's first paint (#12933).
 		const shown: Array<{ entry: TranscriptEntry; index: number }> = [];
 		const blocks: (readonly string[])[] = [];
 		const measuredImages: boolean[] = [];
@@ -856,6 +855,8 @@ export class TranscriptContainer extends Container {
 		let naturalRows = 0;
 		// Join key of the nearest shown block below the cursor (blocks with one key share no separator).
 		let below: RowsAbove;
+		let clipDecided = false;
+		let clip = false;
 		for (let cursor = live.length - 1; cursor >= 0; cursor--) {
 			if (naturalRows >= capacity && (firstUnsettled < 0 || cursor < firstUnsettled)) break;
 			if (shown.length > capacity) {
@@ -873,6 +874,13 @@ export class TranscriptContainer extends Container {
 				block.rows.length + (below === undefined ? 0 : separatorRows(tailKey(candidate.entry.component), below));
 			below = join;
 			if (cursor === firstUnsettled && naturalRows <= capacity) naturalTail = true;
+			// Paint the final natural tail immediately while a finalized backlog
+			// drains into scrollback over several budgeted frames.
+			if (!clipDecided && naturalRows >= capacity) {
+				clipDecided = true;
+				clip = this.#retiresThrough(live, cursor, naturalRows > capacity);
+				if (clip) break;
+			}
 		}
 		shown.reverse();
 		blocks.reverse();
@@ -893,10 +901,9 @@ export class TranscriptContainer extends Container {
 			this.#lastViewportSpans = [];
 			return EMPTY_ROWS;
 		}
-		// The viewport is the tail of the live content, like any terminal: what does not fit
-		// scrolls off the top. Blocks are never squeezed to a row each; a block that does not
-		// fit whole shows its newest rows.
-		if (!naturalTail && shown.length > capacity) {
+		// Finished blocks retain their natural rows. Even under extreme pressure,
+		// show real tail rows rather than replacing them with a synthetic summary.
+		if (!naturalTail && !clip && shown.length > capacity) {
 			this.#noteDegradedViewport(live, shown.length, capacity, firstUnsettled);
 		}
 		// The walk ran newest-first, so the images it measured claimed no
@@ -952,10 +959,11 @@ export class TranscriptContainer extends Container {
 			if (neighbour.state !== "active" || !isToolActivityComponent(neighbour.component)) continue;
 			// A card waiting only for its result keeps its height and scrolls like a finished one.
 			if (neighbour.component.keepsHeightWhileActive?.() === true) continue;
-			if (overflowing && blocks[blockIndex]!.length > ACTIVE_BLOCK_ROWS) squeeze(blockIndex, ACTIVE_BLOCK_ROWS);
+			if (!clip && overflowing && blocks[blockIndex]!.length > ACTIVE_BLOCK_ROWS)
+				squeeze(blockIndex, ACTIVE_BLOCK_ROWS);
 			if (firstRunning < 0) firstRunning = blockIndex;
 		}
-		if (newest >= 0) {
+		if (!clip && newest >= 0) {
 			// Everything from the first running tool up to the newest block stays on screen with it,
 			// so the newest block gets what is left after that real height and its separators.
 			const stackStart = firstRunning >= 0 ? firstRunning : newest;
@@ -1020,6 +1028,12 @@ export class TranscriptContainer extends Container {
 			return visibleRows;
 		};
 		const drop = Math.max(0, output.length - capacity);
+		// Do not let an image clipped through its reserved rows paint over the chrome.
+		const headClipped = drop - gaps[0]!;
+		if (headClipped > 0) {
+			const below = cutBelowWholeImage(blocks[0]!, headClipped);
+			if (below > headClipped) output[gaps[0]! + below - 1] = "";
+		}
 		if (drop > 0 && capacity > ACTIVE_BLOCK_ROWS + 1) {
 			for (let index = shown.length - 2; index >= 0; index--) {
 				const { entry } = shown[index]!;
@@ -1038,6 +1052,22 @@ export class TranscriptContainer extends Container {
 				const visibleOutput = [...pinned, "", ...tail.map(({ row }) => row)];
 				const visibleOwners = [...pinned.map(() => entry.component), undefined, ...tail.map(({ owner }) => owner)];
 				return finish(visibleOutput, visibleOwners);
+			}
+		}
+		// Keep a mutable predecessor visible beside its single settled successor
+		// by reusing an empty boundary separator, without squeezing finished rows.
+		if (drop > 0 && owners[drop] === undefined && output[drop] === "") {
+			const index = shown.findIndex(({ entry }) => entry.component === owners[drop - 1]);
+			const preceding = shown[index]?.entry;
+			if (
+				preceding?.state === "active" &&
+				preceding.mode !== "appendOnly" &&
+				!isToolActivityComponent(preceding.component) &&
+				index === shown.length - 2 &&
+				shown[index + 1]!.entry.state === "settled"
+			) {
+				output[drop] = output[drop - 1]!;
+				owners[drop] = preceding.component;
 			}
 		}
 		// A prompt or answer that scrolled off the top keeps one row above the tail, so the
@@ -1103,6 +1133,26 @@ export class TranscriptContainer extends Container {
 			if (row !== undefined) return { row, owner: component };
 		}
 		return undefined;
+	}
+
+	/**
+	 * Whether every live block older than `live[cursor]`, and that block itself
+	 * (as a split) when `clipped`, is finalized, so pressure retirement takes it
+	 * into scrollback once it settles. A finalized block still pending (an async
+	 * figure render or image conversion in replayed history) may still swap a
+	 * placeholder for its figure, but it is off screen and not yet in scrollback,
+	 * so it retires with its final rows; a block still streaming or running
+	 * would stay pinned out of view instead.
+	 */
+	#retiresThrough(live: ReadonlyArray<{ entry: TranscriptEntry }>, cursor: number, clipped: boolean): boolean {
+		const end = clipped ? cursor + 1 : cursor;
+		for (let index = 0; index < end; index++) {
+			const { entry } = live[index]!;
+			if (entry.state === "settled") continue;
+			const block = entry.component as Component & FinalizableBlock;
+			if (block.isTranscriptBlockFinalized?.() === false) return false;
+		}
+		return true;
 	}
 
 	/**

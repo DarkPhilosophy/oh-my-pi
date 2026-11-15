@@ -50,6 +50,11 @@ export interface SessionSwitchEvent {
 	previousSessionFile: string | undefined;
 }
 
+/** Fired after successfully clearing the live/model context without changing session identity. */
+export interface SessionClearEvent {
+	type: "session_clear";
+}
+
 /**
  * What a branch transition does with {@link SessionBeforeBranchEvent.entryId}:
  * - `"branch"`: rewinds to a user message; `entryId` and everything after it are dropped.
@@ -175,6 +180,7 @@ export type SessionEvent =
 	| SessionStartEvent
 	| SessionBeforeSwitchEvent
 	| SessionSwitchEvent
+	| SessionClearEvent
 	| SessionBeforeBranchEvent
 	| SessionBranchEvent
 	| SessionBeforeCompactEvent

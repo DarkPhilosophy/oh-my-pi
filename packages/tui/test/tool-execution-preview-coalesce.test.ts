@@ -1,5 +1,9 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import {
+	chatTranscriptDisplayPreferences,
+	setChatTranscriptDisplayPreferences,
+} from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer, trimBlankEdges } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
@@ -7,6 +11,15 @@ import { Text, type TUI } from "@oh-my-pi/pi-tui";
 import { renderOutputBlockStaged, renderOutputBlockViewport } from "@oh-my-pi/pi-tui/render/output-block";
 import { formatEarlierLines } from "@oh-my-pi/pi-tui/render/render-utils";
 import { VirtualTerminal } from "./virtual-terminal";
+
+let previousShellVisualization: boolean;
+beforeEach(() => {
+	previousShellVisualization = chatTranscriptDisplayPreferences.shellVisualization;
+	setChatTranscriptDisplayPreferences({ shellVisualization: false });
+});
+afterEach(() => {
+	setChatTranscriptDisplayPreferences({ shellVisualization: previousShellVisualization });
+});
 
 describe("native streaming edit previews", () => {
 	beforeAll(async () => {

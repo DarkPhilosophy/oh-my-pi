@@ -4,6 +4,7 @@ import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
 import type { DaemonConnectionSnapshot } from "@oh-my-pi/pi-tui/chrome/daemon-status";
 import type { InteractiveModeContext } from "../modes/types";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
+import { BUILTIN_COMMIT_SLASH_COMMANDS } from "./builtin-commit";
 import {
 	buildArgumentCompletions,
 	buildDirectoryArgumentCompletions,
@@ -118,6 +119,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	...BUILTIN_COLLABORATION_SLASH_COMMANDS,
 	...BUILTIN_SESSION_SLASH_COMMANDS,
 	DAEMON_SLASH_COMMAND,
+	...BUILTIN_COMMIT_SLASH_COMMANDS,
 	...BUILTIN_LIFECYCLE_SLASH_COMMANDS,
 	...BUILTIN_MARKETPLACE_SLASH_COMMANDS,
 	...BUILTIN_SKILLS_SLASH_COMMANDS,

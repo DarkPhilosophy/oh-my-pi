@@ -335,6 +335,76 @@ async function resolveWrapperTarget(wrapperPath: string): Promise<string | null>
 }
 
 /**
+ * Normalize candidate argv for kernels that serve /proc/<pid>/cmdline
+ * space-joined instead of NUL-separated. A glued first word (the whole
+ * command line in argv[0]) would otherwise hide --user-data-dir and
+ * --remote-debugging-port from the matchers below.
+ */
+function normalizeCandidateArgs(args: string[]): string[] {
+	if (args.length !== 1 || !args[0]!.includes(" --")) return args;
+	const word = args[0]!;
+	const split = word.trim().split(/\s+/);
+	if (split.length <= 1) return args;
+
+	// Invariant: ungluing is only safe when splitting preserves exact argument
+	// boundaries without corrupting switch values (e.g. splitting a profile path
+	// containing spaces into multiple argv elements, which risks cross-profile reuse).
+	// Every --user-data-dir flag must re-parse to the identical value.
+	const flagRegex = /(?:^|\s)--user-data-dir(?:=(.*?)|(?:\s+(.*?))?)(?=\s--|$)/g;
+	const rawMatches = [...word.trim().replace(/\s+/g, " ").matchAll(flagRegex)];
+	if (rawMatches.length > 0) {
+		let matchIndex = 0;
+		for (let i = 0; i < split.length; i++) {
+			const arg = split[i]!;
+			if (arg.startsWith("--user-data-dir=")) {
+				const expected = rawMatches[matchIndex]?.[1] ?? rawMatches[matchIndex]?.[2] ?? "";
+				const actual = findUserDataDirInArgs(split.slice(i, i + 1));
+				if (actual !== expected) return args;
+				matchIndex++;
+			} else if (arg === "--user-data-dir") {
+				const expected = rawMatches[matchIndex]?.[1] ?? rawMatches[matchIndex]?.[2] ?? "";
+				const actual = findUserDataDirInArgs(split.slice(i, i + 2));
+				if (actual !== expected) return args;
+				matchIndex++;
+				i++;
+			}
+		}
+		if (matchIndex !== rawMatches.length) return args;
+	}
+
+	return split;
+}
+
+/**
+ * The live Chromium-family browser holding a profile, whatever executable it
+ * runs: a compiled launcher (Arch's /usr/bin/chromium) execs a binary whose
+ * path neither realpath nor {@link resolveWrapperTarget} can derive. POSIX
+ * Chromium links `<profile>/SingletonLock` to `<hostname>-<pid>`; the owner must
+ * still name an absolute profile in its argv; a different profile identifies a stale lock.
+ */
+async function findProfileLockOwner(
+	normalizedUserDataDir: string,
+): Promise<{ owner: Process; executable: string; matchesProfile: boolean } | null> {
+	const lock = await fs.readlink(path.join(normalizedUserDataDir, "SingletonLock")).catch(() => null);
+	const match = lock ? /^(.+)-(\d+)$/.exec(lock) : null;
+	if (!match || match[1] !== os.hostname()) return null;
+	const owner = Process.fromPid(Number(match[2]));
+	if (!owner || owner.status() !== ProcessStatus.Running) return null;
+	let args: string[];
+	try {
+		args = normalizeCandidateArgs(owner.args());
+	} catch {
+		return null;
+	}
+	const executable = args[0];
+	if (!executable || !isChromiumBrowserExecutable(executable)) return null;
+	const profile = findUserDataDirInArgs(args);
+	return profile !== null && path.isAbsolute(profile)
+		? { owner, executable, matchesProfile: normalizeUserDataDir(profile) === normalizedUserDataDir }
+		: null;
+}
+
+/**
  * Return a reusable CDP endpoint for `exe`, or null when no instance is
  * running. Refuse to replace an occupied instance unless the caller can
  * launch an isolated profile.
@@ -355,6 +425,39 @@ export async function findReusableCdp(
 	const candidates = Process.fromPath(wrapperTarget ?? executablePath).filter(
 		candidate => candidate.status() === ProcessStatus.Running,
 	);
+	let staleProfileOwnerPid: number | undefined;
+	if (isChromium && normalizedRequestedUserDataDir !== null) {
+		const holder = await findProfileLockOwner(normalizedRequestedUserDataDir);
+		if (holder && !candidates.some(candidate => candidate.pid === holder.owner.pid)) {
+			// A compiled distro launcher may exec the same browser from another path.
+			const [holderName, ...names] = [holder.executable, exe, executablePath, wrapperTarget ?? exe].map(file =>
+				path.basename(file).replace(/\.exe$/i, ""),
+			);
+			const sameBrowser = names.includes(holderName!);
+			if (!sameBrowser && holder.matchesProfile) {
+				throw new ToolError(
+					`Cannot launch ${path.basename(exe)} because its profile ${requestedUserDataDir} is held by another browser, ${holder.executable} (pid ${holder.owner.pid}). Close that browser, choose another --user-data-dir, or pass its CDP endpoint URL as app.`,
+				);
+			}
+			// Do not extend that exception to unknown script wrappers: their profile
+			// owner still needs the verified executable match below.
+			const header =
+				process.platform === "linux"
+					? await Bun.file(executablePath)
+							.slice(0, 4)
+							.bytes()
+							.catch(() => null)
+					: null;
+			if (
+				sameBrowser &&
+				(process.platform !== "linux" ||
+					(header?.[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46))
+			) {
+				if (holder.matchesProfile) candidates.push(holder.owner);
+				else staleProfileOwnerPid = holder.owner.pid;
+			}
+		}
+	}
 	if (process.platform === "linux" && normalizedRequestedUserDataDir !== null) {
 		// Profile ownership does not imply application identity. A wrapper can
 		// launch a fresh profile, but an occupied profile needs a verified binary
@@ -364,7 +467,11 @@ export async function findReusableCdp(
 		if (lock?.startsWith(localPrefix)) {
 			const pidText = lock.slice(localPrefix.length);
 			const owner = /^\d+$/.test(pidText) ? Process.fromPid(Number(pidText)) : null;
-			if (owner?.status() === ProcessStatus.Running && !candidates.some(candidate => candidate.pid === owner.pid)) {
+			if (
+				owner?.status() === ProcessStatus.Running &&
+				owner.pid !== staleProfileOwnerPid &&
+				!candidates.some(candidate => candidate.pid === owner.pid)
+			) {
 				const ownerExecutable = await fs.realpath(`/proc/${owner.pid}/exe`).catch(() => undefined);
 				if (ownerExecutable !== executablePath && ownerExecutable !== wrapperTarget) {
 					throw new ToolError(

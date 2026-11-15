@@ -765,6 +765,7 @@ export class ToolExecutionComponent extends Container {
 			this.#shellPreferences,
 			this.#shellTrace,
 			this.#result ? resultText(this.#result) : undefined,
+			!this.#shellTrace && !this.#argsComplete,
 		);
 		this.#shellPresentationKey = key;
 		return this.#shellPresentation;
@@ -1305,10 +1306,14 @@ export class ToolExecutionComponent extends Container {
 	#stageMeasure: { width: number; rows: number; window: number } | undefined;
 	#stageWindow: number | undefined;
 	#stageExpanded: boolean | undefined;
+	#stageShellPresentation: ShellVizPresentation | null | undefined;
 
 	getTranscriptReadyRowCount(width: number): number {
 		const measure = this.#stageMeasure;
 		if (!measure || measure.width !== width || !this.#executionStarted || this.#sealed) return 0;
+		if (this.#stageWindow === undefined && this.#toolName === "bash") {
+			this.#stageShellPresentation = this.#getShellPresentation() ?? null;
+		}
 		this.#stageWindow ??= measure.window;
 		this.#stageExpanded ??= this.#expanded;
 		return measure.rows;
@@ -2549,6 +2554,10 @@ export class ToolExecutionComponent extends Container {
 			Object.defineProperty(context, "stageExpanded", {
 				enumerable: true,
 				get: () => this.#stageExpanded ?? this.#expanded,
+			});
+			Object.defineProperty(context, "stageShellPresentation", {
+				enumerable: true,
+				get: () => this.#stageShellPresentation,
 			});
 		} else if (this.#toolName === "eval") {
 			// Present before any result too: the pending call card draws the same frozen top stage.

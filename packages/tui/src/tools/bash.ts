@@ -40,7 +40,7 @@ import {
 	runOutput,
 	type RunState,
 } from "./native-view";
-import { shellVizText } from "./shell-viz-render";
+import { renderShellVisualization, shellVizText } from "./shell-viz-render";
 import { node } from "../native/describe";
 
 /** The `Output · <status>` separator label: static text, so the row only changes when the state does. */
@@ -268,6 +268,8 @@ export interface BashRenderContext {
 	stageWindow?: number;
 	/** Expand state the command stage is drawn with; frozen with the window. */
 	stageExpanded?: boolean;
+	/** Command presentation frozen with its published stage; null keeps a published plain command. */
+	stageShellPresentation?: ShellVizPresentation | null;
 	/** Raw output text */
 	output?: string;
 	/** Whether output came from artifact storage */
@@ -495,6 +497,22 @@ function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererC
 	};
 }
 
+/** Command-pane lines for the traced script, prefixed with the directory it actually ran in. */
+function visualCommandLines(
+	presentation: ShellVizPresentation,
+	args: BashRenderArgs,
+	details: BashToolDetails | undefined,
+	uiTheme: Theme,
+	width: number,
+): string[] {
+	const scriptArgs = executedScriptArgs(args, details);
+	const prefix = bashCommandPrefix(scriptArgs, uiTheme);
+	const hasContext =
+		!!formatToolWorkingDirectory(scriptArgs.cwd, getProjectDir()) ||
+		!!formatBashEnvAssignments(getBashEnvForDisplay(scriptArgs));
+	return [...(hasContext ? [prefix.trimEnd()] : []), ...renderShellVisualization(presentation, uiTheme, width, false)];
+}
+
 /**
  * Display args for the executed script: the trace holds the command after the executor
  * hoisted any leading `cd`, so its directory comes from the result, not the raw args.
@@ -506,7 +524,11 @@ function executedScriptArgs(args: BashRenderArgs, details: BashToolDetails | und
 /** Builds a shell transcript renderer with caller-supplied command labels. */
 export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	return {
-		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
+		renderCall(
+			args: TArgs,
+			options: RenderResultOptions & { renderContext?: BashRenderContext },
+			uiTheme: Theme,
+		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
 			// Highlighting the whole (possibly still-streaming) command is the
 			// expensive part: defer it to the first paint, once per component,
@@ -518,11 +540,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			return framedToolCard(
 				uiTheme,
 				({ contentWidth }) => {
-					// The command stage is committed to native history as soon as its arguments
-					// are final, so it must keep the same bytes once a result (and its trace)
-					// arrives: the ANSI card always draws the plain command; the shell
-					// visualization rides the native view and the traced output.
-					cmdLines ??= formatBashCommandLines(renderArgs, uiTheme);
+					const frozen = options.renderContext?.stageShellPresentation;
+					const presentation = frozen === undefined ? options.shellPresentation : (frozen ?? undefined);
+					const commandLines = presentation
+						? visualCommandLines(presentation, renderArgs, undefined, uiTheme, contentWidth)
+						: (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme));
 					const header =
 						config.showHeader === false
 							? undefined
@@ -552,7 +574,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								: uiTheme.fg("dim", `elapsed ${formatDuration(Math.floor(elapsedMs / 1000) * 1000)}`),
 						sections: [
 							{
-								content: capPreviewLines(cmdLines, uiTheme, {
+								content: capPreviewLines(commandLines, uiTheme, {
 									expanded: options.expanded,
 									keepHead: true,
 									width: contentWidth,
@@ -627,6 +649,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedElapsedSecond: number | undefined;
 			let cachedTraceKey: string | undefined;
 			let cachedPresentation: ShellVizPresentation | undefined;
+			let cachedStagePresentation: ShellVizPresentation | null | undefined;
 			const dropSnapshot = () => {
 				cmdLines = undefined;
 				cachedSnapshot = undefined;
@@ -643,6 +666,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				cachedElapsedSecond = undefined;
 				cachedTraceKey = undefined;
 				cachedPresentation = undefined;
+				cachedStagePresentation = undefined;
 			};
 
 			return framedToolCard(
@@ -653,9 +677,15 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const expanded = renderContext?.expanded ?? options.expanded;
 					const previewLines = renderContext?.previewLines ?? BASH_DEFAULT_PREVIEW_LINES;
 					// A traced command redraws on every folded event; its running
-					// glyphs spin with the frame (only while the run is live).
+					// glyphs spin with the frame (only while the run is live). A result
+					// without a trace yet (a call that returned as a background job before
+					// the first trace poll) keeps the call's untraced presentation.
 					const trace = options.shellTrace ?? details?.trace;
-					const presentation = trace === undefined ? undefined : options.shellPresentation;
+					const presentation = options.shellPresentation;
+					const frozen = renderContext?.stageShellPresentation;
+					const commandPresentation = frozen === undefined ? presentation : (frozen ?? undefined);
+					// Without a trace the presentation parsed the raw command, `cd` and all.
+					const scriptDetails = trace === undefined || frozen !== undefined ? undefined : details;
 
 					// Get output from context (preferred) or fall back to result content.
 					// Strip the LLM-facing notice appended by wrappedExecute so we don't
@@ -691,7 +721,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedSpinnerFrame === (isPartial ? options.spinnerFrame : undefined) &&
 						cachedElapsedSecond === elapsedSecond &&
 						cachedTraceKey === traceKey &&
-						cachedPresentation === presentation
+						cachedPresentation === presentation &&
+						cachedStagePresentation === frozen
 					) {
 						return cachedSnapshot;
 					}
@@ -768,7 +799,17 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								// Viewport-sized tail window in every state — streaming and final
 								// render identically; only ctrl+o uncaps.
 								content: capPreviewLines(
-									args ? (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme)) : [],
+									commandPresentation
+										? visualCommandLines(
+												commandPresentation,
+												renderArgs,
+												scriptDetails,
+												uiTheme,
+												contentWidth,
+											)
+										: args
+											? (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme))
+											: [],
 									uiTheme,
 									{
 										// The command stage may already be in history: it keeps the shape it was committed in.
@@ -797,6 +838,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedTraceKey = traceKey;
 					cachedPresentation = presentation;
 					cachedSnapshot = snapshot;
+					cachedStagePresentation = frozen;
 					return snapshot;
 				},
 				{ onInvalidate: dropSnapshot, onReleaseRenderCaches: dropSnapshot },
@@ -869,15 +911,21 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					? undefined
 					: (details?.wallTimeMs ?? options.elapsedMs);
 			const meta = details?.meta;
-			// Native hosts render the same engine-produced presentation as the ANSI inspector.
+			// Native hosts render the same engine-produced presentation as the ANSI inspector,
+			// including the untraced one of a result that landed before the first trace poll.
 			const trace = options.shell === true ? (options.shellTrace ?? details?.trace) : undefined;
-			const presentation = options.shell === true && trace ? options.shellPresentation : undefined;
+			const presentation = options.shell === true ? options.shellPresentation : undefined;
 			// The shell node is the command pane only; the run's ordinary output
 			// segment draws what ran: the live result, or the output retained up
-			// to the replay cursor while one is held.
-			const shownOutput = presentation?.preferences.cursor !== undefined ? presentation.output.trimEnd() : output;
+			// to the replay cursor while one is held. An untraced run has nothing to
+			// replay, so a cursor set on it never hides the result.
+			const shownOutput =
+				trace !== undefined && presentation?.preferences.cursor !== undefined
+					? presentation.output.trimEnd()
+					: output;
+			// Without a trace the presentation parsed the raw command, `cd` and all.
 			const displayWorkdir = formatToolWorkingDirectory(
-				executedScriptArgs(renderArgs, details).cwd,
+				executedScriptArgs(renderArgs, trace === undefined ? undefined : details).cwd,
 				getProjectDir(),
 			);
 			const box = runBox(

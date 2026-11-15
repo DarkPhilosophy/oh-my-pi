@@ -2,18 +2,44 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Mistral (and other OpenAI-compatible) 429s reporting a zero `x-ratelimit-limit-*` allowance being retried for minutes; they now fail on the first request with an error naming the header and suggesting a model or plan switch ([#19300](https://github.com/can1357/oh-my-pi/issues/19300))
+- Fixed pooled Claude accounts presenting one device: an Anthropic OAuth request now reports the device and account id of the credential serving it, including after a rotation inside one call, when caller metadata named the previous account ([#19277](https://github.com/can1357/oh-my-pi/pull/19277) by [@Xytronix](https://github.com/Xytronix))
+### Removed
+
+- Removed `isXdDevicePath` from `providers/cursor-pi-args`; Cursor ranged reads of `xd://` docs now compose line selectors like any other path
+
+## [18.20.2] - 2026-11-14
+
+### Added
+
+- Added the Antigravity CLI ACP provider with managed installation, Google sign-in, refreshable distributed credentials, host tools, and retained conversations across tool steps and history changes.
+
+## [18.20.1] - 2026-11-14
+
+### Added
+
+- Added `setUnpausedProviders()` to `@oh-my-pi/pi-ai/oauth`, allowing applications to re-enable providers paused by authentication rules; loaded credential pools and extension logins recognize the change on their next read.
+
 ### Changed
 
-- Changed Vertex AI Gemini requests to the `v1beta1` API (the Google Gen AI SDK's default), the only version where Vertex resumes long Gemini 4 answers ([#19081](https://github.com/can1357/oh-my-pi/pull/19081) by [@eggpeat](https://github.com/eggpeat))
+- Updated Vertex AI Gemini requests to use the v1beta1 API, restoring support for long Gemini responses.
+- Improved Google Antigravity quota recovery so Gemini 4 Argon access can resume after quota or plan changes when shared Gemini capacity is available.
+- Improved Amazon Bedrock region selection to honor a configured regional endpoint before falling back to `us-east-1`.
 
 ### Fixed
 
-- Fixed Gemini 4 (Argon, Carbon and Hydrogen) answers longer than one 65,536-token output segment failing with finish reason `CONTINUATION`: Google, Vertex AI, Gemini CLI and Antigravity requests now resume the generation, retrying transient failures, and stream it as one reply ([#19081](https://github.com/can1357/oh-my-pi/pull/19081) by [@eggpeat](https://github.com/eggpeat))
-- Fixed Cursor models receiving context a hook appends after the prompt (such as claude-mem's memory) as the user's message, with the real prompt moved into history; the prompt stays the run's message, and the turn's server records replay on the next turn ([#19156](https://github.com/can1357/oh-my-pi/pull/19156) by [@anzhen-tech](https://github.com/anzhen-tech))
-- Fixed a Google Antigravity Gemini 4 Argon block never healing when the quota summary reports no Argon bucket (for example after a plan change): a fresh usage report now lifts it while the shared Gemini quota has headroom, instead of leaving the account unusable for Argon until the old weekly reset ([#19123](https://github.com/can1357/oh-my-pi/pull/19123) by [@wolfiesch](https://github.com/wolfiesch))
-- Fixed a corrupt AWS event-stream frame length (Amazon Bedrock) making the decoder wait for and buffer the bogus length instead of failing the stream ([#19031](https://github.com/can1357/oh-my-pi/pull/19031) by [@Xytronix](https://github.com/Xytronix))
-- Fixed Claude accounts staying blocked after recovery when `/usage` reports only one shared usage window ([#19090](https://github.com/can1357/oh-my-pi/pull/19090) by [@jeffscottward](https://github.com/jeffscottward))
-- Fixed Kimi and DeepSeek on OpenRouter writing "reasoning unavailable" as their own reasoning after a model switch: earlier turns now replay the previous model's thinking instead of that placeholder.
+- Fixed Gemini 4 responses that exceed a single output segment across Google, Vertex AI, Gemini CLI, and Antigravity, ensuring long responses continue generating and are delivered as one complete reply.
+- Fixed Cursor conversations so hook-added prompt content remains in the current user message and conversation context is correctly preserved across turns.
+- Fixed Amazon Bedrock streaming so malformed responses fail promptly and interrupted responses are retried rather than treated as complete.
+- Fixed Claude account recovery when usage reports contain only one shared usage window.
+- Fixed OpenRouter conversations with Kimi and DeepSeek so reasoning context is preserved when switching models.
+- Fixed Xiaomi MiMo Token Plan authentication to use the correct regional endpoint, including for models loaded from bundled or cached configuration.
+- Fixed Perplexity sign-in in the login flow and setup wizard, including email-code and browser-based SSO authentication.
+- Stopped native judges from retrying gateway errors caused by exhausted upstream credentials while retaining retries for other transient 502 errors.
+- Fixed simple completion and authenticated gateway chat routes so supported providers receive stop-sequence and frequency-penalty settings.
+- Fixed Muse sessions after credential changes, key rotation, or idle resume so subsequent turns can continue normally.
 
 ## [18.20.0] - 2026-11-12
 
@@ -6745,3 +6771,4 @@ Older entries are archived in [packages/ai/CHANGELOG.md@a36a1f252e23](https://gi
 Older entries are archived in [packages/ai/CHANGELOG.md@cef4a452836c](https://github.com/can1357/oh-my-pi/blob/cef4a452836c7a8d547dd14470c34c9ed2dbb5f8/packages/ai/CHANGELOG.md).
 Older entries are archived in [packages/ai/CHANGELOG.md@bdbb5c920f69](https://github.com/can1357/oh-my-pi/blob/bdbb5c920f693caff287c50996c116e42e37992b/packages/ai/CHANGELOG.md).
 Older entries are archived in [packages/ai/CHANGELOG.md@da26a9c5c00c](https://github.com/can1357/oh-my-pi/blob/da26a9c5c00c5d8186d1873ac7a81460037aaa17/packages/ai/CHANGELOG.md).
+Older entries are archived in [packages/ai/CHANGELOG.md@80ad1d6b2eb3](https://github.com/can1357/oh-my-pi/blob/80ad1d6b2eb3dd916d863841dcae79f4f96c5612/packages/ai/CHANGELOG.md).
