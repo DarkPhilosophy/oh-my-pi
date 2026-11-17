@@ -139,6 +139,8 @@ interface TranscriptEntry {
 	 * state for emitted-row slicing but never emits another mid-stream row.
 	 */
 	stableFrozen: boolean;
+	/** Proves each frame that the published stable rows still prefix the block's render. */
+	stableRenderPrefix: RowPrefixCheck;
 	/**
 	 * Immutable head rows already published while the rest stays live.
 	 * Used for pressure-split settled blocks and ready command stages of
@@ -348,6 +350,36 @@ export function isRowPrefix(prefix: readonly string[], rows: readonly string[]):
 	return true;
 }
 
+/**
+ * {@link isRowPrefix} for a check repeated every frame on rows that mostly
+ * carry over. Stable rows and a block's render are separate renders, so their
+ * equal rows are distinct strings that compare byte by byte; this keeps copies
+ * of the last pair it proved and re-proves a row that is still the same string
+ * on both sides by transitivity, which compares pointers. The copies, not the
+ * caller's arrays, are the proof, so a renderer that reuses and rewrites a
+ * returned array is still caught.
+ */
+export class RowPrefixCheck {
+	#prefix: readonly string[] = EMPTY_ROWS;
+	#rows: readonly string[] = EMPTY_ROWS;
+
+	/** Whether `prefix` matches `rows` byte-for-byte from the top. */
+	holds(prefix: readonly string[], rows: readonly string[]): boolean {
+		if (prefix.length > rows.length) return false;
+		const proven = this.#prefix;
+		const provenRows = this.#rows;
+		const carried = Math.min(proven.length, prefix.length);
+		let index = 0;
+		while (index < carried && prefix[index] === proven[index] && rows[index] === provenRows[index]) index++;
+		for (; index < prefix.length; index++) {
+			if (prefix[index] !== rows[index]) return false;
+		}
+		this.#prefix = prefix.slice();
+		this.#rows = rows.slice(0, prefix.length);
+		return true;
+	}
+}
+
 function isStablePrefix(prefix: readonly TranscriptStableRow[], rows: readonly TranscriptStableRow[]): boolean {
 	if (prefix.length > rows.length) return false;
 	for (let index = 0; index < prefix.length; index++) {
@@ -490,6 +522,7 @@ export class TranscriptContainer extends Container {
 			stableRowCountByWidth: new Map(),
 			emitted: 0,
 			stableFrozen: false,
+			stableRenderPrefix: new RowPrefixCheck(),
 			split: undefined,
 		});
 		// `children` is public and may be edited externally; re-check the whole
@@ -1828,7 +1861,7 @@ export class TranscriptContainer extends Container {
 				? [...entry.stableRows, ...stable.slice(entry.stableRows.length)]
 				: entry.stableRows;
 		const stableRendered = appendOnly.renderTranscriptStableRows(published.length, width);
-		if (!isRowPrefix(stableRendered, rendered)) {
+		if (!entry.stableRenderPrefix.holds(stableRendered, rendered)) {
 			return this.#freezeStableRows(entry, rendered, "stable rows no longer render as a prefix of the block");
 		}
 		const priorRender = entry.renderedStableByWidth.get(width);
@@ -2228,6 +2261,7 @@ export class TranscriptContainer extends Container {
 		entry.stableRows = EMPTY_STABLE_ROWS;
 		entry.renderedStableByWidth = new Map();
 		entry.stableRowCountByWidth = new Map();
+		entry.stableRenderPrefix = new RowPrefixCheck();
 		this.#frameRows.delete(entry);
 		this.#releaseRenderCaches(entry);
 	}
@@ -2460,6 +2494,7 @@ export class TranscriptContainer extends Container {
 					stableRowCountByWidth: new Map(),
 					emitted: 0,
 					stableFrozen: false,
+					stableRenderPrefix: new RowPrefixCheck(),
 					split: undefined,
 				},
 		);
