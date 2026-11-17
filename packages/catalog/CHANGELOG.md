@@ -2,10 +2,44 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6.2 Astra and Sol. `openai/gpt-6.2-astra` ($8/$40, $0.40 cached) and `openai/gpt-6.2-sol` ($2/$10, $0.10 cached) are now bundled with a 1.05M window, a higher price tier above 272K input, and Ultrafast at 3x through 2027-02-28. On Codex, `gpt-6.2-astra` and `gpt-6.2-sol` show API-equivalent costs, bill Fast at 2x and Ultrafast at 6x, offer a 922K window with extended context on, and use only Plus-or-higher accounts.
+- Added Bifrost (`bifrost`), a self-hosted OpenAI-compatible AI gateway: its `/models` roster is discovered live per virtual key from `BIFROST_BASE_URL` (default `http://localhost:8080/v1`), chat models run over Chat Completions, known decision models become `openai-decisions` judges on the gateway's `/decisions` route, and `/login bifrost` stores the virtual key (`BIFROST_API_KEY`) ([#19053](https://github.com/can1357/oh-my-pi/pull/19053) by [@Xytronix](https://github.com/Xytronix))
+- Added Factory Droid's Claude Fable 5.2, Gemini 4 Carbon (with its launch credit promotion, half the input rate until 2026-12-01) and Kimi K3.1 Pro, each listed once the account's feature flag enables it, and GPT Image 2.6 and GPT Image 2.6 Flare ahead of GPT Image 2.5 in the `image` role's Factory defaults ([#19191](https://github.com/can1357/oh-my-pi/pull/19191) by [@will-bogusz](https://github.com/will-bogusz))
+
 ### Fixed
 
-- Fixed `deepseek/deepseek-v4-flash` dropping attached images: DeepSeek serves the retired id with the multimodal V4.1 Flash, so it now keeps image input like `deepseek-flash` ([#19288](https://github.com/can1357/oh-my-pi/issues/19288))
-- Mistral GLM 5.3, GLM 5.3 Flash and Mistral Large 4 now offer only the reasoning efforts Mistral documents ([#19265](https://github.com/can1357/oh-my-pi/issues/19265)) ([#19287](https://github.com/can1357/oh-my-pi/pull/19287) by [@Alex-Wengg](https://github.com/Alex-Wengg)).
+- Fixed Factory Droid's Muse Spark 1.3 dropping image input and staying hidden behind its retired feature flag; it now accepts images and lists without the flag ([#19191](https://github.com/can1357/oh-my-pi/pull/19191) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed GitLab Duo's Claude models (`duo-chat-opus-*`, `duo-chat-sonnet-*`, `duo-chat-haiku-*`) not being treated as Claude when quoting earlier reasoning: compaction summaries and interrupted-turn notes now leave it out for them, and a `reasoning_extraction` refusal is retried without it, as for Claude elsewhere ([#17610](https://github.com/can1357/oh-my-pi/pull/17610) by [@will-bogusz](https://github.com/will-bogusz))
+- Fixed stale Command Code image inputs, reasoning controls, token prices, and deployment context limits ([#12542](https://github.com/can1357/oh-my-pi/issues/12542), [#19462](https://github.com/can1357/oh-my-pi/pull/19462) by [@jasonharrison](https://github.com/jasonharrison)).
+- Fixed retry-reset timezone resolution for custom providers pointing at the Zhipu Coding Plan endpoint, including trailing-slash base URLs ([#19446](https://github.com/can1357/oh-my-pi/pull/19446) by [@yuzu-octopus](https://github.com/yuzu-octopus))
+
+## [18.21.0] - 2026-11-16
+
+### Added
+
+- Added Modal as a hosted inference provider.
+
+### Changed
+
+- Changed the local speech model from Kokoro to Phonon 31M.
+- Improved reasoning capability detection by preserving unverified thinking-level support and using endpoint-specific probe results when available.
+
+### Fixed
+
+- Fixed xAI Grok OAuth model grok-composer-2.5-fast being incorrectly identified as non-reasoning; it now supports thinking levels from minimal through xhigh.
+
+## [18.20.3] - 2026-11-16
+
+### Added
+
+- Added publicly available image-sizing helpers for determining model-delivered image dimensions and fitting images to a specified long edge before coordinate mapping.
+
+### Fixed
+
+- Fixed image inputs being dropped for DeepSeek V4 Flash, restoring consistent multimodal image support.
+- Restricted reasoning-effort options for Mistral GLM 5.3, GLM 5.3 Flash, and Mistral Large 4 to the levels supported by those models.
 
 ## [18.20.2] - 2026-11-14
 

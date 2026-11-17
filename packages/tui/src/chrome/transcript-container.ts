@@ -423,6 +423,18 @@ export class TranscriptContainer extends Container {
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
 	#childStartRows = new Map<Component, number>();
+	// Last full render() while no block is committed (transcript viewers), reused while
+	// every block returns the same rows: a viewer repaints on every key and tick.
+	#fullRender:
+		| {
+				width: number;
+				components: Component[];
+				blocks: (readonly string[])[];
+				joins: JoinKey[];
+				tails: JoinKey[];
+				rows: readonly string[];
+		  }
+		| undefined;
 	// Watchdog for the wedge where an unfinalized frontier block pins pressure
 	// retirement: everything behind it stays live and degrades to one-line
 	// allocations. Logs once per pinned episode after a grace period.
@@ -516,6 +528,7 @@ export class TranscriptContainer extends Container {
 		this.#entries.splice(index, 1);
 		this.#frontier = Math.min(this.#frontier, this.#entries.length);
 		this.#childStartRows.delete(component);
+		this.#fullRender = undefined;
 	}
 
 	override clear(): void {
@@ -530,6 +543,7 @@ export class TranscriptContainer extends Container {
 		this.#frontier = 0;
 		this.#offered = undefined;
 		this.#childStartRows.clear();
+		this.#fullRender = undefined;
 		this.#pinnedFrontier = undefined;
 		this.#replayPending = false;
 		this.#replayRequested = false;
@@ -1744,23 +1758,52 @@ export class TranscriptContainer extends Container {
 		return this.#nativeNode;
 	}
 
-	/** Full semantic render used by exports and non-terminal commands. */
+	/**
+	 * Full semantic render used by exports, non-terminal commands, and transcript
+	 * viewers. It writes no scrollback, so the append-only emission ledger is left
+	 * to the frame path.
+	 */
 	override render(width: number): readonly string[] {
 		this.#enterFrame(width);
+		const components: Component[] = [];
+		const blocks: (readonly string[])[] = [];
+		const joins: JoinKey[] = [];
+		const tails: JoinKey[] = [];
+		let committed = false;
+		for (const entry of this.#entries) {
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			components.push(entry.component);
+			blocks.push(entry.component.render(width));
+			joins.push(joinKey(entry.component));
+			tails.push(tailKey(entry.component));
+			if (entry.state === "committed") {
+				committed = true;
+				this.#releaseRenderCaches(entry);
+			}
+		}
+		const memo = this.#fullRender;
+		if (
+			memo?.width === width &&
+			sameItems(memo.components, components) &&
+			sameItems(memo.blocks, blocks) &&
+			sameItems(memo.joins, joins) &&
+			sameItems(memo.tails, tails)
+		) {
+			return memo.rows;
+		}
 		this.#childStartRows.clear();
 		const rows: string[] = [];
 		let above: RowsAbove;
-		for (const entry of this.#entries) {
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const block = this.#renderEntry(entry, width);
-			if (entry.state === "committed") this.#releaseRenderCaches(entry);
+		for (let index = 0; index < blocks.length; index++) {
+			const block = trimBlankEdges(blocks[index]!);
 			if (block.length === 0) continue;
-			const join = joinKey(entry.component);
-			if (separatorRows(above, join) > 0) rows.push("");
-			this.#childStartRows.set(entry.component, rows.length);
-			rows.push(...block);
-			above = tailKey(entry.component);
+			if (separatorRows(above, joins[index]!) > 0) rows.push("");
+			this.#childStartRows.set(components[index]!, rows.length);
+			for (const row of block) rows.push(row);
+			above = tails[index]!;
 		}
+		// Committed blocks drop their render caches, so they never return the same rows twice.
+		this.#fullRender = committed ? undefined : { width, components, blocks, joins, tails, rows };
 		return rows;
 	}
 

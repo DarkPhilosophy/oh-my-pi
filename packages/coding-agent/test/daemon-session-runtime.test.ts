@@ -50,6 +50,45 @@ describe("daemon session runtime", () => {
 
 		expect(disposeOptions?.mnemopiConsolidateTimeoutMs).toBe(SHUTDOWN_CONSOLIDATE_BUDGET_MS);
 	});
+	test("keeps a paused run unsettled until its wake sources and run end", async () => {
+		let paused = true;
+		const runtime = await createAgentSessionRuntime({
+			cwd: process.cwd(),
+			sessionId: "paused-run",
+			createSession: async options => {
+				const session = {
+					sessionId: "paused-run",
+					isStreaming: false,
+					get isRunActive() {
+						return paused;
+					},
+					get wakeSources() {
+						return paused ? { jobs: ["pending-job"], agents: [], queued: false } : undefined;
+					},
+					subscribe: () => () => {},
+					subscribeCommandMetadataChanged: () => () => {},
+					dispose: async () => {
+						await options.sessionManager?.close();
+					},
+				} as unknown as AgentSession;
+				return { session, setToolUIContext: () => {} } as unknown as CreateAgentSessionResult;
+			},
+		});
+		try {
+			expect((await runtime.snapshot()).state).toMatchObject({
+				isStreaming: false,
+				hasPendingAsyncWork: true,
+				isSettled: false,
+			});
+			paused = false;
+			expect((await runtime.snapshot()).state).toMatchObject({
+				hasPendingAsyncWork: false,
+				isSettled: true,
+			});
+		} finally {
+			await runtime.dispose();
+		}
+	});
 	test("seeds a recovered CLI runtime with the requested session identity", async () => {
 		let createdSessionId: string | undefined;
 		const runtime = await createAgentSessionRuntime({

@@ -52,6 +52,7 @@ import {
 } from "../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
 import { SessionManager } from "../session/session-manager";
+import { isSessionSettled } from "../session/session-settle";
 import { executeAcpBuiltinSlashCommand } from "../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../slash-commands/available-commands";
 import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
@@ -107,7 +108,8 @@ export type DaemonSession = {
 		readonly liveSteered?: number;
 	};
 	readonly hasAdmittedSubmission?: boolean;
-	readonly hasPendingAsyncWork?: () => boolean;
+	readonly wakeSources?: AgentSession["wakeSources"];
+	readonly isRunActive?: boolean;
 	readonly systemPrompt?: string[];
 	readonly getContextUsage?: () => ContextUsage | undefined;
 	readonly setModel?: (model: Model) => Promise<void>;
@@ -269,12 +271,13 @@ function sessionState(
 			followUp: [...(session.getQueuedMessages?.().followUp ?? [])],
 			liveSteered: session.getQueuedMessages?.().liveSteered ?? 0,
 		},
-		hasPendingAsyncWork: session.hasPendingAsyncWork?.() ?? false,
-		isSettled:
-			!(session.isStreaming ?? false) &&
-			!(session.hasAdmittedSubmission ?? false) &&
-			(session.queuedMessageCount ?? 0) === 0 &&
-			!(session.hasPendingAsyncWork?.() ?? false),
+		hasPendingAsyncWork: session.wakeSources !== undefined,
+		isSettled: isSessionSettled({
+			isRunActive: session.isRunActive ?? false,
+			isStreaming: session.isStreaming ?? false,
+			hasAdmittedSubmission: session.hasAdmittedSubmission ?? false,
+			queuedMessageCount: session.queuedMessageCount ?? 0,
+		}),
 		todoPhases: session.getTodoPhases?.() ?? [],
 		systemPrompt: session.systemPrompt ?? session.agent?.state?.systemPrompt,
 		contextUsage: session.getContextUsage?.(),

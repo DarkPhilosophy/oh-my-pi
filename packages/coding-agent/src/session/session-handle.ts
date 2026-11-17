@@ -213,7 +213,7 @@ function stateFromLocal(session: AgentSession): RpcSessionState {
 			followUp: [...queued.followUp],
 			liveSteered: queued.liveSteered,
 		},
-		hasPendingAsyncWork: session.hasPendingAsyncWork(),
+		hasPendingAsyncWork: session.wakeSources !== undefined,
 		isSettled: isSessionSettled(session),
 		todoPhases: session.getTodoPhases(),
 		contextUsage: session.getContextUsage(),

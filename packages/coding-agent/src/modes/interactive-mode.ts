@@ -93,7 +93,6 @@ import {
 } from "../config/model-resolver";
 import { isSettingsInitialized, Settings } from "../config/settings";
 import type { DaemonConnectionSnapshot } from "@oh-my-pi/pi-tui/chrome/daemon-status";
-import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import type {
 	AssistantTextRenderer,
 	AutocompleteProviderFactory,
@@ -122,7 +121,8 @@ import type { Skill } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import { loadSlashCommands } from "../extensibility/slash-commands";
 import type { GoalModeState } from "../goals/state";
-import { rebindMemoryBackendForCwd } from "../hindsight/backend";
+import { rescopeSessionToCwd } from "../session/cwd-rescope";
+import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
 import { copyLocalArtifacts, resolveLocalRoot } from "../internal-urls";
 import { hasNativeJudge } from "../judgment";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "../lsp/startup-events";
@@ -187,8 +187,7 @@ import { buildStaticInlineHint } from "../slash-commands/builtin-completions";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
 import { type DictationTarget, MicCursor, type SttCallbacks, STTController, type SttState } from "../stt";
 import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
-import { resolveCliEntryCmd } from "../subprocess/worker-client";
-import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
+import { resolveRestartCmd } from "../subprocess/worker-client";
 import { labelEchoesHandle } from "../task/label";
 import { agentTypeBadge, formatTaskId } from "@oh-my-pi/pi-tui/tools/task";
 import type { ModelRoleLookup } from "@oh-my-pi/pi-tui/overlays/model-browser";
@@ -199,6 +198,7 @@ import {
 	parseConfiguredThinkingLevel,
 	resolveConfiguredThinkingLevel,
 } from "@oh-my-pi/pi-tui/thinking";
+import { capturePage } from "../tools/browser/page-shot";
 import { isMCPToolName } from "../tools/builtin-names";
 import type { LspStartupServerInfo } from "../tools";
 import { resolvePlanFilePath } from "../plan-mode/plan-files";
@@ -262,7 +262,7 @@ import { formatStartupChangelogSummary, type StartupChangelogSelection } from ".
 import { copyToClipboard } from "../utils/clipboard";
 import { copyUrlTarget, ensureCopyUrlHandler } from "../utils/copy-store";
 import type { EventBus } from "../utils/event-bus";
-import { getEditorCommand, getEditorName, openInEditor } from "../utils/external-editor";
+import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { openPath } from "../utils/open";
 import { resumeCommand } from "../utils/resume-command";
 import { getSessionAccentAnsi, getSessionAccentHex } from "@oh-my-pi/pi-tui/theme/session-color";
@@ -304,6 +304,7 @@ import {
 	VibeSessionRegistry,
 } from "../vibe/runtime";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { setEmbedHost } from "@oh-my-pi/pi-tui/chat/embed-host";
 import { setSvgFigureRendering } from "@oh-my-pi/pi-tui/chat/svg-figure";
 import { setTableCharts } from "@oh-my-pi/pi-tui/chat/table-chart";
 import { setTranscriptActionHandler } from "@oh-my-pi/pi-tui/chat/transcript-actions";
@@ -323,7 +324,11 @@ import type { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-executio
 import type { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
 import type { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
 import type { HookSelectorComponent, HookSelectorSlider } from "@oh-my-pi/pi-tui/overlays/hook-selector";
-import { type PlanReviewAnnotationState, PlanReviewOverlay } from "@oh-my-pi/pi-tui/overlays/plan-review-overlay";
+import {
+	type PlanReviewAnnotationState,
+	PlanReviewOverlay,
+	type PlanReviewOverlayChoice,
+} from "@oh-my-pi/pi-tui/overlays/plan-review-overlay";
 import { PlanSaveOverlay, type PlanSaveOverlayResult } from "@oh-my-pi/pi-tui/overlays/plan-save-overlay";
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { SessionInfoOverlay } from "@oh-my-pi/pi-tui/overlays/session-info-overlay";
@@ -409,6 +414,7 @@ import { getSlashCommandTypeIcon } from "@oh-my-pi/pi-tui/theme/tui-adapters";
 import type {
 	AgentHubOpenOptions,
 	CompactionQueuedMessage,
+	ComposerOwner,
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
@@ -477,6 +483,7 @@ import {
 	cfgTuiMouse,
 	cfgTuiColorfulMarkdown,
 	cfgTuiRenderMermaid,
+	cfgTuiRenderEmbeds,
 	cfgTuiRenderSvg,
 	cfgTuiResizeScrollback,
 	cfgTuiTextSizing,
@@ -558,6 +565,7 @@ const cfgLiveUiSettings = combine({
 	"tui.colorfulMarkdown": cfgTuiColorfulMarkdown,
 	"tui.renderMermaid": cfgTuiRenderMermaid,
 	"tui.renderSvg": cfgTuiRenderSvg,
+	"tui.renderEmbeds": cfgTuiRenderEmbeds,
 	"extensionRenderers.assistantText": cfgExtensionAssistantTextRenderers,
 	"extensionRenderers.transcriptPresenters": cfgExtensionTranscriptPresenters,
 	"tui.autoGraph": cfgTuiAutoGraph,
@@ -673,9 +681,7 @@ function formatHudNoteMarker(count: number): string {
 type GoalSubcommand = "set" | "show" | "pause" | "resume" | "drop" | "budget";
 
 const GOAL_SUBCOMMANDS = new Set<GoalSubcommand>(["set", "show", "pause", "resume", "drop", "budget"]);
-const PLAN_KEEP_CONTEXT_OPTION_INDEX = 2;
 const PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT = 95;
-const PLAN_SAVE_AND_QUIT_OPTION = "Save and quit";
 const PLAN_SAVE_TITLE_LINE_LIMIT = 6;
 
 const CFG_APPROVE_SESSION = "Always for this session";
@@ -1855,7 +1861,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Header components below the config warnings + welcome (the startup changelog), retained so a live config-warning change can rebuild the header (#10048). */
 	#headerAfter: readonly Component[] = [];
 	#planModePreviousToolPresentation: { enabled: string[]; mounted: string[]; registered: string[] } | undefined;
-	#goalModePreviousTools: string[] | undefined;
+	/** True while goal mode owns the `goal` tool in the live roster; exit strips only that tool. */
+	#goalToolAddedByMode = false;
 	// True from `/guided-goal` kickoff until the interview ends: a goal record
 	// appears, a turn makes tool calls (the interview itself is tool-free, so
 	// tool use means it was abandoned for real work), the kickoff fails, or the
@@ -1907,6 +1914,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				remote?: { choice: PlanReviewChoice; feedback?: string };
 				/** Applies a remote tier pick to the review's slider selection; undefined when the slider is hidden. */
 				selectTier?: (role: string) => boolean;
+				/** A remote Save: writes the plan to its default file name; the review stays open. */
+				save: () => void;
 		  }
 		| undefined;
 	/** Serializable review annotations keyed by the resolved plan file path. */
@@ -2003,6 +2012,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 	}
 	approvalOwnsComposer = false;
+	composerOwner?: ComposerOwner;
 	get focusedAgentId(): string | undefined {
 		return this.#focusController.focusedAgentId;
 	}
@@ -2252,6 +2262,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		setMarkdownColorful(cfgTuiColorfulMarkdown.get(this.settings));
 		setMarkdownMermaidRendering(cfgTuiRenderMermaid.get(this.settings));
 		setSvgFigureRendering(cfgTuiRenderSvg.get(this.settings));
+		this.#applyEmbedSetting();
 		this.#applyAutoGraphSetting();
 		this.#applyTextSizingSetting();
 		// Keep generic pi-tui renderers aligned with the coding-agent setting.
@@ -3051,9 +3062,9 @@ export class InteractiveMode implements InteractiveModeContext {
 				}
 				// A terminal provider failure is not a loop yield: resubmitting the
 				// captured prompt would append another user turn (and every @file
-				// attachment) without making progress. Non-terminal settles still
-				// belong to retry/maintenance and must not park the loop.
-				if (event.type === "agent_end" && event.isTerminal !== false) {
+				// attachment) without making progress. Pauses still belong to the
+				// run and must not park the loop.
+				if (event.type === "agent_end") {
 					const last = event.messages.findLast(message => message.role === "assistant");
 					if (last?.stopReason === "error" && this.loopModeEnabled && this.loopPrompt) {
 						this.pauseLoop();
@@ -3241,7 +3252,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		const resolved = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
 		this.session.setTitleSystemPrompt(resolved);
 	}
-
 	/**
 	 * Slash-command icons are resolved from the symbol preset when the picker is
 	 * built. A preset switch (settings, Glyph Protocol upgrade, native rendering,
@@ -3431,48 +3441,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Everything after chdir is a rescope of cwd-derived state. If any of it
 		// fails, undo the chdir so `false` reliably means "nothing committed";
 		// callers roll back their own session/manager state on false.
+		const scopedSettings = isSettingsInitialized() ? this.settings : undefined;
 		try {
-			// Re-scope project settings (`.claude/settings.yml` etc.) to the new
-			// directory in place so the active session and every settings reader pick
-			// up the destination project's configuration.
-			if (isSettingsInitialized()) {
-				await this.settings.reloadForCwd(newCwd);
-				// The reload fired the memory scope hooks; complete the rebind
-				// before the move commits so the next prompt cannot recall or
-				// retain against the source project's memory.
-				await rebindMemoryBackendForCwd(this.session);
-			}
-			// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
-			// the next prompt sees everything scoped to the new project directory.
-			clearClaudePluginRootsCache();
-			await this.refreshTitleSystemPrompt(newCwd);
-			await this.session.refreshSkillsAndCommands();
+			await rescopeSessionToCwd(this.session, scopedSettings, newCwd);
 		} catch (error) {
 			// Undo the whole transition: the process cwd, Settings scope, and
-			// cwd-derived caches (plugin roots, capabilities,
-			// skills, slash commands) must all return to the source project so a
-			// `false` result reliably means nothing was committed.
+			// cwd-derived state (memory, plugin roots, agents, extensions, custom
+			// tools, MCP servers, skills, slash commands) must all return to the
+			// source project so a `false` result reliably means nothing was committed.
 			this.sessionManager.setCwdWithoutRelocation(previousCwd);
 			try {
 				setProjectDir(previousCwd);
-				if (isSettingsInitialized()) {
-					await this.settings.reloadForCwd(previousCwd);
-					await rebindMemoryBackendForCwd(this.session);
-				}
-				clearClaudePluginRootsCache();
-				await this.refreshTitleSystemPrompt(previousCwd);
-				await this.session.refreshSkillsAndCommands();
+				await rescopeSessionToCwd(this.session, scopedSettings, previousCwd);
 			} catch (restoreError) {
 				const actual = this.session.sessionManager.getCwd();
 				try {
 					setProjectDir(actual);
-					if (isSettingsInitialized()) {
-						await this.settings.reloadForCwd(actual);
-						await rebindMemoryBackendForCwd(this.session);
-					}
-					clearClaudePluginRootsCache();
-					await this.refreshTitleSystemPrompt(actual);
-					await this.session.refreshSkillsAndCommands();
+					await rescopeSessionToCwd(this.session, scopedSettings, actual);
 				} catch {}
 				this.showError(
 					`Failed to switch to ${newCwd} (${error instanceof Error ? error.message : String(error)}), and restoring the previous workspace failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
@@ -4370,8 +4355,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			pendingSubmissionDispose?.();
 			this.#optimisticUserMessageComponents = [];
 			this.#pendingWorkingMessage = undefined;
-			// A run that only waits on background jobs keeps its working row, which
-			// names the wait; the settle watch or the next run tears it down.
+			// A run paused on outside work keeps its working row, which names the
+			// wait; the next loop or the run's `agent_end` tears it down.
 			if (this.loadingAnimation && !this.#eventController.isAwaitingAsyncWork()) {
 				this.#stopLoadingAnimation(true);
 			}
@@ -4430,6 +4415,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			mode === "auto" && !hasNativeJudge(this.settings, this.session.modelRegistry, this.session.model)
 				? undefined
 				: pickTableChart(request, this.session.tableChartJudge()),
+		);
+	}
+
+	/** Lend replies' `<img>` and `<iframe>` tags the session's directory and the headless browser; off, they stay Markdown. */
+	#applyEmbedSetting(): void {
+		setEmbedHost(
+			cfgTuiRenderEmbeds.get(this.settings) ? { cwd: () => this.sessionManager.getCwd(), capturePage } : undefined,
 		);
 	}
 
@@ -4579,6 +4571,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (any("tui.renderSvg")) {
 			setSvgFigureRendering(cfgTuiRenderSvg.get(this.settings));
+			rebuildChat = true;
+		}
+		if (any("tui.renderEmbeds")) {
+			this.#applyEmbedSetting();
 			rebuildChat = true;
 		}
 		// Components take the extension text renderers when built; the rebuild keeps the streaming
@@ -5114,6 +5110,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						: dictation
 					: undefined,
 			viewing: this.#viewingLineage(),
+			btw: this.#btwController.isFocused(),
 			title: this.sessionManager.getSessionName(),
 		};
 	}
@@ -5465,6 +5462,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventController.reconcileReadGroupAfterRebuild();
 		// Settle buffered completions even when no further stream event follows the rebuild.
 		this.#eventController.restorePendingToolResults();
+		void this.#btwController.placeNotes();
 		// During the pre-streaming window — after `startPendingSubmission` has
 		// optimistically rendered the user's message but before the user
 		// `message_start` event lands it in `session` entries — any rebuild
@@ -6304,13 +6302,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		if (this.goalModeEnabled || this.goalModePaused) {
-			if (this.#goalModePreviousTools !== undefined) {
-				await this.session.setActiveToolsByName(this.#goalModePreviousTools);
-			}
+			await this.#removeGoalToolPreservingRoster();
 			this.session.setGoalModeState(undefined);
 			this.goalModeEnabled = false;
 			this.goalModePaused = false;
-			this.#goalModePreviousTools = undefined;
+			this.#goalToolAddedByMode = false;
 			this.#pendingGoalContinuationTurns = 0;
 			this.#previousGoalContinuationActivity = undefined;
 			this.#goalSuppressNextContinuation = false;
@@ -6396,9 +6392,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			// sdk.ts excludes "goal" from the initial active tool set unconditionally.
 			// Re-add it now so the agent can call resume, complete, or drop on this goal.
 			if (restored?.goal) {
-				const previousTools = this.session.getEnabledToolNames().filter(name => name !== "goal");
-				this.#goalModePreviousTools = previousTools;
-				await this.session.setActiveToolsByName([...new Set([...previousTools, "goal"])]);
+				const enabledTools = this.session.getEnabledToolNames();
+				if (!enabledTools.includes("goal")) this.#goalToolAddedByMode = true;
+				await this.session.setActiveToolsByName([...new Set([...enabledTools, "goal"])]);
 			}
 			this.#updateGoalModeStatus();
 			return;
@@ -6711,9 +6707,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit vibe mode first.");
 			return;
 		}
-		const previousTools = this.session.getEnabledToolNames().filter(name => name !== "goal");
-		const goalTools = [...new Set([...previousTools, "goal"])];
-		this.#goalModePreviousTools = previousTools;
+		const enabledTools = this.session.getEnabledToolNames();
+		const goalTools = [...new Set([...enabledTools, "goal"])];
+		const ownedGoalTool = this.#goalToolAddedByMode;
+		if (!enabledTools.includes("goal")) this.#goalToolAddedByMode = true;
 		let state: GoalModeState | undefined;
 		try {
 			state = options.resume
@@ -6724,7 +6721,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					});
 			await this.session.setActiveToolsByName(goalTools);
 		} catch (error) {
-			this.#goalModePreviousTools = undefined;
+			this.#goalToolAddedByMode = ownedGoalTool;
 			// The runtime already journaled the goal; without its tool it must not
 			// stay active, or every later entry is refused against a stuck goal.
 			if (state) {
@@ -6748,18 +6745,24 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	/** Undo only goal mode's own tool change; tools registered or enabled after entry stay live. */
+	async #removeGoalToolPreservingRoster(): Promise<void> {
+		if (!this.#goalToolAddedByMode) return;
+		const liveTools = this.session.getEnabledToolNames();
+		if (liveTools.includes("goal")) {
+			await this.session.setActiveToolsByName(liveTools.filter(name => name !== "goal"));
+		}
+	}
+
 	async #exitGoalMode(options?: {
 		silent?: boolean;
 		paused?: boolean;
 		reason?: "completed" | "paused" | "dropped";
 	}): Promise<void> {
 		using _hold = this.#holdModeChanges();
-		const previousTools = this.#goalModePreviousTools;
 		// Not gated on goalModeEnabled: a pause's goal_updated clears that flag
 		// before this runs, which used to leave the goal tool active.
-		if (previousTools) {
-			await this.session.setActiveToolsByName(previousTools);
-		}
+		await this.#removeGoalToolPreservingRoster();
 		const currentState = this.session.getGoalModeState();
 		if (options?.reason === "completed") {
 			this.session.setGoalModeState(undefined);
@@ -6773,7 +6776,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.goalModeEnabled = false;
 		this.goalModePaused = options?.paused ?? false;
-		this.#goalModePreviousTools = undefined;
+		this.#goalToolAddedByMode = false;
 		this.#pendingGoalContinuationTurns = 0;
 		this.#previousGoalContinuationActivity = undefined;
 		this.#goalSuppressNextContinuation = false;
@@ -6835,13 +6838,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	/**
+	 * Show the plan review; resolves with the picked choice id (an approval choice's,
+	 * or `dialogOptions.refine.id`), or undefined when cancelled. Save runs
+	 * `dialogOptions.onSave` and leaves the review open.
+	 */
 	showPlanReview(
 		planContent: string,
 		title: string,
-		options: string[],
+		options: readonly PlanReviewOverlayChoice[],
 		dialogOptions?: {
 			helpText?: string;
-			disabledIndices?: number[];
+			/** Refine, offered while the plan has feedback. */
+			refine?: { id: string; label: string };
+			/** Save with the overlay's current plan text; the review stays open. */
+			onSave?: (content: string) => void;
 			onExternalEditor?: () => void;
 			onPlanEdited?: (content: string) => void;
 			onFeedbackChange?: (feedback: string) => void;
@@ -6880,17 +6891,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			{
 				promptTitle: title,
 				options,
-				disabledIndices: dialogOptions?.disabledIndices,
+				refine: dialogOptions?.refine,
 				helpText: dialogOptions?.helpText,
 				initialIndex: dialogOptions?.initialIndex,
 				slider: extra?.slider,
 				externalEditorLabel: appKey(this.keybindings, "app.editor.external") || undefined,
-				externalEditorName: getEditorName(),
 				annotationState: dialogOptions?.annotationState,
 			},
 			{
 				onPick: choice => finish(choice),
 				onCancel: () => finish(undefined),
+				onSave: dialogOptions?.onSave,
 				onCopyPlan: content => void this.#copyPlanToClipboard(content),
 				onExternalEditor: dialogOptions?.onExternalEditor,
 				onAnnotationExternalEditor: (draft, commit) => void this.#openPlanAnnotationInExternalEditor(draft, commit),
@@ -6936,7 +6947,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * Answers the open plan review as if the operator picked `choice`: backs `ctx.resolvePlanReview`.
 	 * Refine feedback is sent verbatim; it only has to be non-blank. `input.role` moves an
 	 * approval's execution-tier selection before the pick; it is refused when it names no tier
-	 * or accompanies a non-approval choice.
+	 * or accompanies a non-approval choice. `save` writes the plan to its default file name and
+	 * leaves the review open, still answerable.
 	 */
 	resolvePlanReview(
 		reviewId: string,
@@ -6954,8 +6966,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			const approves = choice === "execute" || choice === "compact" || choice === "keep";
 			if (!approves || !pending.selectTier?.(input.role)) return false;
 		}
+		if (choice === "save") {
+			pending.save();
+			return true;
+		}
 		pending.remote = { choice, feedback };
-		if (pick(option.label)) return true;
+		if (pick(choice)) return true;
 		pending.remote = undefined;
 		return false;
 	}
@@ -6969,13 +6985,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.session.getContextUsage();
 	}
 
-	#formatKeepContextLabel(contextUsage: ContextUsage | undefined): string {
-		if (!contextUsage) {
-			return "Approve and keep context";
-		}
+	/** The context the keep-context approval carries over (`~378k / 1m`), when known. */
+	#formatKeepContextUsage(contextUsage: ContextUsage | undefined): string | undefined {
+		if (!contextUsage) return undefined;
 		const tokens = formatContextTokenCount(contextUsage.tokens);
 		const contextWindow = formatContextTokenCount(contextUsage.contextWindow);
-		return `Approve and keep context (~${tokens} / ${contextWindow})`;
+		return `~${tokens} / ${contextWindow}`;
 	}
 
 	#isKeepContextDisabled(contextUsage: ContextUsage | undefined): boolean {
@@ -7105,13 +7120,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	async #savePlanAndQuit(
-		planContent: string,
-		title: string,
-		annotationStateKey: string,
-		presetPath?: string,
-	): Promise<void> {
-		const selectedPath = presetPath ?? (await this.#promptPlanSavePath(planContent, title));
+	/**
+	 * The plan review's Save: write `planContent` to `presetPath`, or to a path the
+	 * operator picks (prefilled), and report it. The review stays open: its focus
+	 * comes back after the path prompt.
+	 */
+	async #savePlan(planContent: string, title: string, presetPath?: string): Promise<void> {
+		let selectedPath = presetPath;
+		if (selectedPath === undefined) {
+			try {
+				selectedPath = await this.#promptPlanSavePath(planContent, title);
+			} finally {
+				if (this.#planReviewOverlay) this.ui.setFocus(this.#planReviewOverlay);
+				this.ui.requestRender();
+			}
+		}
 		if (!selectedPath) return;
 
 		let destination: string;
@@ -7129,28 +7152,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			);
 			return;
 		}
-		try {
-			await this.#exitPlanMode({ silent: true });
-		} catch (error) {
-			this.showError(
-				`Saved plan to ${shortenPath(destination)}, but could not exit plan mode: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-			return;
-		}
-
-		this.#planReviewAnnotationState.delete(annotationStateKey);
-		try {
-			await this.handleClearCommand();
-			this.showStatus(`Saved plan to ${shortenPath(destination)}.`);
-		} catch (error) {
-			this.showError(
-				`Saved plan to ${shortenPath(destination)}, but could not start a new session: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-		}
+		this.showStatus(`Saved plan to ${shortenPath(destination)}`);
 	}
 
 	async #openPlanInExternalEditor(planFilePath: string): Promise<void> {
@@ -7839,12 +7841,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 
 			// Expose the goal tool for the interview so the agent can finish by
-			// calling `goal create`. Record the pre-interview toolset first: the
+			// calling `goal create`. Remember that this mode added the tool: the
 			// tool-driven create flips goalModeEnabled via `goal_updated`, and the
-			// eventual goal exit restores this set (dropping the goal tool again).
+			// eventual goal exit drops only that tool from the live roster.
 			const enabledTools = this.session.getEnabledToolNames();
-			this.#goalModePreviousTools = enabledTools.filter(name => name !== "goal");
 			if (!enabledTools.includes("goal")) {
+				this.#goalToolAddedByMode = true;
 				await this.session.setActiveToolsByName([...enabledTools, "goal"]);
 			}
 			this.#guidedGoalInterviewActive = true;
@@ -8217,14 +8219,36 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		const contextUsage = this.#getPlanApprovalContextUsage();
-		const keepContextLabel = this.#formatKeepContextLabel(contextUsage);
+		const keepContextUsage = this.#formatKeepContextUsage(contextUsage);
 		const keepContextDisabled = this.#isKeepContextDisabled(contextUsage);
+		// The overlay offers Refine only while the plan has feedback; an extension may always refine
+		// with its own feedback, so the reported choices keep it.
 		const reviewOptions: PlanReviewOption[] = [
 			{ id: "execute", label: "Approve and execute", disabled: false },
 			{ id: "compact", label: "Approve and compact context", disabled: false },
-			{ id: "keep", label: keepContextLabel, disabled: keepContextDisabled },
+			{
+				id: "keep",
+				label: keepContextUsage ? `Approve and keep context (${keepContextUsage})` : "Approve and keep context",
+				disabled: keepContextDisabled,
+			},
 			{ id: "refine", label: "Refine plan", disabled: false },
-			{ id: "save", label: PLAN_SAVE_AND_QUIT_OPTION, disabled: false },
+			{ id: "save", label: "Save", disabled: false },
+		];
+		const approveChoices: PlanReviewOverlayChoice[] = [
+			{ id: "execute", label: "Approve and execute", detail: "Start fresh with just the plan" },
+			{
+				id: "compact",
+				label: "Approve and compact context",
+				detail: "Summarize this conversation, then execute",
+			},
+			{
+				id: "keep",
+				label: "Approve and keep context",
+				meta: keepContextUsage,
+				disabled: keepContextDisabled
+					? `Context is over ${PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT}% full`
+					: undefined,
+			},
 		];
 
 		// Model-tier slider: let the operator pick which configured role model
@@ -8280,8 +8304,22 @@ export class InteractiveMode implements InteractiveModeContext {
 				: undefined,
 		};
 		const reviewId = request.reviewId;
+		// Save writes the plan as it stands (in-overlay edits, else the file) and leaves the review open.
+		const savePlan = async (content: string | undefined, presetPath?: string): Promise<void> => {
+			try {
+				const latestPlanContent = content ?? editedContent ?? (await this.#readPlanFile(planFilePath));
+				if (latestPlanContent === null) {
+					this.showError(`Plan file not found at ${planFilePath}`);
+					return;
+				}
+				await this.#savePlan(latestPlanContent, details.title, presetPath);
+			} catch (error) {
+				this.showError(`Failed to save plan: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		};
 		this.#pendingPlanReview = {
 			request,
+			save: () => void savePlan(undefined, planSaveFileName(details.title)),
 			// Mirrors the slider's onChange for remote answers: a pick in `resolvePlanReview`
 			// moves the same `selectedTierIndex` the approval branch reads after the choice.
 			// Undefined when the slider is hidden — a lone tier is no selection, and pinning
@@ -8304,9 +8342,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const choicePromise = this.showPlanReview(
 			planContent,
 			"Plan mode - next step",
-			reviewOptions.map(option => option.label),
+			approveChoices,
 			{
 				helpText,
+				refine: { id: "refine", label: "Refine plan" },
+				onSave: content => void savePlan(content),
 				onExternalEditor: () => void this.#openPlanInExternalEditor(planFilePath),
 				onPlanEdited: content => {
 					editedContent = content;
@@ -8320,14 +8360,13 @@ export class InteractiveMode implements InteractiveModeContext {
 					if (state.annotations.length > 0) this.#planReviewAnnotationState.set(annotationStateKey, state);
 					else this.#planReviewAnnotationState.delete(annotationStateKey);
 				},
-				disabledIndices: keepContextDisabled ? [PLAN_KEEP_CONTEXT_OPTION_INDEX] : undefined,
 				onClose: closedWith => {
 					if (!extensionRunner) return;
 					const resolved = {
 						type: "plan_review_resolved",
 						reviewId,
 						sessionId: reviewSessionId,
-						choice: reviewOptions.find(option => option.label === closedWith)?.id,
+						choice: reviewOptions.find(option => option.id === closedWith)?.id,
 						by: pending.remote ? "extension" : "local",
 					} as const;
 					void requestDelivered.promise.then(() => extensionRunner.emit(resolved));
@@ -8356,27 +8395,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		};
 
-		if (choice === PLAN_SAVE_AND_QUIT_OPTION) {
-			closePlanReview();
-			try {
-				const latestPlanContent = editedContent ?? (await this.#readPlanFile(planFilePath));
-				if (latestPlanContent === null) {
-					this.showError(`Plan file not found at ${planFilePath}`);
-					return;
-				}
-				await this.#savePlanAndQuit(
-					latestPlanContent,
-					details.title,
-					annotationStateKey,
-					remote?.choice === "save" ? planSaveFileName(details.title) : undefined,
-				);
-			} catch (error) {
-				this.showError(`Failed to save plan: ${error instanceof Error ? error.message : String(error)}`);
-			}
-			return;
-		}
-
-		if (choice === "Approve and execute" || choice === "Approve and compact context" || choice === keepContextLabel) {
+		if (choice === "execute" || choice === "compact" || choice === "keep") {
 			try {
 				// Prefer in-overlay edits (already in memory) over a disk re-read. The
 				// overlay mirrors edits as they happen, and approval awaits one final
@@ -8421,8 +8440,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				const executionDispatched = await this.#approvePlan(latestPlanContent, {
 					planFilePath,
 					title: details.title,
-					preserveContext: choice !== "Approve and execute",
-					compactBeforeExecute: choice === "Approve and compact context",
+					preserveContext: choice !== "execute",
+					compactBeforeExecute: choice === "compact",
 					executionModel,
 					reviewOwner: pending,
 				});
@@ -8436,20 +8455,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		if (choice === "Refine plan") {
+		if (choice === "refine") {
+			// Offered locally only with feedback; a remote refine brings its own (non-blank).
 			const refinement = remote?.choice === "refine" ? (remote.feedback ?? "") : feedback;
 			try {
-				if (refinement.trim()) {
-					if (this.onInputCallback) {
-						const input = this.startPendingSubmission({ text: refinement });
-						this.#planReviewAnnotationStateBySubmission.set(input, annotationStateKey);
-						this.onInputCallback(input);
-					} else {
-						await this.session.prompt(refinement);
-						this.#planReviewAnnotationState.delete(annotationStateKey);
-					}
+				if (this.onInputCallback) {
+					const input = this.startPendingSubmission({ text: refinement });
+					this.#planReviewAnnotationStateBySubmission.set(input, annotationStateKey);
+					this.onInputCallback(input);
 				} else {
-					this.showStatus("Refine plan: enter a follow-up prompt.");
+					await this.session.prompt(refinement);
+					this.#planReviewAnnotationState.delete(annotationStateKey);
 				}
 			} catch (error) {
 				this.showError(`Failed to refine plan: ${error instanceof Error ? error.message : String(error)}`);
@@ -8805,7 +8821,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Pass the profile explicitly: native exec does not inherit Bun's process.env updates.
 		const activeProfile = getActiveProfile();
 		const cmd = [
-			...resolveCliEntryCmd(),
+			...resolveRestartCmd(),
 			...restartArgv(
 				process.argv.slice(2),
 				sessionFile ? path.resolve(sessionFile) : undefined,
@@ -8965,7 +8981,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.hasAdmittedSubmission ||
 			this.session.isStreaming ||
 			this.session.queuedMessageCount > 0 ||
-			this.session.hasPendingAsyncWork()
+			this.session.isRunActive
 		) {
 			return;
 		}
@@ -9688,6 +9704,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#applyExtensionLinks();
 		this.#applyTranscriptPresenters();
 		await this.#uiHelpers.renderInitialMessages(options);
+		void this.#btwController.placeNotes();
 		this.syncRetryHintRow();
 		// A switch or tree move that replays the transcript strands a `/compact` queued for the old position.
 		this.#inputController.releaseStaleYieldCompaction();
@@ -10282,6 +10299,14 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleBtwEscape(): boolean {
 		return this.#btwController.handleEscape();
+	}
+
+	get isBtwFocused(): boolean {
+		return this.#btwController.isFocused();
+	}
+
+	submitBtwFollowUp(question: string, images?: ImageContent[]): Promise<boolean> {
+		return this.#btwController.submitFollowUp(question, images);
 	}
 
 	canBranchBtw(): boolean {

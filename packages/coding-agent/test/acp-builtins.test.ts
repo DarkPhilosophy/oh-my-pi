@@ -68,6 +68,7 @@ interface FakeAcpBuiltinSession {
 	setTitleSystemPrompt(prompt: string | undefined): void;
 	setSlashCommands(commands: unknown[]): void;
 	refreshSkillsAndCommands(): Promise<void>;
+	refreshProjectScope(): Promise<void>;
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
 	commitTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
@@ -111,6 +112,7 @@ function createRuntime() {
 		setTitleSystemPrompt: (_prompt: string | undefined) => {},
 		setSlashCommands: (_commands: unknown[]) => {},
 		refreshSkillsAndCommands: async () => {},
+		refreshProjectScope: async () => {},
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;

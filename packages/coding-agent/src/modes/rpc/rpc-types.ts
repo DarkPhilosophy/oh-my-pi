@@ -20,6 +20,7 @@ import type { HostedTerminalDescriptor, HostedTerminalSize } from "../../daemon/
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import type { WireSessionEvent } from "../../session/loop-end-wire";
 import type { SessionLeaseReport } from "../../session/session-storage";
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
@@ -216,7 +217,7 @@ export interface RpcSessionState {
 	tokensPerSecond: number | null;
 	messageCount: number;
 	queuedMessageCount: number;
-	/** Background jobs or deliveries can still inject a follow-up and wake the session. */
+	/** Background jobs, their deliveries, child agents or queued peer messages can still wake the session. */
 	hasPendingAsyncWork: boolean;
 	/** Same predicate as `session_settled`: idle with nothing queued or pending. */
 	isSettled: boolean;
@@ -798,9 +799,7 @@ export type RpcDeltaMessageUpdateFrame = Omit<
 };
 
 /** Session event as written to stdout by default: message lifecycle events carry a `messageId`. */
-export type RpcAgentSessionEventFrame =
-	| Exclude<AgentSessionEvent, { type: RpcMessageEventType }>
-	| RpcMessageEventFrame;
+export type RpcAgentSessionEventFrame = Exclude<WireSessionEvent, { type: RpcMessageEventType }> | RpcMessageEventFrame;
 
 /** Every session event shape RPC mode can write, including the opt-in `messageUpdates: "delta"` projection. */
 export type RpcProjectedSessionEventFrame = RpcAgentSessionEventFrame | RpcDeltaMessageUpdateFrame;

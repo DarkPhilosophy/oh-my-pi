@@ -54,8 +54,14 @@ export function createStatusLineHost(source: Settings): StatusLineHost<StatusLin
 		getSessionSettingsIdentity: session => session.settings,
 		getSessionSettingsRevision: session => session.settings?.revision ?? 0,
 		goalStatusInFooter: session => cfgGoalStatusInFooter.get(session.settings ?? source),
-		activeAccount: (session, provider) =>
-			session.modelRegistry?.authStorage?.oauth.identity(provider, session.sessionId),
+		activeAccount: (session, provider) => {
+			const authStorage = session.modelRegistry?.authStorage;
+			const oauthIdentity = authStorage?.oauth?.identity(provider, session.sessionId);
+			if (oauthIdentity) return oauthIdentity;
+			// Usage reports attribute API-key accounts by the sticky credential row.
+			const sticky = authStorage?.sessions?.sticky?.(provider, session.sessionId);
+			return sticky?.credentialId !== undefined ? { credentialId: sticky.credentialId } : undefined;
+		},
 		canFetchUsageReports: session => typeof session.fetchUsageReports === "function",
 		fetchUsageReports: (session, signal) => session.fetchUsageReports?.(signal) ?? Promise.resolve(null),
 		resolveActiveRepo: resolveActiveRepoContextSync,
