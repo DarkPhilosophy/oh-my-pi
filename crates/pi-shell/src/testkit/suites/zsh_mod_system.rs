@@ -110,9 +110,9 @@ fn zsh_mod_system_syswrite_to_a_closed_pipe_is_epipe() {
 	assert_eq!(st, 0);
 }
 
-/// `syserror` prints glibc's texts on Linux and, from its own table, off
-/// Unix: a number the table has always had, one it once lacked (`EIO`,
-/// `EPIPE`), and one outside it.
+/// `syserror` prints the host libc's texts on Unix and its own table
+/// elsewhere, including error numbers whose meaning changes between
+/// libc versions.
 #[test]
 #[cfg_attr(target_os = "macos", ignore = "`strerror` text is macOS libc's")]
 fn zsh_mod_system_syserror_texts_match_glibc() {
@@ -121,10 +121,22 @@ fn zsh_mod_system_syserror_texts_match_glibc() {
 		 41; syserror ENOTRECOVERABLE; syserror 134; syserror 0",
 	);
 	assert_eq!(out, "");
+	#[cfg(unix)]
+	let platform_error = {
+		// SAFETY: strerror returns a NUL-terminated message for any error
+		// number; copy it before another libc call can replace the buffer.
+		unsafe { std::ffi::CStr::from_ptr(libc::strerror(134)) }
+			.to_string_lossy()
+			.into_owned()
+	};
+	#[cfg(not(unix))]
+	let platform_error = "Unknown error 134";
 	assert_eq!(
 		err,
-		"No such file or directory\nInput/output error\nBroken pipe\nToo many levels of symbolic \
-		 links\nUnknown error 41\nState not recoverable\nUnknown error 134\nSuccess\n"
+		format!(
+			"No such file or directory\nInput/output error\nBroken pipe\nToo many levels of symbolic \
+			 links\nUnknown error 41\nState not recoverable\n{platform_error}\nSuccess\n"
+		)
 	);
 	assert_eq!(st, 0);
 }

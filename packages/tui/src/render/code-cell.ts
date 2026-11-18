@@ -44,6 +44,8 @@ export interface CodeCellOptions {
 	duration?: number;
 	output?: string;
 	outputMaxLines?: number;
+	/** Copy control for the footer of a settled output section. */
+	outputCopyChip?: string;
 	codeMaxLines?: number;
 	/**
 	 * Show the LAST `codeMaxLines` rows (the live streaming edge) instead of the
@@ -266,6 +268,7 @@ export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): St
 		{
 			header: title,
 			headerMeta: meta,
+			footerAction: options.outputCopyChip,
 			// Staged: neutral top, state colour only on the output stage; the box widths come from the two stages.
 			state,
 			stageTone: options.stagedStatus ? "success" : undefined,

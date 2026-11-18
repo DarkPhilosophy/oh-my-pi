@@ -828,7 +828,14 @@ export const cfgRetryMaxDelayMs = register({
 		group: "Retry & Fallback",
 		label: "Max Retry Delay",
 		description:
-			"Maximum wait between retries, in ms. When the provider asks us to wait longer than this and no credential or model fallback succeeds, the request fails fast instead of sleeping (e.g. 3-hour Anthropic rate-limit windows). 0 disables the ceiling — to let the session auto-resume through provider-stated quota resets.",
+			"Pause limit between retries. If the wait exceeds it and no fallback is available, stop rather than sleep. Wait For Usage Reset can override this for a confirmed quota reset. No limit also allows estimated waits.",
+		options: [
+			{ value: "60000", label: "1 min" },
+			{ value: "300000", label: "5 min" },
+			{ value: "1800000", label: "30 min" },
+			{ value: "3600000", label: "1 hour" },
+			{ value: "0", label: "No limit" },
+		],
 	},
 });
 

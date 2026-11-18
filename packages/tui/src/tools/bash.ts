@@ -4,6 +4,7 @@ import { highlightCode, type Theme } from "../theme/theme";
 import { renderStatusLine } from "../render/status-line";
 import { framedToolCard, type ToolCardSnapshot } from "../render/tool-card";
 import { formatOutputPaneLines } from "../render/output-pane";
+import { outputCopyChip } from "../render/output-block";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
@@ -696,6 +697,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							: (renderContext?.output ?? result.content?.find(c => c.type === "text")?.text ?? "");
 
 					const isPartial = options.isPartial === true;
+					const backgrounded = details?.async?.state === "running";
 					const previewWindow = previewWindowRows();
 					// A running command shows its live elapsed time in the bottom
 					// border; key the cache on whole seconds so it advances once a
@@ -773,13 +775,15 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 
 					// Execution status rides the Output separator, static text: the separator row changes only when
 					// the call changes state, never per frame.
-					const outputStatus = isPartial
-						? "Running"
-						: isError
-							? isTimeout
-								? `${uiTheme.styledSymbol("status.warning", "warning")} timed out`
-								: `${uiTheme.styledSymbol("status.error", "error")} failed`
-							: uiTheme.styledSymbol("status.success", "success");
+					const outputStatus = backgrounded
+						? uiTheme.fg("muted", "Backgrounded")
+						: isPartial
+							? "Running"
+							: isError
+								? isTimeout
+									? `${uiTheme.styledSymbol("status.warning", "warning")} timed out`
+									: `${uiTheme.styledSymbol("status.error", "error")} failed`
+								: uiTheme.styledSymbol("status.success", "success");
 					const outputLabel = bashOutputLabel(uiTheme, outputStatus, isPartial ? options.spinnerFrame : undefined);
 					const success = !isPartial && !isError;
 					const snapshot: ToolCardSnapshot = {
@@ -794,6 +798,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						applyBg: false,
 						borderColor: success ? "dim" : undefined,
 						footerMeta,
+						footerAction: !isPartial && !backgrounded && hasOutput ? outputCopyChip(output, uiTheme) : undefined,
 						sections: [
 							{
 								// Viewport-sized tail window in every state — streaming and final

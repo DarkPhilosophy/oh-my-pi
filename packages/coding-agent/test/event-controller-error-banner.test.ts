@@ -238,6 +238,31 @@ describe("EventController error banner", () => {
 		expect(showPinnedError).toHaveBeenCalledWith("Retry failed after 3 attempts: Service unavailable");
 	});
 
+	it("pins a single definitive quota error, with no retry count if no retry ran", async () => {
+		const errorMessage = "Codex error event: The usage limit has been reached (code=usage_limit_reached)";
+		const message = makeAssistantMessage({ stopReason: "error", errorMessage });
+		const { controller, showPinnedError, showError, setErrorPinned } = createFixture(message);
+		await controller.handleEvent({ type: "message_end", message });
+		expect(showPinnedError).not.toHaveBeenCalled();
+		const finalError = `Estimated retry wait of 1800000ms exceeds retry.maxDelayMs (300000ms). ${errorMessage}`;
+		message.errorMessage = finalError;
+		await controller.handleEvent({ type: "auto_retry_end", success: false, attempt: 0, finalError });
+		expect(showPinnedError.mock.calls).toEqual([[finalError]]);
+		expect(showError).not.toHaveBeenCalled();
+		expect(setErrorPinned).not.toHaveBeenCalledWith(false);
+	});
+
+	it("still shows one quota error when the turn settles without an auto-retry lifecycle", async () => {
+		const errorMessage = "Codex error event: The usage limit has been reached (code=usage_limit_reached)";
+		const message = makeAssistantMessage({ stopReason: "error", errorMessage });
+		const { controller, showPinnedError, showError } = createFixture(message);
+		await controller.handleEvent({ type: "message_end", message });
+		expect(showPinnedError).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_end", messages: [message] });
+		expect(showPinnedError.mock.calls).toEqual([[errorMessage]]);
+		expect(showError).not.toHaveBeenCalled();
+	});
+
 	it("surfaces a local continuation failure instead of the stale pinned provider error", async () => {
 		const providerError = "Service unavailable";
 		const message = makeAssistantMessage({

@@ -1835,15 +1835,29 @@ export class TurnRecovery {
 	}
 
 	/**
-	 * OpenRouter can repeatedly close Gemini streams at the reasoning-to-payload
-	 * transition. One retry covers a transient edge failure; the normal ten-retry
-	 * budget would otherwise re-run the same expensive reasoning cycle unchanged.
+	 * Bound retries on known routes that repeatedly close after emitting reasoning.
 	 */
-	#isOpenRouterThinkingStreamClose(message: AssistantMessage): boolean {
+	#isBoundedThinkingStreamClose(message: AssistantMessage): boolean {
+		const errorMessage = message.errorMessage ?? "";
+		const openRouterClose =
+			message.provider === "openrouter" && /server_error:\s*stream closed with reason:\s*error/i.test(errorMessage);
+		const incompleteResponses = /OpenAI responses stream closed before a terminal response event was received/i.test(
+			errorMessage,
+		);
+		if (
+			(!openRouterClose && !incompleteResponses) ||
+			!message.content.some(block => block.type === "thinking" && block.thinking.trim().length > 0)
+		) {
+			return false;
+		}
 		return (
-			message.provider === "openrouter" &&
-			/server_error:\s*stream closed with reason:\s*error/i.test(message.errorMessage ?? "") &&
-			message.content.some(block => block.type === "thinking" && block.thinking.trim().length > 0)
+			openRouterClose ||
+			resolveCatalogPolicy({
+				provider: message.provider,
+				id: message.model,
+				api: message.api,
+				reasoning: true,
+			}).boundedResponsesThinkingClose === true
 		);
 	}
 	/**
@@ -2821,7 +2835,7 @@ export class TurnRecovery {
 		// (every rotation sets switchedCredential and skips it), so without
 		// this last resort a provider-wide usage cap never fails over to the
 		// configured chain.
-		const maxRetries = this.#isOpenRouterThinkingStreamClose(message)
+		const maxRetries = this.#isBoundedThinkingStreamClose(message)
 			? Math.min(retrySettings.maxRetries, 1)
 			: retrySettings.maxRetries;
 		const retryBudgetExhausted =
@@ -3234,7 +3248,11 @@ export class TurnRecovery {
 				const attempt = this.#retryAttempt - 1;
 				message.errorMessage = `Retry budget exhausted after ${attempt} ${attempt === 1 ? "retry" : "retries"}: ${errorMessage}`;
 				await this.#closeRetrySaga(
-					{ success: false, attempt, finalError: errorMessage },
+					{
+						success: false,
+						attempt,
+						finalError: AIError.is(id, AIError.Flag.UsageLimit) ? message.errorMessage : errorMessage,
+					},
 					{ terminalTurn: message, retryErrors: { status: "superseded" } },
 				);
 				return false;
@@ -3294,20 +3312,25 @@ export class TurnRecovery {
 
 		// The fail-fast cap (`exceedsDelayCap`, defined above the chain consult).
 		if (exceedsDelayCap(delayMs) && !switchedCredential && !switchedModel) {
-			const attempt = this.#retryAttempt;
+			const quotaLimited = AIError.is(id, AIError.Flag.UsageLimit);
+			const attempt = this.#retryAttempt - 1;
 			this.#retryAttempt = 0;
-			await this.#closeRetrySaga(
-				{
-					success: false,
-					attempt,
-					// A billing cap has no wait to report — the account is out of
-					// money — so the message the user acts on is the provider's own.
-					finalError: billingCap
-						? errorMessage
-						: `Provider requested ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
-				},
-				{ terminalTurn: message },
-			);
+			const estimated =
+				quotaLimited &&
+				parsedRetryAfterMs === undefined &&
+				recordedUsageLimitOutcome?.reportResetAtMs === undefined &&
+				recordedUsageLimitOutcome?.priorBlockedUntilTimed !== true;
+			const delaySource = estimated
+				? `Estimated retry wait of ${Math.ceil(delayMs)}ms`
+				: parsedRetryAfterMs === delayMs
+					? `Provider requested ${Math.ceil(delayMs)}ms wait`
+					: `Retry wait of ${Math.ceil(delayMs)}ms`;
+			// A billing cap has no reset to wait for. Keep the original error in that case.
+			const finalError = billingCap
+				? errorMessage
+				: `${delaySource} exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`;
+			if (quotaLimited) message.errorMessage = finalError;
+			await this.#closeRetrySaga({ success: false, attempt, finalError }, { terminalTurn: message });
 			return false;
 		}
 

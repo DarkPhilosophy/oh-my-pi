@@ -96,6 +96,31 @@ describe("settings layout", () => {
 		expect(defs[2]?.condition?.()).toBe(true);
 	});
 
+	it("finds Max Retry Delay by its settings key and saves a 30-minute limit from the menu", () => {
+		const host = createSettingsHost();
+		const selector = new SettingsSelectorComponent(
+			{
+				availableThinkingLevels: [],
+				thinkingLevel: undefined,
+				availableThemes: [],
+				providers: [],
+				settings: host,
+				plugins: createPluginSettingsHost(process.cwd()),
+			},
+			{ onChange: () => {}, onCancel: () => {} },
+		);
+		for (const ch of "retry.maxDelayMs") selector.handleInput(ch);
+		expect(Bun.stripANSI(selector.render(90).join("\n"))).toContain("Max Retry Delay");
+		if (!/❯\s+Max Retry Delay/.test(Bun.stripANSI(selector.render(90).join("\n")))) {
+			selector.handleInput("\x1b[A");
+		}
+		selector.handleInput("\n");
+		expect(Bun.stripANSI(selector.render(90).join("\n"))).toContain("30 min");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\n");
+		expect(host.get("retry.maxDelayMs")).toBe(1_800_000);
+	});
+
 	it("renders preview inside SettingsSelectorComponent submenu without crashing", async () => {
 		await setTheme("dark");
 		const selector = new SettingsSelectorComponent(

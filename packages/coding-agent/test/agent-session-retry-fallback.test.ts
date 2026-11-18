@@ -9027,8 +9027,8 @@ describe("AgentSession retry fallback", () => {
 				failingWrite: "error-turn",
 				end: {
 					success: false,
-					attempt: 1,
-					finalError: expect.stringMatching(/^Provider requested \d+ms wait, exceeds retry\.maxDelayMs \(100ms\)/),
+					attempt: 0,
+					finalError: expect.stringMatching(/^Provider requested \d+ms wait exceeds retry\.maxDelayMs \(100ms\)/),
 				},
 			});
 		});

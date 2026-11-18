@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex quota errors delivered in the stream now retain a provider-supplied reset time for retry.
+
 ## [18.22.1] - 2026-11-17
 
 ### Added

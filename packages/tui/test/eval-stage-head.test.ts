@@ -2,6 +2,8 @@ import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { setCopyUrlHandlerReady, setCopyUrlTargetProvider } from "@oh-my-pi/pi-tui/theme/tui-adapters";
+import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
 
 // An eval cell has two stages: the code (final once its arguments are complete) and the execution
 // (output, status events, display). For the code to be written to native history while the cell
@@ -135,6 +137,38 @@ describe("eval code stage is byte-identical in every state", () => {
 			.map(row => Bun.stripANSI(row))
 			.join("\n");
 		expect(text).not.toMatch(/Output/);
+	});
+
+	it("links the finished cell's raw output in the bottom-right border, never the running preview", () => {
+		const output = "\tfirst\nsecond";
+		const payloads: string[] = [];
+		applyHyperlinkSetting("always");
+		setCopyUrlTargetProvider(text => {
+			payloads.push(text);
+			return "omp-copy:eval-test";
+		});
+		setCopyUrlHandlerReady(true);
+		try {
+			const card = makeCard();
+			card.setExecutionStarted();
+			card.updateResult(
+				{ content: [{ type: "text", text: "preview" }], details: details("running", "preview") },
+				true,
+			);
+			expect(card.render(WIDTH).some(row => row.includes("omp-copy:"))).toBe(false);
+			card.updateResult(
+				{ content: [{ type: "text", text: "outer wrapper" }], details: details("complete", output) },
+				false,
+			);
+			const rows = card.render(WIDTH);
+			const footer = rows.find(row => row.includes("omp-copy:eval-test"));
+			expect(footer && Bun.stripANSI(footer).trimEnd()).toMatch(/^╰.*\[copy\]─╯$/);
+			expect(payloads).toEqual([output]);
+		} finally {
+			setCopyUrlHandlerReady(false);
+			setCopyUrlTargetProvider(undefined);
+			applyHyperlinkSetting("auto");
+		}
 	});
 });
 

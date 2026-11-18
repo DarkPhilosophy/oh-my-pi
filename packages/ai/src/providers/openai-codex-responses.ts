@@ -73,7 +73,12 @@ import {
 } from "../utils/idle-iterator";
 import { getProxyForUrl } from "../utils/proxy";
 import { wrapFetchForRequestCompression } from "../utils/request-compression";
-import { getHeadersFromError, getRetryAfterMsFromHeaders, type HeadersLike } from "../utils/retry-after";
+import {
+	appendRetryAfterHint,
+	getHeadersFromError,
+	getRetryAfterMsFromHeaders,
+	type HeadersLike,
+} from "../utils/retry-after";
 import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
 import { toWebSocketHeaders, toWebSocketUrl } from "../utils/websocket";
 import { compactGrammarDefinition } from "./grammar";
@@ -4642,10 +4647,15 @@ const optionalCodexString = type("unknown").pipe(raw => {
 	return out instanceof type.errors ? undefined : out;
 });
 
+const optionalCodexNumber = type("unknown").pipe(raw =>
+	typeof raw === "number" && Number.isFinite(raw) ? raw : undefined,
+);
+
 const innerErrorDetailSchema = type({
 	"code?": optionalCodexString,
 	"type?": optionalCodexString,
 	"message?": optionalCodexString,
+	"resets_at?": optionalCodexNumber,
 });
 
 const codexErrorDetailSchema = type("unknown").pipe(raw => {
@@ -4736,12 +4746,15 @@ export function createCodexProviderStreamError(rawEvent: Record<string, unknown>
 	const nestedHeaders = getHeadersFromError(nestedError);
 	const headers =
 		getRetryAfterMsFromHeaders(nestedHeaders) === undefined ? getHeadersFromError(rawEvent) : nestedHeaders;
-	return new CodexProviderStreamError(
-		formattedMessage,
-		isRetryableCodexFailureEvent(rawEvent),
-		code || undefined,
-		headers,
-	);
+	// A quota error may carry the same Unix-second reset as the HTTP error body,
+	// even when there are no Retry-After headers on its stream event.
+	const resetsAt = nestedError?.resets_at;
+	const resetDelay = resetsAt === undefined ? 0 : resetsAt * 1000 - Date.now();
+	const resetHint =
+		/^usage_limit_reached$/i.test(code) && resetDelay > (getRetryAfterMsFromHeaders(headers) ?? 0)
+			? appendRetryAfterHint(formattedMessage, { "retry-after-ms": String(resetDelay) })
+			: formattedMessage;
+	return new CodexProviderStreamError(resetHint, isRetryableCodexFailureEvent(rawEvent), code || undefined, headers);
 }
 
 function formatCodexFailure(rawEvent: Record<string, unknown>): string | null {

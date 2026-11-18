@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Bash cards distinguish a background handoff from a successful command exit.
+- Quota failures show one final error and distinguish estimated retry delays from provider timing.
 - Fixed long streamed code blocks landing in scrollback twice: once as raw lines while open, then again as the finished box. Scrollback is now rewritten once when the block closes, so it shows only the box.
 - Fixed unfinished tool cards shrinking despite available space, and previews losing their header when another tool followed them or the terminal resized; cards now keep their frame within the actual viewport space.
 - Fixed an edit or write card being drawn twice when another tool call followed it in the same response.
@@ -20,6 +22,8 @@
 
 ### Added
 
+- Bash and Eval show a copy control in the bottom-right border of completed output that fits the terminal copy link.
+- Set Max Retry Delay from Settings → Model → Retry & Fallback.
 - Press Delete at the end of the Ctrl+R search field to remove the selected prompt from history
 - Consecutive edit or write cards show their total under the last card (`• Edit (3)`), like grouped reads
 - Markdown links an extension handles itself (a registered extension scheme) get their own `mdExtensionLink` theme color, so they no longer look like links that open a URL; themes that omit it get a muted blend of `mdLink` and `text` ([#19167](https://github.com/can1357/oh-my-pi/pull/19167) by [@materemias](https://github.com/materemias))

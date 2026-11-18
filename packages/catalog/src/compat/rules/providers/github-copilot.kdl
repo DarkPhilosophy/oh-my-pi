@@ -90,6 +90,12 @@ provider "github-copilot" {
 	models "grok-4.6" "grok-4.6-1m" {
 		thinking-efforts "minimal" "low" "medium" "high" "xhigh"
 	}
+	// This exact route can repeatedly close at the reasoning-to-response transition.
+	on-api "openai-responses" {
+		models "grok-4.6" {
+			bounded-responses-thinking-close #true
+		}
+	}
 	// Copilot bills these OpenAI flagships in two tiers: the default tier ends
 	// at 272K prompt tokens and the long tier is served as the opt-in `-1m`
 	// sibling synthesized from `billing.token_prices.long_context`. Bundled and

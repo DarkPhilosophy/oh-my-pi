@@ -3,6 +3,8 @@ import {
 	createCodexProviderStreamError,
 	isRetryableCodexFailureEvent,
 } from "../../src/providers/openai-codex-responses";
+import { extractRetryHint } from "@oh-my-pi/pi-utils";
+import * as AIError from "../../src/error";
 
 describe("isRetryableCodexFailureEvent", () => {
 	it("classifies retryable codes from nested error.code, error.type, then rawEvent.code", () => {
@@ -71,6 +73,18 @@ describe("createCodexProviderStreamError", () => {
 		expect(err.code).toBe("server_error");
 		expect(err.message).toContain("error event");
 		expect(err.message).toContain("kaboom");
+	});
+
+	it("carries a Codex quota reset from the stream body into the terminal assistant error", async () => {
+		const epochSeconds = Math.floor(Date.now() / 1000) + 172_800;
+		const err = createCodexProviderStreamError({
+			type: "error",
+			error: { code: "usage_limit_reached", message: "The usage limit has been reached", resets_at: epochSeconds },
+		});
+		const outcome = await AIError.finalize(err, { api: "openai-codex-responses", provider: "openai-codex" });
+		const delay = extractRetryHint(undefined, outcome.message);
+		expect(delay).toBeGreaterThan(172_798_000);
+		expect(delay).toBeLessThanOrEqual(172_800_000);
 	});
 
 	it("preserves a refused remote stream diagnostic while enabling nested response-failure retry", () => {

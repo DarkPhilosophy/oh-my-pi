@@ -17,6 +17,7 @@ import { renderAgentTreeRow } from "./agent-tree";
 import { truncateToVisualLines } from "../chrome/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../theme/theme";
 import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCellStaged } from "../render/index";
+import { outputCopyChip } from "../render/output-block";
 import { formatOutputPaneLines } from "../render/output-pane";
 import { formatEvalCodeForDisplay } from "./eval-format/index";
 import {
@@ -1073,6 +1074,10 @@ export const evalToolRenderer = {
 								spinnerFrame: options.spinnerFrame,
 								duration: cell.durationMs,
 								output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
+								outputCopyChip:
+									cell.status !== "running" && cell.status !== "pending" && cell.output
+										? outputCopyChip(cell.output, uiTheme)
+										: undefined,
 								outputMaxLines: outputLines.length,
 								// Same viewport-sized tail window as the pending preview so the
 								// cell never snaps open on completion; only ctrl+o uncaps.

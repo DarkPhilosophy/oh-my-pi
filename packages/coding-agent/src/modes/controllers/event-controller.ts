@@ -2132,19 +2132,20 @@ export class EventController {
 			// for a run that may continue for hours.
 			this.ctx.mountQueuedCommandOutput();
 			// Pin a turn-ending provider error above the editor so it survives
-			// transcript scroll and suppress its duplicate inline row. Empty-output
-			// errors are known intermediate attempts: hide them entirely while
-			// session recovery continues, but retain the component so a terminal
-			// retry-cap event can promote its final error into the one banner.
+			// transcript scroll and suppress its duplicate inline row. For quota errors, let
+			// recovery settle first: a retry or fallback may make this attempt obsolete.
+			// Empty-output errors are similarly hidden until recovery promotes a terminal one.
 			if (event.message.stopReason === "error" && event.message.errorMessage && !isSilentAbort(event.message)) {
+				const id = AIError.classifyMessage(event.message);
 				const recoverableEmptyOutput =
 					!event.message.errorMessage.startsWith("Retry budget exhausted") &&
-					AIError.is(AIError.classifyMessage(event.message), AIError.Flag.EmptyResponse);
+					AIError.is(id, AIError.Flag.EmptyResponse);
+				const deferError = recoverableEmptyOutput || AIError.is(id, AIError.Flag.UsageLimit);
 				this.#lastAssistantComponent?.setErrorPinned(true);
 				this.#pinnedErrorComponent = this.#lastAssistantComponent;
 				this.#pinnedErrorMessage = event.message;
-				this.#restorePinnedErrorInline = !recoverableEmptyOutput;
-				if (!recoverableEmptyOutput) this.ctx.showPinnedError(event.message.errorMessage);
+				this.#restorePinnedErrorInline = !deferError;
+				if (!deferError) this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
 			this.ctx.ui.requestLiveRender();
@@ -2665,6 +2666,20 @@ export class EventController {
 		// When the interrupted/failed turn died on a tool call, this replaces the
 		// torn-down "Working…" row with the "F5 to Retry" affordance.
 		this.ctx.syncRetryHintRow();
+		// Retry may be disabled or inapplicable and never emit auto_retry_end.
+		// In that case the settled quota error still needs its one banner.
+		const deferredError = this.#pinnedErrorMessage;
+		if (
+			!options?.interrupted &&
+			!this.#retryPending &&
+			!this.#restorePinnedErrorInline &&
+			deferredError?.errorMessage &&
+			AIError.is(AIError.classifyMessage(deferredError), AIError.Flag.UsageLimit) &&
+			event.messages.findLast(message => message.role === "assistant")?.timestamp === deferredError.timestamp
+		) {
+			this.ctx.showPinnedError(deferredError.errorMessage);
+			this.#restorePinnedErrorInline = true;
+		}
 		this.ctx.ui.requestRender();
 		// The run yielded: a `/compact` queued behind it runs now. A run the user stopped (Esc, including
 		// the loop-mode pause) did not yield: the request goes back to the editor like other queued input.
@@ -2948,14 +2963,14 @@ export class EventController {
 		}
 		this.#clearRetrySupersededAssistantComponents();
 		if (!event.success) {
+			const failure = event.finalError || "Unknown error";
+			const retryFailure =
+				event.attempt === 0 ? failure : `Retry failed after ${event.attempt} attempts: ${failure}`;
 			if (terminalFailurePinned) {
-				const terminalError = this.#restorePinnedErrorInline
-					? `Retry failed after ${event.attempt} attempts: ${event.finalError || pinnedError || "Unknown error"}`
-					: (pinnedError ?? event.finalError);
-				if (terminalError) this.ctx.showPinnedError(terminalError);
+				this.ctx.showPinnedError(this.#restorePinnedErrorInline ? retryFailure : (pinnedError ?? failure));
 				this.#restorePinnedErrorInline = true;
 			} else {
-				this.ctx.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+				this.ctx.showError(retryFailure);
 			}
 		}
 		this.#ensureWorkingLoaderWhileStreaming();

@@ -661,6 +661,11 @@ A prompt whose active model has no usable credential walks the same chain before
 
 Retry model fallback is not context promotion. `contextPromotion.enabled: false` only disables [context promotion](./models.md#context-promotion) to a model's `contextPromotionTarget`; set `retry.modelFallback: false` to stop `retry.fallbackChains` from switching the active model after provider errors. Same-model retries and compaction remain available.
 
+Open **Settings → Model → Retry & Fallback → Max Retry Delay** to pick a preset, or use
+`omp config set retry.maxDelayMs <milliseconds>` for a custom ceiling. **Wait For Usage Reset**
+can bypass that ceiling for a provider-reported reset, but not for a 30-minute quota estimate
+without a reset time. **No limit** disables the ceiling for both.
+
 ### Tools and approvals
 
 ```yaml

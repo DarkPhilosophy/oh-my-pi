@@ -144,9 +144,11 @@ fn ctrl_c_abandons_a_continued_command() {
 	same("PS2='%_> '", |pty| keys(pty, "if true\recho x\x03echo $?\r"));
 }
 
+/// Resizing rewinds the entire multiline prompt instead of leaving its
+/// first row duplicated above the redrawn editor.
 #[test]
 fn resize_redraws() {
-	same("", |pty| {
+	same("PS1=$'first line\\nsecond line> '\nRPS1=''\n", |pty| {
 		keys(pty, "echo a long line of text")?;
 		pty.resize(24, 40)?;
 		pty.settle(QUIET, TIMEOUT)?;

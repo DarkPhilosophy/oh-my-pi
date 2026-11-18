@@ -996,8 +996,7 @@ impl Reader {
 				z.display.winchanged = true;
 				z.display.resetneeded = true;
 			}
-			// zsh `adjustwinsize`: a line being edited is drawn again at once.
-			super::display::zle_refresh(k, cx, vp, None, false);
+			super::display::refresh_after_resize(k, cx, vp);
 		}
 		let owner = vp.frames.len();
 		let Some(base) = super::editor(vp).and_then(|ed| exec::resume_base(ed, owner)) else {

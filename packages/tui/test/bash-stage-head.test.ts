@@ -4,6 +4,8 @@ import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/displ
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { setCopyUrlHandlerReady, setCopyUrlTargetProvider } from "@oh-my-pi/pi-tui/theme/tui-adapters";
+import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { RunTrace, Shell } from "@oh-my-pi/pi-natives";
 import type { ShellTrace } from "@oh-my-pi/pi-wire";
 
@@ -117,6 +119,43 @@ describe("bash command stage is byte-identical in every state", () => {
 			.map(row => Bun.stripANSI(row))
 			.join("\n");
 		expect(text).toMatch(/Output.*Running/);
+	});
+
+	it("reports an async handoff as backgrounded, not as a finished command", () => {
+		const card = makeCard();
+		card.setExecutionStarted();
+		card.updateResult(
+			{ content: [], details: { async: { state: "running", jobId: "bg_test", type: "bash" } } },
+			false,
+		);
+		const rows = card.render(WIDTH).map(row => Bun.stripANSI(row));
+		expect(rows.find(row => row.includes("Output"))).toMatch(/Output.*Backgrounded/);
+		expect(rows.some(row => row.includes("bg_test"))).toBe(true);
+	});
+
+	it("links the complete retained output from the right of the bottom border, not just the collapsed tail", () => {
+		const output = Array.from({ length: 40 }, (_, i) => `row\t${i}`).join("\n");
+		const payloads: string[] = [];
+		applyHyperlinkSetting("always");
+		setCopyUrlTargetProvider(text => {
+			payloads.push(text);
+			return "omp-copy:bash-test";
+		});
+		setCopyUrlHandlerReady(true);
+		try {
+			const card = makeCard();
+			card.setExecutionStarted();
+			card.updateResult({ content: [{ type: "text", text: output }], details: { timeoutSeconds: 90 } }, false);
+			const rows = card.render(80);
+			const footer = rows.find(row => row.includes("omp-copy:bash-test"));
+			expect(footer && Bun.stripANSI(footer).trimEnd()).toMatch(/^╰.*Timeout: 90s.*\[copy\]─╯$/);
+			expect(payloads).toEqual([output]);
+			expect(rows.some(row => row.includes("row  0") || row.includes("row 0"))).toBe(false);
+		} finally {
+			setCopyUrlHandlerReady(false);
+			setCopyUrlTargetProvider(undefined);
+			applyHyperlinkSetting("auto");
+		}
 	});
 
 	it("showing that state does not move the head or command rows", () => {

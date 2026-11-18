@@ -45,6 +45,7 @@ export interface ToolCardSnapshot {
 	headerMeta?: string;
 	/** Short facts drawn inside the frame's bottom border (framed); a trailing row otherwise. */
 	footerMeta?: string;
+	footerAction?: string;
 	phase?: ToolCardPhase;
 	body?: ToolCardContent;
 	sections?: readonly ToolCardSection[];
@@ -240,6 +241,7 @@ export class ToolCard implements Component {
 				previousOptions.header === header &&
 				previousOptions.headerMeta === snapshot.headerMeta &&
 				previousOptions.footerMeta === snapshot.footerMeta &&
+				previousOptions.footerAction === snapshot.footerAction &&
 				previousOptions.state === state &&
 				previousOptions.stageTone === snapshot.stageTone &&
 				previousOptions.minLiveWidth === snapshot.minLiveWidth &&
@@ -254,6 +256,7 @@ export class ToolCard implements Component {
 				header,
 				headerMeta: snapshot.headerMeta,
 				footerMeta: snapshot.footerMeta,
+				footerAction: snapshot.footerAction,
 				state,
 				stageTone: snapshot.stageTone,
 				minLiveWidth: snapshot.minLiveWidth,

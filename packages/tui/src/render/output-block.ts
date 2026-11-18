@@ -6,6 +6,8 @@ import { node, span } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
 import { ImageProtocol, TERMINAL } from "../terminal-capabilities";
 import type { Theme, ThemeColor } from "../theme/theme";
+import { getMarkdownTheme } from "../theme/tui-adapters";
+import { isHyperlinkEnabled, uriHyperlink } from "./hyperlink";
 import type { Component } from "../tui";
 import { Ellipsis, padding, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils";
 import { getSixelLineMask } from "./sixel";
@@ -20,6 +22,8 @@ export interface OutputBlockOptions {
 	headerMeta?: string;
 	/** Facts drawn inside the bottom border (`╰── Wall 0.16s · Timeout 300s ──╯`). */
 	footerMeta?: string;
+	/** Short control aligned to the right of the bottom border, omitted when it cannot fit. */
+	footerAction?: string;
 	state?: State;
 	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
 	width: number;
@@ -67,9 +71,20 @@ export function isFramedBlockComponent(component: Component): boolean {
 	return (component as FramedBlockComponent)[FRAMED_BLOCK_COMPONENT] === true;
 }
 
+/** Reuse Markdown's clipboard URL handler, without copying terminal controls or preview decorations. */
+export function outputCopyChip(output: string, theme: Theme): string | undefined {
+	if (!isHyperlinkEnabled()) return undefined;
+	const { copyChipTarget, copyChip } = getMarkdownTheme();
+	if (!copyChipTarget || !copyChip) return undefined;
+	const text = Bun.stripANSI(output);
+	if (!text.trim()) return undefined;
+	const href = copyChipTarget(text);
+	return href ? uriHyperlink(href, theme.fg("dim", `[${copyChip}]`)) : undefined;
+}
+
 type BlockRow = { live: boolean } & (
 	| { kind: "bar"; leftChar: string; rightChar: string; label?: string; meta?: string }
-	| { kind: "bottom"; leftChar: string; rightChar: string; meta?: string }
+	| { kind: "bottom"; leftChar: string; rightChar: string; meta?: string; action?: string }
 	| { kind: "content"; inner: string }
 	| { kind: "sixel"; raw: string }
 );
@@ -315,12 +330,13 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 					.map(section => 1 + visibleWidth(cap) + visibleWidth(` ${section.label} `) + 3),
 			)
 		: 0;
-	// The closing border of the lower box carries the footer facts; size the box to hold them whole.
+	// The closing border of the lower box carries its facts and optional right-aligned action.
+	const footerEdges = visibleWidth(`${theme.boxRound.bottomLeft}${cap}${theme.boxRound.bottomRight}`);
+	const footerMetaWidth = options.footerMeta === undefined ? 0 : visibleWidth(` ${options.footerMeta} `);
+	const footerActionWidth = options.footerAction === undefined ? 0 : visibleWidth(`${options.footerAction}${h}`);
 	const liveFooterWidth =
-		staged && options.footerMeta !== undefined && firstLiveSection < sections.length
-			? visibleWidth(`${theme.boxRound.bottomLeft}${cap}`) +
-				visibleWidth(` ${options.footerMeta} `) +
-				visibleWidth(theme.boxRound.bottomRight)
+		staged && firstLiveSection < sections.length && (footerMetaWidth > 0 || footerActionWidth > 0)
+			? footerEdges + footerMetaWidth + footerActionWidth
 			: 0;
 	const liveWidth = staged
 		? Math.max(
@@ -400,10 +416,9 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 	// border would silently drop trailing facts (exit code, artifact id), so an
 	// overflowing footer wraps into body rows above a plain border instead.
 	const footerMeta = options.footerMeta;
-	const footerFits =
-		footerMeta === undefined ||
-		visibleWidth(` ${footerMeta} `) <=
-			bottomWidth - visibleWidth(`${theme.boxRound.bottomLeft}${cap}`) - visibleWidth(theme.boxRound.bottomRight);
+	const footerRoom = bottomWidth - footerEdges;
+	const footerAction = footerActionWidth <= footerRoom ? options.footerAction : undefined;
+	const footerFits = footerMetaWidth + (footerAction === undefined ? 0 : footerActionWidth) <= footerRoom;
 	if (footerMeta !== undefined && !footerFits) {
 		const footerWrapAt = staged ? Math.max(0, bottomWidth - frameOverhead) : contentWidth;
 		for (const wrappedLine of wrapTextWithAnsi(footerMeta, footerWrapAt)) {
@@ -417,32 +432,34 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		leftChar: theme.boxRound.bottomLeft,
 		rightChar: theme.boxRound.bottomRight,
 		meta: footerFits ? footerMeta : undefined,
+		action: footerAction,
 	});
 
 	const H = rows.length;
 
 	const renderBar = (
-		row: { leftChar: string; rightChar: string; label?: string; meta?: string },
+		row: { leftChar: string; rightChar: string; label?: string; meta?: string; action?: string },
 		lineWidth: number,
 	): string => {
 		const leftGlyphs = `${row.leftChar}${cap}`;
 		const rightGlyph = row.rightChar;
+		const right = row.action === undefined ? border(rightGlyph) : row.action + border(`${h}${rightGlyph}`);
+		const rightWidth = visibleWidth(right);
 		if (lineWidth <= 0) return border(leftGlyphs) + border(rightGlyph);
 		const labelText = [row.label, row.meta].filter(Boolean).join(theme.sep.dot);
 		if (!labelText) {
 			// No header: draw a clean, continuous top/separator bar (no 1-col gap).
-			const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - visibleWidth(rightGlyph));
-			return `${border(leftGlyphs)}${border(h.repeat(fillCount))}${border(rightGlyph)}`;
+			const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - rightWidth);
+			return `${border(leftGlyphs)}${border(h.repeat(fillCount))}${right}`;
 		}
 		const rawLabel = ` ${labelText} `;
 		const leftWidth = visibleWidth(leftGlyphs);
-		const rightWidth = visibleWidth(rightGlyph);
 		const maxLabelWidth = Math.max(0, lineWidth - leftWidth - rightWidth);
 		const trimmedLabel = truncateToWidth(rawLabel, maxLabelWidth);
 		const labelWidth = visibleWidth(trimmedLabel);
 		const fillCount = Math.max(0, lineWidth - leftWidth - labelWidth - rightWidth);
 		const fillGlyphs = h.repeat(fillCount);
-		return `${border(leftGlyphs)}${trimmedLabel}${border(fillGlyphs)}${border(rightGlyph)}`;
+		return `${border(leftGlyphs)}${trimmedLabel}${border(fillGlyphs)}${right}`;
 	};
 
 	const renderContent = (inner: string): string =>
@@ -679,6 +696,7 @@ export class CachedOutputBlock {
 		h.optional(options.header);
 		h.optional(options.headerMeta);
 		h.optional(options.footerMeta);
+		h.optional(options.footerAction);
 		h.optional(options.state);
 		h.optional(options.stageTone);
 		h.u32(options.minLiveWidth ?? 0);

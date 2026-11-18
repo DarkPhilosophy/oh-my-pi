@@ -14,6 +14,7 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import { unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { createCodexProviderStreamError } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { createMockModel, type MockResponse, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import * as envApiKey from "@oh-my-pi/pi-ai/env-api-key";
 import * as aiStream from "@oh-my-pi/pi-ai/stream";
@@ -640,6 +641,86 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.stopReason).toBe("error");
 		expect(last.errorMessage).toContain("Insufficient balance");
 		expect(session.isRetrying).toBe(false);
+	});
+
+	it("does not retry or attribute the 30-minute estimate to Codex when there is no reset time", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected bundled Codex test model");
+		const quotaError = "Codex error event: The usage limit has been reached (code=usage_limit_reached)";
+		authStorage.keys.setRuntime(model.provider, "test-key");
+		const mock = createMockModel({ handler: () => ({ stopReason: "error", errorMessage: quotaError }) });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: mock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.modelFallback": false,
+			"retry.waitForUsageReset": true,
+		});
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+		const wait = mockSchedulerWaitWithClock();
+		const events: Array<AutoRetryStartEvent | AutoRetryEndEvent> = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_start" || event.type === "auto_retry_end") events.push(event);
+		});
+		await session.prompt("Trigger the Codex stream error with no reset time");
+		await session.waitForIdle();
+		expect(events).toEqual([
+			expect.objectContaining({
+				type: "auto_retry_end",
+				success: false,
+				attempt: 0,
+				finalError: expect.stringMatching(/estimated.*1800000ms.*retry\.maxDelayMs.*300000ms/i),
+			}),
+		]);
+		expect(wait.mock.calls.some(([ms]) => ms >= 1_000)).toBe(false);
+		expect(lastAssistant(session).errorMessage).toBe((events[0] as AutoRetryEndEvent).finalError);
+	});
+
+	it("waits past the configured cap for a confirmed Codex stream reset, then retries once", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected bundled Codex test model");
+		authStorage.keys.setRuntime(model.provider, "test-key");
+		const providerError = createCodexProviderStreamError({
+			type: "error",
+			error: {
+				code: "usage_limit_reached",
+				message: "The usage limit has been reached",
+				resets_at: Math.ceil(Date.now() / 1000) + 2,
+			},
+		});
+		const outcome = await AIError.finalize(providerError, { api: model.api, provider: model.provider });
+		const mock = createMockModel({
+			responses: [
+				{ stopReason: "error", errorMessage: outcome.message },
+				{ stopReason: "stop", content: ["recovered after Codex reset"] },
+			],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: mock.stream,
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.modelFallback": false,
+			"retry.waitForUsageReset": true,
+			"retry.maxDelayMs": 100,
+		});
+		session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+		mockSchedulerWaitWithClock();
+		const starts: AutoRetryStartEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_start") starts.push(event);
+		});
+		await session.prompt("Wait for Codex to confirm the reset");
+		await session.waitForIdle();
+		expect(starts.map(({ attempt }) => attempt)).toEqual([1]);
+		expect(starts[0].delayMs).toBeGreaterThan(1_000);
+		expect(starts[0].delayMs).toBeLessThanOrEqual(3_000);
+		expect(lastAssistant(session).stopReason).toBe("stop");
 	});
 
 	it("retries promptly on a zero-valued usage-limit retry hint when retry.waitForUsageReset is set", async () => {
@@ -1936,8 +2017,8 @@ describe("AgentSession retry delay cap", () => {
 				mock.push(
 					requestedModels.length === 1
 						? {
-								throw: "429 Weekly usage limit reached. type=GoUsageLimitError retry-after-ms=3242000",
-							}
+							throw: "429 Weekly usage limit reached. type=GoUsageLimitError retry-after-ms=3242000",
+						}
 						: { content: ["recovered after sibling unblock"], stopReason: "stop" },
 				);
 				return mock.stream(requestedModel, context, options);

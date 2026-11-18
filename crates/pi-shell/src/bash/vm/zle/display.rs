@@ -570,6 +570,18 @@ pub fn reset_prompt(zw: &mut Zw<'_, '_>) -> WResult {
 	redisplay(zw)
 }
 
+/// Match `adjustwinsize`: return to the old prompt's first row before
+/// redrawing.
+pub(super) fn refresh_after_resize(k: &mut Kernel, cx: &mut Cx<'_>, vp: &mut Vproc) {
+	on_editor(k, cx, vp, |zw| {
+		reset_prompt(zw);
+		refresh(zw);
+		if let Some(tty) = zw.zle.tty.as_mut() {
+			let _ = tty.flush(zw.k);
+		}
+	});
+}
+
 /// The `read-command` widget (zsh `readcommand`): the next key command's
 /// widget name in `$REPLY`.
 pub fn read_command(_zw: &mut Zw<'_, '_>) -> WResult {
