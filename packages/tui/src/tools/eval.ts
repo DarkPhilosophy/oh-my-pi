@@ -17,7 +17,7 @@ import { renderAgentTreeRow } from "./agent-tree";
 import { truncateToVisualLines } from "../chrome/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../theme/theme";
 import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCellStaged } from "../render/index";
-import { outputCopyChip } from "../render/output-block";
+import { renderCopyChip } from "../render/copy-chip";
 import { formatOutputPaneLines } from "../render/output-pane";
 import { formatEvalCodeForDisplay } from "./eval-format/index";
 import {
@@ -162,10 +162,6 @@ interface EvalRenderContext {
 	expanded?: boolean;
 	previewLines?: number;
 	timeout?: number;
-	/** Window the code stage is drawn with; frozen by the card once the stage is offered to history. */
-	stageWindow?: number;
-	/** Expand state the code stage is drawn with; frozen with the window. */
-	stageExpanded?: boolean;
 }
 
 interface EvalRenderCell {
@@ -923,16 +919,14 @@ export const evalToolRenderer = {
 		}
 
 		let cached: { key: string; width: number; result: string[]; topStageRows: number; liveWidth: number } | undefined;
-		// The code stage's window is frozen by the card once the stage reaches history; until then it is live.
-		const stageWindow = (): number => options.renderContext?.stageWindow ?? previewWindowRows();
+		const codeWindow = (): number => previewWindowRows();
 
 		return markFramedBlockComponent({
-			// Stage geometry of the last render, read by the transcript to commit the frozen code stage early.
-			// Only a single-cell call is declared: with several cells the stacked boxes have no single seam.
+			// Only a single-cell call has a single command height for the viewport budget.
 			topStageRows: (): number => (cells.length === 1 ? (cached?.topStageRows ?? 0) : 0),
 			liveWidth: (): number => (cells.length === 1 ? (cached?.liveWidth ?? 0) : 0),
 			render: (width: number): readonly string[] => {
-				const key = `${options.expanded ? 1 : 0}|${options.argsComplete === false ? 0 : 1}|${options.executionStarted === true ? 1 : 0}|${options.spinnerFrame ?? "-"}|${stageWindow()}|${options.renderContext?.stageExpanded ?? "-"}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
+				const key = `${options.expanded ? 1 : 0}|${options.argsComplete === false ? 0 : 1}|${options.executionStarted === true ? 1 : 0}|${options.spinnerFrame ?? "-"}|${codeWindow()}|${cells.map(c => `${c.language}:${c.title ?? ""}:${c.code.length}`).join("|")}`;
 				if (cached && cached.key === key && cached.width === width) {
 					return cached.result;
 				}
@@ -949,6 +943,8 @@ export const evalToolRenderer = {
 					const staged = renderCodeCellStaged(
 						{
 							code,
+							outputSeparatorAction:
+								options.argsComplete !== false ? renderCopyChip(cell.code, uiTheme, "input") : undefined,
 							language: languageForHighlighter(cell.language),
 							showLanguage: true,
 							index: i,
@@ -965,8 +961,8 @@ export const evalToolRenderer = {
 							// line; renderResult keeps the same cap so the cell never snaps
 							// open on completion. Only ctrl+o uncaps.
 							codeTail: true,
-							codeMaxLines: stageWindow(),
-							expanded: options.renderContext?.stageExpanded ?? options.expanded,
+							codeMaxLines: codeWindow(),
+							expanded: options.expanded,
 						},
 						uiTheme,
 					);
@@ -1025,7 +1021,6 @@ export const evalToolRenderer = {
 				| undefined;
 
 			return markFramedBlockComponent({
-				// See renderCall: the frozen code stage of a single-cell call, for the early history commit.
 				topStageRows: (): number => (displayCells.length === 1 ? (cached?.topStageRows ?? 0) : 0),
 				liveWidth: (): number => (displayCells.length === 1 ? (cached?.liveWidth ?? 0) : 0),
 				render: (width: number): readonly string[] => {
@@ -1034,7 +1029,7 @@ export const evalToolRenderer = {
 						options.renderContext?.previewLines ?? EVAL_DEFAULT_PREVIEW_LINES,
 						previewWindowRows(),
 					);
-					const key = `${expanded}|${previewLines}|${options.spinnerFrame}|${previewWindowRows()}|${options.renderContext?.stageWindow ?? "-"}|${options.renderContext?.stageExpanded ?? "-"}`;
+					const key = `${expanded}|${previewLines}|${options.spinnerFrame}|${previewWindowRows()}`;
 					if (cached && cached.key === key && cached.width === width) {
 						return cached.result;
 					}
@@ -1074,19 +1069,18 @@ export const evalToolRenderer = {
 								spinnerFrame: options.spinnerFrame,
 								duration: cell.durationMs,
 								output: outputLines.length > 0 ? outputLines.join("\n") : undefined,
-								outputCopyChip:
+								outputSeparatorAction: renderCopyChip(cell.code, uiTheme, "input"),
+								footerAction:
 									cell.status !== "running" && cell.status !== "pending" && cell.output
-										? outputCopyChip(cell.output, uiTheme)
+										? renderCopyChip(cell.output, uiTheme, "output")
 										: undefined,
 								outputMaxLines: outputLines.length,
 								// Same viewport-sized tail window as the pending preview so the
 								// cell never snaps open on completion; only ctrl+o uncaps.
 								// `output` keeps its own preview cap from above.
 								codeTail: true,
-								codeMaxLines: options.renderContext?.stageWindow ?? previewWindowRows(),
-								// The code stage may already be in history: it keeps the shape it was committed in. The
-								// output above was formatted with the live `expanded`, so this only governs the code rows.
-								expanded: options.renderContext?.stageExpanded ?? expanded,
+								codeMaxLines: previewWindowRows(),
+								expanded,
 								width,
 							},
 							uiTheme,

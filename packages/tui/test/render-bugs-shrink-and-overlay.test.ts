@@ -448,7 +448,7 @@ describe("bug 1: slot shrink (ask answered) must return chat and editor to the b
 	});
 });
 
-describe("bug 2: finalized output of a running bash call must reach history without waiting for the tool", () => {
+describe("Bash and Eval keep entire framed calls live until completion", () => {
 	function bashArgs() {
 		return { command: "for i in $(seq 1 80); do echo line-$i; sleep 1; done" };
 	}
@@ -471,13 +471,6 @@ describe("bug 2: finalized output of a running bash call must reach history with
 		return card;
 	}
 
-	// Phase 1: the COMMAND half of a bash/eval card is final as soon as its arguments are complete
-	// and execution has started; only the output half keeps changing. The finalized half may go to
-	// native history while the call runs. This does not touch the output window at all.
-	//
-	// Two oracles, because a card that still fits the screen keeps its committed rows visible:
-	//  - the commit itself: the batch the transcript offered (and the terminal accepted) holds the command;
-	//  - pure scrollback: once the card is taller than the screen, the command is there, exactly once.
 	async function runningCard(h: Harness, tool: "bash" | "eval", outputLines: number) {
 		const args =
 			tool === "bash"
@@ -526,7 +519,7 @@ describe("bug 2: finalized output of a running bash call must reach history with
 		{ rows: 12, expanded: false },
 		{ rows: 30, expanded: false },
 	])(
-		"keeps output live after a long Bash command enters history at $rows rows (expanded=$expanded)",
+		"keeps a long Bash command and its output live at $rows rows (expanded=$expanded)",
 		async ({ rows, expanded }) => {
 			const h = makeHarness(40, rows);
 			const command = Array.from(
@@ -544,7 +537,7 @@ describe("bug 2: finalized output of a running bash call must reach history with
 				card.setExecutionStarted();
 				h.composer.ui.requestRender();
 				await h.scheduler.settle(h.terminal);
-				expect(h.transcript.canRemoveBlock(card)).toBe(false);
+				expect(h.transcript.canRemoveBlock(card)).toBe(true);
 				expect(h.transcript.isBlockInLiveRegion(card)).toBe(true);
 				expect(strip(h.terminal.getViewport()).join("\n")).toMatch(/Output.*Running/);
 				for (let step = 0; step < 3; step++) {
@@ -553,16 +546,17 @@ describe("bug 2: finalized output of a running bash call must reach history with
 					await h.scheduler.settle(h.terminal);
 					const history = strip(h.terminal.getScrollBuffer().slice(0, -h.terminal.rows)).join("\n");
 					const view = strip(h.terminal.getViewport()).join("\n");
-					if (expanded) expect(history).toContain("COMMAND_STAGE_000");
-					expect(h.transcript.canRemoveBlock(card)).toBe(false);
+					expect(history).not.toContain("COMMAND_STAGE_");
+					expect(h.transcript.canRemoveBlock(card)).toBe(true);
 					expect(h.transcript.isBlockInLiveRegion(card)).toBe(true);
 					expect(tape(h.terminal).join("\n")).toContain("COMMAND_STAGE_079");
-					const mutable = h.composer.ui.getMutableViewport();
 					expect(
-						strip(h.terminal.getViewport())
-							.slice(mutable.top, mutable.top + mutable.length)
-							.join("\n"),
-					).not.toContain("COMMAND_STAGE_");
+						view
+							.split("\n")
+							.some(
+								row => row.startsWith("│") && row.includes("LIVE_STAGE_OUTPUT_" + step) && row.endsWith("│"),
+							),
+					).toBe(true);
 					expect(card.isTranscriptBlockFinalized()).toBeFalse();
 					expect(view).toContain("LIVE_STAGE_OUTPUT_" + step);
 					expect(view).toMatch(/Output.*Running/);
@@ -593,7 +587,7 @@ describe("bug 2: finalized output of a running bash call must reach history with
 	);
 
 	for (const tool of ["bash", "eval"] as const) {
-		it(`${tool}: the finalized command is committed to history while its output still streams`, async () => {
+		it(`${tool}: accepts no command or output rows into history before the final result`, async () => {
 			const h = makeHarness(40);
 			try {
 				const offered: string[][] = [];
@@ -604,17 +598,26 @@ describe("bug 2: finalized output of a running bash call must reach history with
 					return batch;
 				};
 				await h.scheduler.settle(h.terminal);
-				await runningCard(h, tool, 20);
-				expect(offered.flat().some(row => row.includes("COMMAND_MARKER_LINE"))).toBe(true);
-				expect(offered.flat().filter(row => row.includes("COMMAND_MARKER_LINE")).length).toBe(1);
-				// ...and the card still shows its live stage on a normal screen.
+				const card = await runningCard(h, tool, 20);
+				expect(offered.flat().some(row => /COMMAND_MARKER_LINE|out-20/.test(row))).toBe(false);
 				expect(tape(h.terminal).some(row => /Output.*Running/.test(row))).toBe(true);
+				card.updateResult(partialResult(tool, ["result-after-settle"], "complete"), false);
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
+				const batch = offered.find(rows => rows.some(row => row.includes("result-after-settle")));
+				expect(batch?.some(row => row.includes("COMMAND_MARKER_LINE"))).toBe(true);
+				const divider = batch?.findIndex(row => row.startsWith("├") && row.includes("Output")) ?? -1;
+				const output = batch?.findIndex(row => row.includes("result-after-settle")) ?? -1;
+				const footer = batch?.findIndex(row => row.startsWith("╰")) ?? -1;
+				expect(divider).toBeGreaterThan(0);
+				expect(output).toBeGreaterThan(divider);
+				expect(footer).toBeGreaterThan(output);
 			} finally {
 				h.composer.stop();
 			}
 		});
 
-		it(`${tool}: finishing after the early commit duplicates nothing and leaves no blank band`, async () => {
+		it(`${tool}: finishing the live card duplicates nothing and leaves no blank band`, async () => {
 			const h = makeHarness(40, 12);
 			try {
 				await h.scheduler.settle(h.terminal);
@@ -635,11 +638,21 @@ describe("bug 2: finalized output of a running bash call must reach history with
 			}
 		});
 
-		it(`${tool}: the committed command appears once on the tape, after the history and before its output`, async () => {
+		it(`${tool}: the completed command appears once on the tape, after the history and before its output`, async () => {
 			const h = makeHarness(40, 12);
 			try {
 				await h.scheduler.settle(h.terminal);
-				await runningCard(h, tool, 40);
+				const card = await runningCard(h, tool, 40);
+				card.updateResult(
+					partialResult(
+						tool,
+						Array.from({ length: 40 }, (_, i) => `out-${i + 1}`),
+						"complete",
+					),
+					false,
+				);
+				h.composer.ui.requestRender();
+				await h.scheduler.settle(h.terminal);
 				const all = tape(h.terminal);
 				const marker = all.findIndex(row => row.includes("COMMAND_MARKER_LINE"));
 				expect(all.filter(row => row.includes("COMMAND_MARKER_LINE")).length).toBe(1);
@@ -696,10 +709,7 @@ describe("bug 2: finalized output of a running bash call must reach history with
 	});
 });
 
-describe("bug 2 (stage shape): the command stage already in history is never redrawn differently", () => {
-	// The early commit writes the command/code rows to scrollback once. Rows already there cannot change,
-	// so anything that would redraw that stage with a different shape (a terminal that grows and widens the
-	// preview window, ctrl+O expanding the code) must not produce a second copy of its rows.
+describe("live tool cards can resize and expand without duplicating their completed code", () => {
 	const CODE = Array.from({ length: 60 }, (_, i) => `const v${i} = ${i};`).join("\n");
 	const COMMAND = Array.from({ length: 60 }, (_, i) => `echo step-${i}`).join("\n");
 
@@ -756,6 +766,18 @@ describe("bug 2 (stage shape): the command stage already in history is never red
 			setRows(arm.laterRows);
 			if (arm.expand) card.setExpanded(true);
 			await push(15);
+			const text = lines.join("\n");
+			card.updateResult(
+				tool === "bash"
+					? { content: [{ type: "text", text }] }
+					: {
+							content: [{ type: "text", text }],
+							details: {
+								cells: [{ index: 0, language: "js", title: "t", code: CODE, status: "complete", output: text }],
+							},
+						},
+				false,
+			);
 			for (let i = 0; i < 4; i++) {
 				h.composer.ui.requestRender();
 				await h.scheduler.settle(h.terminal);
@@ -778,7 +800,6 @@ describe("bug 2 (stage shape): the command stage already in history is never red
 		for (const arm of arms) {
 			it(`${tool}: ${arm.name} leaves each committed code row on the tape once`, async () => {
 				const counts = await codeRowCounts(tool, arm);
-				// Something was committed (otherwise "no duplicates" is vacuous), and nothing twice.
 				expect(counts.distinct).toBeGreaterThan(0);
 				expect(counts.duplicated).toBe(0);
 			});

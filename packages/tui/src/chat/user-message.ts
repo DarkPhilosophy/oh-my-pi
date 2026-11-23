@@ -19,6 +19,7 @@ import {
 } from "../prompt/composer-attachments";
 import { MODEL_MENTION_TAG_RE } from "../prompt/model-mention-syntax";
 import { expandKeyHint, fileHyperlink, fileLinkSpan } from "../render";
+import { getCopyChipTarget, renderCopyChip } from "../render/copy-chip";
 import { imageLinksEnabled, imageReferenceHyperlink } from "../prompt/image-references";
 import { highlightMagicKeywords } from "../prompt/magic-keywords";
 import type { ReactionTarget } from "./reaction";
@@ -140,19 +141,19 @@ export function userBubbleColor(
  */
 export class UserMessageComponent extends Container implements ReactionTarget, TranscriptPresentationTarget {
 	#allocation = Number.POSITIVE_INFINITY;
-	// Memoized OSC 133 zone wrapping keyed on the underlying container render
-	// (same source ref ⇒ identical rows ⇒ reuse the wrapped copy) and on whether
-	// zones were enabled. Keeps this component reference-stable for the
-	// transcript's incremental assembly and never mutates the container's cached array.
+	// Memoized terminal decoration keyed on the container render and on the
+	// prompt-zone and clipboard policies. Never mutate the container's cached array.
 	#zoneSource: readonly string[] | undefined;
 	#zoneLines: string[] | undefined;
 	#zoneMarked = false;
+	#copyEnabled = false;
 	readonly #bgColor: (value: string) => string;
 	readonly #liveSteered: boolean;
 	readonly #synthetic: boolean;
 	readonly #timestamp: number | undefined;
 	readonly #images: readonly ImageContent[];
 	readonly #imageLinks: readonly (string | undefined)[] | undefined;
+	readonly #source: string;
 	/** Display text: image markers collapsed to chips and model mentions to their labels. */
 	readonly #text: string;
 	/** Matches the composer tokens in {@link #text} (chips, skills, this message's mentions). */
@@ -166,6 +167,7 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 	constructor(text: string, options: UserBubbleOptions = {}) {
 		super();
 		ensureThemeSync();
+		this.#source = text;
 		// Display-only collapse: the stored/wire text carries bracketed `[Image #N, WxH]` markers,
 		// but the transcript shows the same compact `<icon> #N` chip the composer used. Runs before
 		// Markdown layout so wrapping and bubble padding are computed on the visible text.
@@ -210,10 +212,9 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 	/**
 	 * A head-less user-toned frame with the prompt as markdown under its
 	 * attached images (titled `#N` like their chips, opening the materialized
-	 * file on click): the fill says "you". A quiet footer like a turn's usage line
-	 * (`⧉ ⏪ · 09:45`: Copy, Rewind, the time sent) fades in at its bottom-left on hover when
-	 * the host handles transcript actions. The live-steering marker and the
-	 * agent's reaction are chips at the bottom-right, so a reaction landing
+	 * file on click): the fill says "you". The hover tools include rewind and
+	 * time on the left, and copy at the bottom-right beside the prompt badges.
+	 * The live-steering marker and the agent's reaction are chips there too, so a reaction landing
 	 * later updates the frame in place, even deep in scrollback.
 	 */
 	override describe(cx?: DescribeContext): NativeNode {
@@ -225,21 +226,9 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 		this.#nativeHour12 = hour12;
 		this.#nativeLinked = linked;
 		const children: NativeChild[] = [];
-		if (!this.#synthetic && hasTranscriptActions()) {
+		const showTools = !this.#synthetic && hasTranscriptActions();
+		if (showTools) {
 			const tools: NativeChild[] = [
-				// `copy-message`, not Tern's local `copy` (that would copy the icon's empty label).
-				node(
-					"icon",
-					{
-						name: "copy",
-						role: "omp.user.tool",
-						title: "Copy message",
-						aria: "Copy message",
-						actions: { click: "copy-message" },
-					},
-					undefined,
-					"copy",
-				),
 				node(
 					"icon",
 					{
@@ -299,10 +288,34 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 		if (this.#reaction !== undefined) badges.push(node("badge", { text: this.#reaction, role: "omp.reaction" }));
 		if (badges.length > 0)
 			children.push(node("row", { gap: "xs", justify: "end", role: "omp.user.badges" }, badges, "badges"));
+		if (showTools && this.#source.trim()) {
+			children.push(
+				node(
+					"row",
+					{ gap: "xs", justify: "end", role: "omp.user.tools" },
+					[
+						// Tern's local `copy` would copy the icon's empty label, not the prompt.
+						node(
+							"icon",
+							{
+								name: "copy",
+								role: "omp.user.tool",
+								title: "Copy message",
+								aria: "Copy message",
+								actions: { click: "copy-message" },
+							},
+							undefined,
+							"copy",
+						),
+					],
+					"copy-footer",
+				),
+			);
+		}
 		// A phone's long press lists the turn's actions (a desktop keeps the hover toolbar): they need the
 		// prompt's timestamp to find its entry.
 		const hold =
-			!this.#synthetic && hasTranscriptActions() && this.#timestamp !== undefined
+			showTools && this.#timestamp !== undefined
 				? {
 						actions: {
 							hold: turnHoldEntries("user", { id: "copy-message", label: "Copy message", icon: "copy" }),
@@ -323,7 +336,7 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 	/** Hover toolbar and hold-menu choices: omp's own copy, rewind, edit, retry and fork commands. */
 	handleNativeEvent(event: NativeUiEvent): void {
 		if (event.type !== "action") return;
-		if (event.act === "copy-message") runTranscriptAction({ act: "copy", text: this.#text });
+		if (event.act === "copy-message") runTranscriptAction({ act: "copy", text: this.#source });
 		else if (event.act === "rewind") runTranscriptAction({ act: "rewind" });
 		else if (this.#timestamp !== undefined) runTurnAction(event.act, { role: "user", at: this.#timestamp });
 	}
@@ -380,11 +393,24 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 			const emergency = this.#selectEmergencyRow(lines);
 			if (emergency !== undefined) return [emergency];
 		}
-		if (this.#zoneSource === lines && this.#zoneLines !== undefined && this.#zoneMarked === promptZonesEnabled) {
+		const copyEnabled = !this.#synthetic && getCopyChipTarget() !== undefined;
+		if (
+			this.#zoneSource === lines &&
+			this.#zoneLines !== undefined &&
+			this.#zoneMarked === promptZonesEnabled &&
+			this.#copyEnabled === copyEnabled
+		) {
 			return this.#zoneLines;
 		}
 		const wrapped = lines.slice();
 		if (this.#reaction !== undefined || this.#liveSteered) wrapped[0] = this.#badgeRow(width);
+		const copyChip = copyEnabled ? renderCopyChip(this.#source, theme) : undefined;
+		if (copyChip !== undefined) {
+			const gap = width - visibleWidth(copyChip) - 1;
+			if (gap >= 0) {
+				wrapped[wrapped.length - 1] = applyBackgroundToLine(`${padding(gap)}${copyChip}`, width, this.#bgColor);
+			}
+		}
 		if (promptZonesEnabled) {
 			wrapped[0] = OSC133_ZONE_START + wrapped[0];
 			wrapped[wrapped.length - 1] = wrapped[wrapped.length - 1] + OSC133_ZONE_CLOSE;
@@ -392,6 +418,7 @@ export class UserMessageComponent extends Container implements ReactionTarget, T
 		this.#zoneSource = lines;
 		this.#zoneLines = wrapped;
 		this.#zoneMarked = promptZonesEnabled;
+		this.#copyEnabled = copyEnabled;
 		return wrapped;
 	}
 }

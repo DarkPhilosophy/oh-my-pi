@@ -139,13 +139,13 @@ describe("eval code stage is byte-identical in every state", () => {
 		expect(text).not.toMatch(/Output/);
 	});
 
-	it("links the finished cell's raw output in the bottom-right border, never the running preview", () => {
+	it("keeps input copy next to Output and adds only output copy to the footer on completion", () => {
 		const output = "\tfirst\nsecond";
 		const payloads: string[] = [];
 		applyHyperlinkSetting("always");
 		setCopyUrlTargetProvider(text => {
 			payloads.push(text);
-			return "omp-copy:eval-test";
+			return text === output ? "omp-copy:eval-test" : "omp-copy:eval-input";
 		});
 		setCopyUrlHandlerReady(true);
 		try {
@@ -155,15 +155,25 @@ describe("eval code stage is byte-identical in every state", () => {
 				{ content: [{ type: "text", text: "preview" }], details: details("running", "preview") },
 				true,
 			);
-			expect(card.render(WIDTH).some(row => row.includes("omp-copy:"))).toBe(false);
+			const running = card.render(WIDTH);
+			const runningSeparator = running.find(row => Bun.stripANSI(row).includes("Output"))!;
+			expect(runningSeparator).toContain("omp-copy:eval-input");
+			expect(running.filter(row => row.includes("omp-copy:"))).toEqual([runningSeparator]);
+			expect(payloads).toEqual(["const STAGE_MARKER = 1;"]);
 			card.updateResult(
 				{ content: [{ type: "text", text: "outer wrapper" }], details: details("complete", output) },
 				false,
 			);
 			const rows = card.render(WIDTH);
-			const footer = rows.find(row => row.includes("omp-copy:eval-test"));
-			expect(footer && Bun.stripANSI(footer).trimEnd()).toMatch(/^╰.*\[copy\]─╯$/);
-			expect(payloads).toEqual([output]);
+			const separator = rows.find(row => Bun.stripANSI(row).includes("Output"))!;
+			expect(separator).toContain("omp-copy:eval-input");
+			expect(Bun.stripANSI(separator).trimEnd()).toMatch(/\[copy input\]─[╮┤]$/);
+			const footer = rows.findLast(row => Bun.stripANSI(row).trim().length > 0);
+			expect(footer).not.toContain("omp-copy:eval-input");
+			expect(footer).toContain("omp-copy:eval-test");
+			expect(footer && Bun.stripANSI(footer).trimEnd()).toMatch(/^╰.*\[copy output\]─╯$/);
+			expect(rows.filter(row => row.includes("omp-copy:"))).toEqual([separator, footer!]);
+			expect(new Set(payloads)).toEqual(new Set(["const STAGE_MARKER = 1;", output]));
 		} finally {
 			setCopyUrlHandlerReady(false);
 			setCopyUrlTargetProvider(undefined);

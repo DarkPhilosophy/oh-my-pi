@@ -3,7 +3,7 @@ import type { TUI } from "@oh-my-pi/pi-tui";
 import { setChatTranscriptDisplayPreferences } from "@oh-my-pi/pi-tui/chat/display-preferences";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { setCopyUrlHandlerReady, setCopyUrlTargetProvider } from "@oh-my-pi/pi-tui/theme/tui-adapters";
 import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { RunTrace, Shell } from "@oh-my-pi/pi-natives";
@@ -85,16 +85,25 @@ describe("bash command stage is byte-identical in every state", () => {
 		],
 	];
 
-	it("head and command rows are the same raw bytes for every state", () => {
+	it("uses the same themed frame for command and output without repainting the command rows", () => {
 		const reference = commandStage(makeCard());
+		const frameBg = theme.getBgAnsi("toolSuccessBg");
+		expect(frameBg).not.toBe("");
+		const frameFg = theme.fg("dim", "│").split("│")[0];
 		for (const [name, apply] of states) {
 			const card = makeCard();
 			apply(card);
 			expect({ state: name, rows: commandStage(card) }).toEqual({ state: name, rows: reference });
+			for (const row of card.render(WIDTH)) {
+				const corner = Bun.stripANSI(row)[0];
+				if (corner && "╭│├╰".includes(corner)) {
+					expect(row).toStartWith(frameBg + frameFg + corner);
+				}
+			}
 		}
 	});
 
-	it("the status shows on the Output separator while the head stays plain", () => {
+	it("shows running and failure on the Output separator, not in the command header", () => {
 		const running = makeCard();
 		states[1]![1](running);
 		const failed = makeCard();
@@ -128,18 +137,26 @@ describe("bash command stage is byte-identical in every state", () => {
 			{ content: [], details: { async: { state: "running", jobId: "bg_test", type: "bash" } } },
 			false,
 		);
-		const rows = card.render(WIDTH).map(row => Bun.stripANSI(row));
-		expect(rows.find(row => row.includes("Output"))).toMatch(/Output.*Backgrounded/);
+		const rendered = card.render(WIDTH);
+		const rows = rendered.map(row => Bun.stripANSI(row));
+		const separator = rows.find(row => row.includes("Output"))!;
+		expect(separator).toMatch(/Output.*Backgrounded/);
+		const commandEdge = rows.find(row => row.includes("STAGE_MARKER"))!.trimEnd().length - 1;
+		expect(separator[commandEdge]).toBe("┴");
 		expect(rows.some(row => row.includes("bg_test"))).toBe(true);
+		const footer = rendered[rows.findIndex(row => row.includes("bg_test"))];
+		expect(footer).toStartWith(theme.getBgAnsi("toolSuccessBg"));
+		expect(commandStage(card)).toEqual(commandStage(makeCard()));
+		expect(footer).toContain(theme.fg("dim", "╰───"));
 	});
 
-	it("links the complete retained output from the right of the bottom border, not just the collapsed tail", () => {
+	it("copies the command from the Output separator and retained stdout from the bottom border", () => {
 		const output = Array.from({ length: 40 }, (_, i) => `row\t${i}`).join("\n");
 		const payloads: string[] = [];
 		applyHyperlinkSetting("always");
 		setCopyUrlTargetProvider(text => {
 			payloads.push(text);
-			return "omp-copy:bash-test";
+			return text === output ? "omp-copy:bash-test" : "omp-copy:bash-input";
 		});
 		setCopyUrlHandlerReady(true);
 		try {
@@ -147,9 +164,15 @@ describe("bash command stage is byte-identical in every state", () => {
 			card.setExecutionStarted();
 			card.updateResult({ content: [{ type: "text", text: output }], details: { timeoutSeconds: 90 } }, false);
 			const rows = card.render(80);
-			const footer = rows.find(row => row.includes("omp-copy:bash-test"));
-			expect(footer && Bun.stripANSI(footer).trimEnd()).toMatch(/^╰.*Timeout: 90s.*\[copy\]─╯$/);
-			expect(payloads).toEqual([output]);
+			const separator = rows.find(row => Bun.stripANSI(row).includes("Output"))!;
+			expect(separator).toContain("omp-copy:bash-input");
+			expect(Bun.stripANSI(separator).trimEnd()).toMatch(/\[copy input\]─[╮┤]$/);
+			const footer = rows.findLast(row => Bun.stripANSI(row).trim().length > 0);
+			expect(footer).not.toContain("omp-copy:bash-input");
+			expect(footer).toContain("omp-copy:bash-test");
+			expect(footer && Bun.stripANSI(footer).trimEnd()).toMatch(/^╰.*Timeout: 90s.*\[copy output\]─╯$/);
+			expect(rows.filter(row => row.includes("omp-copy:"))).toEqual([separator, footer!]);
+			expect(new Set(payloads)).toEqual(new Set(["echo STAGE_MARKER", output]));
 			expect(rows.some(row => row.includes("row  0") || row.includes("row 0"))).toBe(false);
 		} finally {
 			setCopyUrlHandlerReady(false);
@@ -220,29 +243,35 @@ describe("bash card before execution starts has no lower stage and closes at its
 		expect(widthOf(rows[0]!)).toBeGreaterThan(20);
 	});
 
-	it("publishes immutable command rows while keeping output and its closing border live", () => {
+	it("keeps the whole card live, then publishes command and output in one framed batch", () => {
 		const transcript = new TranscriptContainer();
 		const card = makeCard();
 		transcript.addChild(card);
-		expect(transcript.peekFinalizedBatch(WIDTH, 0)).toBeUndefined();
 		card.setExecutionStarted();
-		card.updateResult({ content: [{ type: "text", text: "o1" }] }, true);
-		const stage = transcript.peekFinalizedBatch(WIDTH, 100)!;
-		expect(stage.rows.map(row => Bun.stripANSI(row)).join("\n")).toContain("STAGE_MARKER");
-		expect(stage.rows.map(row => Bun.stripANSI(row)).some(row => /Output|o1|╰/.test(row))).toBe(false);
-		transcript.acknowledgeFinalizedBatch(stage.id);
+		card.updateResult({ content: [{ type: "text", text: "preview-output" }] }, true);
+		expect(transcript.peekFinalizedBatch(WIDTH, 100)).toBeUndefined();
 		const live = transcript.renderViewport(WIDTH, 100, { now: 0, tick: 0 }).map(row => Bun.stripANSI(row));
-		expect(live.join("\n")).toContain("o1");
-		expect(live.join("\n")).not.toContain("STAGE_MARKER");
-		card.updateResult({ content: [{ type: "text", text: "o1" }] }, false);
-		const batch = transcript.peekFinalizedBatch(WIDTH, 100)!;
-		const rows = batch.rows.map(row => Bun.stripANSI(row));
-		expect(rows.join("\n")).not.toContain("STAGE_MARKER");
-		expect(rows.some(row => row.startsWith("├") && row.includes("Output"))).toBe(true);
-		expect(rows.filter(row => row.startsWith("╰"))).toHaveLength(1);
+		expect(live.some(row => row.includes("STAGE_MARKER"))).toBe(true);
+		expect(
+			live.some(row => row.startsWith("│") && row.includes("preview-output") && row.trimEnd().endsWith("│")),
+		).toBe(true);
+		card.updateResult({ content: [{ type: "text", text: "final-output" }] }, false);
+		const final = transcript.peekFinalizedBatch(WIDTH, 100)!;
+		const rows = final.rows.map(row => Bun.stripANSI(row));
+		const command = rows.findIndex(row => row.includes("STAGE_MARKER"));
+		const divider = rows.findIndex(row => row.startsWith("├") && row.includes("Output"));
+		const output = rows.findIndex(row => row.includes("final-output"));
+		const footer = rows.findIndex(row => row.startsWith("╰"));
+		expect(command).toBeGreaterThanOrEqual(0);
+		expect(divider).toBeGreaterThan(command);
+		expect(output).toBeGreaterThan(divider);
+		expect(footer).toBeGreaterThan(output);
+		expect(rows.join("\n")).not.toContain("preview-output");
+		transcript.acknowledgeFinalizedBatch(final.id);
+		expect(transcript.peekFinalizedBatch(WIDTH, 100)).toBeUndefined();
 	});
 
-	it("keeps an interpreted command immutable after publication when the execution trace arrives", async () => {
+	it("updates the interpreted command rows when a shell trace arrives mid-call", async () => {
 		setChatTranscriptDisplayPreferences({ shellVisualization: true });
 		const command = "STAGE_MARKER=1; printf OUTPUT_LINE";
 		const card = new ToolExecutionComponent("bash", { command }, {}, undefined, ui);
@@ -251,9 +280,11 @@ describe("bash card before execution starts has no lower stage and closes at its
 		card.setExecutionStarted();
 		const transcript = new TranscriptContainer();
 		transcript.addChild(card);
-		const stage = transcript.peekFinalizedBatch(WIDTH, 100)!;
-		expect(stage.rows.map(row => Bun.stripANSI(row)).join("\n")).toContain("STAGE_MARKER");
-		transcript.acknowledgeFinalizedBatch(stage.id);
+		const render = () => transcript.renderViewport(WIDTH, 100, { now: 0, tick: 0 }).map(row => Bun.stripANSI(row));
+		const call = render().find(row => row.includes("STAGE_MARKER"));
+		expect(call).toContain("STAGE_MARKER");
+		const pending = transcript.peekFinalizedBatch(WIDTH, 100);
+		if (pending) transcript.acknowledgeFinalizedBatch(pending.id);
 
 		const trace = new RunTrace(command);
 		const result = await new Shell().run({ command, trace, timeoutMs: 5_000 });
@@ -263,16 +294,13 @@ describe("bash card before execution starts has no lower stage and closes at its
 				content: [{ type: "text", text: "OUTPUT_LINE" }],
 				details: { trace: JSON.parse(trace.snapshot()) as ShellTrace },
 			},
-			false,
+			true,
 		);
-		const rendered = card.render(WIDTH);
-		const start = rendered.findIndex(row => Bun.stripANSI(row).trim() !== "");
-		expect(rendered.slice(start, start + stage.rows.length)).toEqual([...stage.rows]);
-		const final = transcript.peekFinalizedBatch(WIDTH, 0)!;
-		expect(final.divergent).not.toBe(true);
-		const tail = final.rows.map(row => Bun.stripANSI(row)).join("\n");
-		expect(tail).toContain("OUTPUT_LINE");
-		expect(tail).not.toContain("STAGE_MARKER");
+		const rows = render();
+		const divider = rows.findIndex(row => row.includes("Output") && row.startsWith("├"));
+		expect(rows.slice(0, divider).some(row => row.includes("STAGE_MARKER") && row !== call)).toBe(true);
+		expect(rows.slice(divider + 1).some(row => /^│\s+OUTPUT_LINE\s+│$/.test(row.trimEnd()))).toBe(true);
+		expect(pending).toBeUndefined();
 	});
 
 	it("while the arguments are still forming the box is closed at its own width too", () => {

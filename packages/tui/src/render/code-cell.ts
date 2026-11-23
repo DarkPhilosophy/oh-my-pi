@@ -19,6 +19,7 @@ import { wrapPrefixedLine } from "./hanging-wrap";
 import {
 	describeOutputBlock,
 	type NativeOutputBlockSection,
+	type OutputBlockOptions,
 	outputBlockContentWidth,
 	renderOutputBlock,
 	renderOutputBlockStaged,
@@ -44,8 +45,9 @@ export interface CodeCellOptions {
 	duration?: number;
 	output?: string;
 	outputMaxLines?: number;
-	/** Copy control for the footer of a settled output section. */
-	outputCopyChip?: string;
+	/** Input copy in the Output separator, and output copy in the closing border. */
+	outputSeparatorAction?: string;
+	footerAction?: string;
 	codeMaxLines?: number;
 	/**
 	 * Show the LAST `codeMaxLines` rows (the live streaming edge) instead of the
@@ -251,7 +253,7 @@ export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): St
 
 	const outputLines = renderCellOutput(output, expanded, outputMaxLines, theme);
 
-	const sections: Array<{ label?: string; lines: readonly string[] }> = [{ lines: displayCodeLines }];
+	const sections: NonNullable<OutputBlockOptions["sections"]> = [{ lines: displayCodeLines }];
 	const running =
 		options.status === "running" ||
 		options.status === "complete" ||
@@ -259,7 +261,12 @@ export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): St
 		options.status === "warning";
 	if (options.stagedStatus) {
 		// A started cell keeps its live output separator even before producing output.
-		if (running) sections.push({ label: stagedOutputLabel(options, theme), lines: outputLines });
+		if (running)
+			sections.push({
+				label: stagedOutputLabel(options, theme),
+				separatorAction: options.outputSeparatorAction,
+				lines: outputLines,
+			});
 	} else if (outputLines.length > 0) {
 		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
 	}
@@ -268,7 +275,7 @@ export function renderCodeCellStaged(options: CodeCellOptions, theme: Theme): St
 		{
 			header: title,
 			headerMeta: meta,
-			footerAction: options.outputCopyChip,
+			footerAction: options.footerAction,
 			// Staged: neutral top, state colour only on the output stage; the box widths come from the two stages.
 			state,
 			stageTone: options.stagedStatus ? "success" : undefined,

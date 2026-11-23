@@ -36,7 +36,7 @@ describe("two-width staged box", () => {
 		const top = rows.findIndex(row => row.startsWith("╭"));
 		const connector = rows.findIndex(row => row.startsWith("├"));
 		expect(widthOf(rows[top]!)).toBeLessThan(widthOf(rows[connector]!));
-		expect(rows[connector]).toContain("┴");
+		expect(rows[connector]?.[widthOf(rows[top]!) - 1]).toBe("┴");
 		expect(rows[connector]!.trimEnd().endsWith("╮")).toBe(true);
 	});
 
@@ -86,6 +86,24 @@ describe("two-width staged box", () => {
 		const connector = rows.find(row => row.startsWith("├"))!;
 		expect(connector).toContain("Output Running");
 		expect(connector).not.toContain("…");
+	});
+
+	it("keeps the junction under the input edge when the status only fits on its own row", () => {
+		const rows = renderOutputBlock(
+			{
+				header: "Bash",
+				stageTone: "pending",
+				state: "running",
+				width: 30,
+				sections: [{ lines: ["x".repeat(22)] }, { label: "Output · Backgrounded", lines: ["ok"] }],
+			},
+			theme,
+		).map(row => Bun.stripANSI(row));
+		const edge = widthOf(rows[1]!) - 1;
+		expect(rows[2]?.[edge]).toBe("┴");
+		expect(rows[2]?.endsWith("╮")).toBe(true);
+		expect(rows[3]).toMatch(/^│ Output · Backgrounded\s+│$/);
+		expect(rows.every(row => widthOf(row) <= 30)).toBe(true);
 	});
 
 	it("equal widths close the connector like an ordinary separator", () => {

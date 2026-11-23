@@ -6,8 +6,6 @@ import { node, span } from "../native/describe";
 import type { NativeChild, NativeNode } from "../native/node";
 import { ImageProtocol, TERMINAL } from "../terminal-capabilities";
 import type { Theme, ThemeColor } from "../theme/theme";
-import { getMarkdownTheme } from "../theme/tui-adapters";
-import { isHyperlinkEnabled, uriHyperlink } from "./hyperlink";
 import type { Component } from "../tui";
 import { Ellipsis, padding, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils";
 import { getSixelLineMask } from "./sixel";
@@ -25,14 +23,14 @@ export interface OutputBlockOptions {
 	/** Short control aligned to the right of the bottom border, omitted when it cannot fit. */
 	footerAction?: string;
 	state?: State;
-	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
+	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean; separatorAction?: string }>;
 	width: number;
 	/**
 	 * State the top stage (the header and every section before the first labeled one) is drawn in,
 	 * independent of {@link state}. A card whose command is final while its output still runs sets this so
-	 * the final stage keeps the same bytes through every later state change; `state` then colours only
-	 * the live stage that starts at the first labeled section. It also keeps the block at the full row
-	 * width, overriding {@link fitToContent}, so no later row can move the top stage's bytes.
+	 * the final stage keeps the same bytes through every later state change. Set `state` to give the
+	 * live stage its own colours; otherwise both stages share this tone. Each stage sizes independently
+	 * so no live row can move the top stage's bytes.
 	 */
 	stageTone?: State;
 	/**
@@ -71,19 +69,8 @@ export function isFramedBlockComponent(component: Component): boolean {
 	return (component as FramedBlockComponent)[FRAMED_BLOCK_COMPONENT] === true;
 }
 
-/** Reuse Markdown's clipboard URL handler, without copying terminal controls or preview decorations. */
-export function outputCopyChip(output: string, theme: Theme): string | undefined {
-	if (!isHyperlinkEnabled()) return undefined;
-	const { copyChipTarget, copyChip } = getMarkdownTheme();
-	if (!copyChipTarget || !copyChip) return undefined;
-	const text = Bun.stripANSI(output);
-	if (!text.trim()) return undefined;
-	const href = copyChipTarget(text);
-	return href ? uriHyperlink(href, theme.fg("dim", `[${copyChip}]`)) : undefined;
-}
-
 type BlockRow = { live: boolean } & (
-	| { kind: "bar"; leftChar: string; rightChar: string; label?: string; meta?: string }
+	| { kind: "bar"; leftChar: string; rightChar: string; label?: string; meta?: string; action?: string }
 	| { kind: "bottom"; leftChar: string; rightChar: string; meta?: string; action?: string }
 	| { kind: "content"; inner: string }
 	| { kind: "sixel"; raw: string }
@@ -122,6 +109,7 @@ export function renderOutputBlockViewport(
 	width: number,
 	maxRows: number,
 	theme: Theme,
+	keepSectionDivider = false,
 ): readonly string[] | undefined {
 	if (maxRows < 3 || width < 5 || lines.some(line => TERMINAL.isImageLine(line))) return undefined;
 	const firstRow = Bun.stripANSI(lines[0] ?? "");
@@ -135,12 +123,25 @@ export function renderOutputBlockViewport(
 	const body: string[] = [];
 	let earlierHidden = 0;
 	let vagueElision = false;
+	let divider: string | undefined;
+	let inputRows = 0;
 	for (const line of lines) {
 		const plain = Bun.stripANSI(line);
 		const trimmed = plain.trim();
 		if (!trimmed) continue;
 		let content = line;
 		if (framed) {
+			if (
+				keepSectionDivider &&
+				maxRows >= 4 &&
+				divider === undefined &&
+				line !== lines[0] &&
+				trimmed.startsWith(theme.boxRound.teeRight)
+			) {
+				divider = line;
+				inputRows = body.length;
+				continue;
+			}
 			if (!trimmed.startsWith(theme.boxRound.vertical) || !trimmed.endsWith(theme.boxRound.vertical)) continue;
 			// Inspect plain content, but keep the renderer's ANSI row intact.
 			// Slicing its glyph columns can reorder inherited SGR colors.
@@ -167,28 +168,51 @@ export function renderOutputBlockViewport(
 		body.push(framed ? line : truncateToWidth(content, contentWidth));
 	}
 	if (body.length === 0) return undefined;
-	const needsMarker = earlierHidden > 0 || vagueElision || body.length > maxRows - 2;
-	if (needsMarker && maxRows < 4) return undefined;
-	const visible = body.slice(-(maxRows - 2 - (needsMarker ? 1 : 0)));
-	const hidden = earlierHidden + body.length - visible.length;
+	const slots = maxRows - 2 - (divider === undefined ? 0 : 1);
+	const needsMarker = earlierHidden > 0 || vagueElision || body.length > slots;
+	const showMarker = needsMarker && slots > 1;
+	if (needsMarker && !showMarker && divider === undefined) return undefined;
+	const visibleCount = slots - (showMarker ? 1 : 0);
+	// Keep the newest output, then spend any spare rows on the end of the command.
+	const inputSlots = Math.max(0, visibleCount - (body.length - inputRows));
+	const visibleInput = divider === undefined ? [] : body.slice(Math.max(0, inputRows - inputSlots), inputRows);
+	const visibleOutput =
+		divider === undefined
+			? body.slice(-visibleCount)
+			: body.slice(Math.max(inputRows, body.length - (visibleCount - visibleInput.length)));
+	const hidden = earlierHidden + body.length - visibleInput.length - visibleOutput.length;
 	const markerText = vagueElision
-		? `… (earlier lines hidden, showing ${visible.length})`
-		: formatEarlierLines({ hidden, shown: visible.length });
-	const marker = truncateToWidth(`${theme.fg("dim", markerText)} ${formatExpandHint(theme)}`, contentWidth);
+		? `… (earlier lines hidden, showing ${visibleInput.length + visibleOutput.length})`
+		: formatEarlierLines({ hidden, shown: visibleInput.length + visibleOutput.length });
+	const marker = `${theme.fg("dim", markerText)} ${formatExpandHint(theme)}`;
 	if (framed) {
-		const sample = body.at(-1)!;
-		const firstBorder = sample.indexOf(theme.boxRound.vertical);
-		const lastBorder = sample.lastIndexOf(theme.boxRound.vertical);
-		const borderStyle = /(?:\x1b\[[0-9;:]*m)*$/.exec(sample.slice(0, lastBorder))?.[0] ?? "";
-		const markerRow =
-			sample.slice(0, firstBorder + theme.boxRound.vertical.length) +
-			"\x1b[39m" +
-			marker +
-			padding(Math.max(0, contentWidth - visibleWidth(marker))) +
-			borderStyle +
-			sample.slice(lastBorder) +
-			"\x1b[0m";
-		return [lines[0]!, ...(needsMarker ? [markerRow] : []), ...visible, lines.at(-1)!];
+		const sample = visibleInput[0] ?? visibleOutput[0];
+		const markerRows: string[] = [];
+		if (showMarker && sample) {
+			const firstBorder = sample.indexOf(theme.boxRound.vertical);
+			const lastBorder = sample.lastIndexOf(theme.boxRound.vertical);
+			const bodyWidth = visibleWidth(sample.slice(firstBorder, lastBorder)) - 1;
+			const label = truncateToWidth(marker, bodyWidth);
+			const borderStyle = /(?:\x1b\[[0-9;:]*m)*$/.exec(sample.slice(0, lastBorder))?.[0] ?? "";
+			markerRows.push(
+				sample.slice(0, firstBorder + theme.boxRound.vertical.length) +
+					"\x1b[39m" +
+					label +
+					padding(Math.max(0, bodyWidth - visibleWidth(label))) +
+					borderStyle +
+					sample.slice(lastBorder) +
+					"\x1b[0m",
+			);
+		}
+		return [
+			lines[0]!,
+			...(visibleInput.length > 0 ? markerRows : []),
+			...visibleInput,
+			...(divider === undefined ? [] : [divider]),
+			...(visibleInput.length === 0 ? markerRows : []),
+			...visibleOutput,
+			lines.at(-1)!,
+		];
 	}
 	const rendered = renderOutputBlock(
 		{
@@ -197,7 +221,7 @@ export function renderOutputBlockViewport(
 			applyBg: false,
 			contentPaddingLeft: 0,
 			contentPaddingRight: 0,
-			sections: [{ lines: needsMarker ? [marker, ...visible] : visible }],
+			sections: [{ lines: showMarker ? [truncateToWidth(marker, contentWidth), ...visibleOutput] : visibleOutput }],
 		},
 		theme,
 	);
@@ -281,7 +305,7 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		return { border, bgFn };
 	};
 	const topColors = colorsFor(options.stageTone ?? state);
-	const liveColors = colorsFor(state);
+	const liveColors = state === undefined || state === options.stageTone ? topColors : colorsFor(state);
 	// Rows are painted in the colours of their stage; without a stage tone both are the same.
 	let border = topColors.border;
 	let bgFn = topColors.bgFn;
@@ -318,6 +342,14 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 	// The top box is sized from its own header and code only: the separator label belongs to the live
 	// stage and changes with the run state, so it may never move the top box.
 	const topWidth = topNatural;
+	const firstLive = sections[firstLiveSection];
+	const labelWidth = firstLive?.label ? visibleWidth(` ${firstLive.label} `) : 0;
+	const actionWidth = firstLive?.separatorAction ? visibleWidth(`${firstLive.separatorAction}${h}`) : 0;
+	const labelOnRight = labelWidth > 0 && labelWidth + visibleWidth(cap) + 2 > topWidth;
+	// The tee must stay under the already-painted command edge. When its right
+	// rail carries the status or a copy control, leave room for that whole segment.
+	const rightContentWidth = (labelOnRight ? labelWidth : 0) + actionWidth;
+	const rightSegmentWidth = rightContentWidth > 0 ? rightContentWidth + 2 : 0;
 	// The lower box must at least hold its own separator label (`├─── Output Running ───`) and its corners;
 	// below that the label would be cut mid-word.
 	const liveLabelWidth = staged
@@ -326,8 +358,12 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 				...sections
 					.slice(firstLiveSection)
 					.filter(section => section.label !== undefined)
-					// corner + cap + ` label ` + one fill + tee + closing corner
-					.map(section => 1 + visibleWidth(cap) + visibleWidth(` ${section.label} `) + 3),
+					.map(
+						section =>
+							2 +
+							visibleWidth(`${cap} ${section.label} `) +
+							(section.separatorAction ? visibleWidth(`${section.separatorAction}${h}`) : 0),
+					),
 			)
 		: 0;
 	// The closing border of the lower box carries its facts and optional right-aligned action.
@@ -354,7 +390,17 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		staged ? topWidth : 0,
 		staged ? Math.min(Math.max(width, 0), liveLabelWidth) : 0,
 	);
-	const rowWidth = (live: boolean): number => (staged ? (live ? liveSnapped : topWidth) : lineWidth);
+	const splitWidth =
+		staged && liveSnapped > topWidth && topWidth + rightSegmentWidth <= lineWidth
+			? Math.max(liveSnapped, topWidth + rightSegmentWidth)
+			: liveSnapped;
+	const liveContentWidth = Math.max(0, splitWidth - frameOverhead);
+	const dividerInBody =
+		staged &&
+		splitWidth > topWidth &&
+		rightSegmentWidth > splitWidth - topWidth &&
+		(labelOnRight || labelWidth + actionWidth <= liveContentWidth);
+	const rowWidth = (live: boolean): number => (staged ? (live ? splitWidth : topWidth) : lineWidth);
 
 	// ── Layout pass: collect row descriptors before emitting the bordered lines. ──
 	const rows: BlockRow[] = [];
@@ -375,13 +421,25 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		// section can still request a plain divider via `separator`, but only
 		// between sections — leading with one would just double the header bar.
 		if (section.label) {
+			const inBody = sectionIndex === firstLiveSection && dividerInBody;
 			rows.push({
 				live,
 				kind: "bar",
 				leftChar: theme.boxRound.teeRight,
 				rightChar: theme.boxRound.teeLeft,
-				label: section.label,
+				label: inBody ? undefined : section.label,
+				action: inBody ? undefined : section.separatorAction,
 			});
+			if (inBody && liveContentWidth > 0) {
+				if (section.separatorAction && labelWidth + actionWidth <= liveContentWidth) {
+					const gap = liveContentWidth - visibleWidth(section.label) - visibleWidth(section.separatorAction);
+					rows.push({ live, kind: "content", inner: `${section.label}${padding(gap)}${section.separatorAction}` });
+				} else {
+					for (const line of wrapTextWithAnsi(section.label, liveContentWidth)) {
+						rows.push({ live, kind: "content", inner: line + padding(liveContentWidth - visibleWidth(line)) });
+					}
+				}
+			}
 		} else if (section.separator && sectionIndex > 0) {
 			rows.push({
 				live,
@@ -440,13 +498,19 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 	const renderBar = (
 		row: { leftChar: string; rightChar: string; label?: string; meta?: string; action?: string },
 		lineWidth: number,
+		lead = cap,
 	): string => {
-		const leftGlyphs = `${row.leftChar}${cap}`;
+		const leftGlyphs = `${row.leftChar}${lead}`;
+		const labelText = [row.label, row.meta].filter(Boolean).join(theme.sep.dot);
+		const action =
+			row.action &&
+			visibleWidth(`${leftGlyphs}${labelText ? ` ${labelText} ` : ""}${row.action}${h}${row.rightChar}`) <= lineWidth
+				? row.action
+				: undefined;
 		const rightGlyph = row.rightChar;
-		const right = row.action === undefined ? border(rightGlyph) : row.action + border(`${h}${rightGlyph}`);
+		const right = action === undefined ? border(rightGlyph) : action + border(`${h}${rightGlyph}`);
 		const rightWidth = visibleWidth(right);
 		if (lineWidth <= 0) return border(leftGlyphs) + border(rightGlyph);
-		const labelText = [row.label, row.meta].filter(Boolean).join(theme.sep.dot);
 		if (!labelText) {
 			// No header: draw a clean, continuous top/separator bar (no 1-col gap).
 			const fillCount = Math.max(0, lineWidth - visibleWidth(leftGlyphs) - rightWidth);
@@ -466,36 +530,29 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		`${border(v)}${contentLeftPadding}${inner}${contentRightPadding}${border(v)}`;
 
 	const clipFrame = lineWidth < Math.max(visibleWidth(cap) + 2, contentPaddingLeft + contentPaddingRight + 2);
-	// The connector is the first live bar. It spans the wider box and carries a tee where the narrower
-	// one ends: `┴` closes the top box inside a wider lower box, `┬` opens the lower box inside a wider
-	// top box. Equal widths draw the ordinary separator.
+	// The first live bar joins the boxes. The live box is never narrower than the
+	// command, so unequal widths close the command with a tee at its exact edge.
 	const connectorIndex = staged ? rows.findIndex(row => row.live && row.kind === "bar") : -1;
-	const renderConnector = (row: { label?: string; meta?: string }): string => {
-		const wide = Math.max(topWidth, liveSnapped);
-		const labelText = [row.label, row.meta].filter(Boolean).join(theme.sep.dot);
-		const leftGlyphs = `${theme.boxRound.teeRight}${cap}`;
-		const label = truncateToWidth(
-			labelText ? ` ${labelText} ` : "",
-			Math.max(0, wide - visibleWidth(leftGlyphs) - 1),
+	const renderConnector = (row: Extract<BlockRow, { kind: "bar" }>): string => {
+		if (topWidth === splitWidth) return renderBar(row, topWidth);
+		const rightWidth = splitWidth - topWidth;
+		return (
+			renderBar(
+				{ leftChar: row.leftChar, rightChar: theme.boxRound.teeUp, label: labelOnRight ? undefined : row.label },
+				topWidth,
+				topWidth >= visibleWidth(cap) + 2 ? cap : "",
+			) +
+			renderBar(
+				{
+					leftChar: "",
+					rightChar: theme.boxRound.topRight,
+					label: labelOnRight ? row.label : undefined,
+					action: row.action,
+				},
+				rightWidth,
+				rightWidth > 1 ? h : "",
+			)
 		);
-		if (topWidth === liveSnapped) {
-			// Same width: an ordinary separator, no jog.
-			const fill = Math.max(0, wide - visibleWidth(leftGlyphs) - visibleWidth(label) - 1);
-			// The label brings its own foreground reset, so every border segment is coloured on its own
-			// (as renderBar does); one border() around the row would leave all text after the label uncoloured.
-			return `${border(leftGlyphs)}${label}${border(`${h.repeat(fill)}${theme.boxRound.teeLeft}`)}`;
-		}
-		const lowerIsWider = liveSnapped > topWidth;
-		// The tee marks where the top box ends (lower wider) or where the lower box ends (top wider). A label
-		// that runs past that column pushes the tee to the label's end; the row is live, so it may move.
-		const edge = Math.min(topWidth, liveSnapped) - 1;
-		const afterLabel = visibleWidth(leftGlyphs) + visibleWidth(label);
-		const teeColumn = Math.max(edge, afterLabel);
-		const tee = lowerIsWider ? "\u2534" : "\u252c";
-		const close = lowerIsWider ? theme.boxRound.topRight : theme.boxRound.bottomRight;
-		const beforeTee = Math.max(0, teeColumn - afterLabel);
-		const afterTee = Math.max(0, wide - 1 - teeColumn - 1);
-		return `${border(leftGlyphs)}${label}${border(`${h.repeat(beforeTee)}${tee}${h.repeat(afterTee)}${close}`)}`;
 	};
 
 	const lines: string[] = [];
@@ -508,7 +565,7 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 			lines.push(row.raw);
 			continue;
 		}
-		const widthHere = r === connectorIndex ? Math.max(topWidth, liveSnapped) : rowWidth(row.live);
+		const widthHere = rowWidth(row.live);
 		const line =
 			r === connectorIndex && row.kind === "bar"
 				? renderConnector(row)
@@ -521,11 +578,11 @@ export function renderOutputBlockStaged(options: OutputBlockOptions, theme: Them
 		lines.push(padToWidth(clip ? truncateToWidth(line, widthHere, Ellipsis.Omit) : line, widthHere, bgFn));
 	}
 
-	const firstLive = rows.findIndex(row => row.live);
+	const firstLiveRow = rows.findIndex(row => row.live);
 	return {
 		lines,
-		topStageRows: options.stageTone === undefined ? 0 : firstLive < 0 ? rows.length : firstLive,
-		liveWidth: staged ? liveSnapped : 0,
+		topStageRows: options.stageTone === undefined ? 0 : firstLiveRow < 0 ? rows.length : firstLiveRow,
+		liveWidth: staged ? splitWidth : 0,
 	};
 }
 
@@ -706,6 +763,7 @@ export class CachedOutputBlock {
 		if (options.sections) {
 			for (const s of options.sections) {
 				h.optional(s.label);
+				h.optional(s.separatorAction);
 				h.bool(s.separator ?? false);
 				h.u64(sectionLinesDigest(s.lines));
 			}

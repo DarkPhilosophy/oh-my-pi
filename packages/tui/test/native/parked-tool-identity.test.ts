@@ -34,7 +34,7 @@ test("parked streaming output keeps its native mounts until its final result", (
 		component.setExecutionStarted();
 		component.updateResult(result(1), true);
 		component.parkAsBackground();
-		expect(component.isTranscriptBlockFinalized()).toBe(true);
+		expect(transcript.peekFinalizedBatch(80, 30)).toBeUndefined();
 		frame();
 		for (let n = 2; n <= 4; n++) {
 			component.updateResult(result(n), true);

@@ -56,7 +56,6 @@ import {
 	DEFAULT_TERMINAL_PREVIEW_LINES,
 	formatStatusIcon,
 	replaceTabs,
-	previewWindowRows,
 	resolveImageOptions,
 } from "../render/render-utils";
 import type { XdevMountedState } from "../tools/xdev";
@@ -143,7 +142,7 @@ function cardPreview(preview: NativeToolView["preview"]): TspPreview | undefined
 /** The describe hooks of a registry renderer or of a custom tool object. */
 type ToolDescriber = Pick<ToolRenderer, "describeCall" | "describeResult" | "mergeCallAndResult">;
 
-/** A component that can report how many leading rows belong to its frozen top stage. */
+/** A renderer that reports its command rows for live viewport budgeting. */
 function hasTopStageRows(component: Component): component is Component & { topStageRows(): number } {
 	return "topStageRows" in component && typeof component.topStageRows === "function";
 }
@@ -174,7 +173,7 @@ class SafeToolRendererComponent implements Component {
 		}
 	}
 
-	/** Top-stage rows of the wrapped card's last render, or 0 when it is not a staged card. */
+	/** Command rows of the wrapped card's last render, or 0 for an unstaged card. */
 	topStageRows(): number {
 		return hasTopStageRows(this.#component) ? this.#component.topStageRows() : 0;
 	}
@@ -577,14 +576,14 @@ export class ToolExecutionComponent extends Container {
 		() =>
 			this.#presented
 				? {
-						type: "toolCall",
-						id: this.#toolCallId ?? "",
-						toolName: this.#toolName,
-						args: this.#args,
-						result: this.#result ? { content: this.#result.content, details: this.#rawDetails } : undefined,
-						isError: this.#result?.isError === true,
-						isPartial: this.#result === undefined || this.#isPartial,
-					}
+					type: "toolCall",
+					id: this.#toolCallId ?? "",
+					toolName: this.#toolName,
+					args: this.#args,
+					result: this.#result ? { content: this.#result.content, details: this.#rawDetails } : undefined,
+					isError: this.#result?.isError === true,
+					isPartial: this.#result === undefined || this.#isPartial,
+				}
 				: undefined,
 		() => this.#expanded,
 		this,
@@ -623,11 +622,11 @@ export class ToolExecutionComponent extends Container {
 		/** Live: read at render time, so a ticking spinner advances it. */
 		readonly elapsedMs?: number;
 	} = {
-		expanded: false,
-		isPartial: true,
-		argsComplete: false,
-		executionStarted: false,
-	};
+			expanded: false,
+			isPartial: true,
+			argsComplete: false,
+			executionStarted: false,
+		};
 
 	constructor(
 		toolName: string,
@@ -1122,17 +1121,17 @@ export class ToolExecutionComponent extends Container {
 			this.#result === undefined &&
 			(renderer === undefined
 				? // Only the generic #formatToolExecution fallback consumes the frame;
-					// a custom renderCall/renderResult pair routes through the custom
-					// branch whose pending label is a static tool-name Text.
-					!this.#tool?.renderCall && !this.#tool?.renderResult
+				// a custom renderCall/renderResult pair routes through the custom
+				// branch whose pending label is a static tool-name Text.
+				!this.#tool?.renderCall && !this.#tool?.renderResult
 				: (renderer.pendingAnimationRequiresExecution !== true || this.#executionStarted) &&
-					(typeof pendingAnimation === "function" ? pendingAnimation(this.#args) : pendingAnimation === true));
+				(typeof pendingAnimation === "function" ? pendingAnimation(this.#args) : pendingAnimation === true));
 		const partialResultConsumesSpinner =
 			this.#result !== undefined &&
 			(renderer === undefined
 				? !this.#tool?.renderCall && !this.#tool?.renderResult
 				: (renderer.pendingAnimationRequiresExecution !== true || this.#executionStarted) &&
-					(typeof partialAnimation === "function" ? partialAnimation(this.#args) : partialAnimation === true));
+				(typeof partialAnimation === "function" ? partialAnimation(this.#args) : partialAnimation === true));
 		const isLivePartialTool =
 			this.#isPartial &&
 			this.#toolName !== "todo" &&
@@ -1295,45 +1294,30 @@ export class ToolExecutionComponent extends Container {
 		// looks: history only ever receives the finished card. A preview taller than the
 		// viewport is clipped while it waits, then commits whole once its result lands.
 		if (this.#result === undefined) return false;
-		// Terminal history may retire a parked call, but the native document
-		// still receives its job frames. Keep its diff state until the final
-		// result so streaming updates do not remount the output subtree.
-		if (this.#parkedBackground) return !native || !this.#isPartial;
+		// A shell or Eval job can keep changing both halves of its card after
+		// handing off to the scheduler. Other parked cards retain their terminal receipt.
+		if (this.#parkedBackground && this.#toolName !== "bash" && this.#toolName !== "eval") {
+			return !native || !this.#isPartial;
+		}
 		return !this.#isPartial;
 	}
 
 	readonly commitToHistoryOnFinalize = true;
-	#stageMeasure: { width: number; rows: number; window: number } | undefined;
-	#stageWindow: number | undefined;
-	#stageExpanded: boolean | undefined;
-	#stageShellPresentation: ShellVizPresentation | null | undefined;
-
-	getTranscriptReadyRowCount(width: number): number {
-		const measure = this.#stageMeasure;
-		if (!measure || measure.width !== width || !this.#executionStarted || this.#sealed) return 0;
-		if (this.#stageWindow === undefined && this.#toolName === "bash") {
-			this.#stageShellPresentation = this.#getShellPresentation() ?? null;
-		}
-		this.#stageWindow ??= measure.window;
-		this.#stageExpanded ??= this.#expanded;
-		return measure.rows;
-	}
+	#commandRows = 0;
 
 	#outputPreviewLines(): number {
-		// Preserve the live separator, truncation marker and closing border.
-		const stageRows = this.#stageWindow === undefined ? (this.#stageMeasure?.rows ?? 0) : 0;
-		return Math.max(1, Math.min(DEFAULT_TERMINAL_PREVIEW_LINES, this.#allocation - stageRows - 3));
+		// Reserve room for the command, output separator, elision marker and closing border.
+		return Math.max(1, Math.min(DEFAULT_TERMINAL_PREVIEW_LINES, this.#allocation - this.#commandRows - 3));
 	}
 
-	#measureStage(width: number): void {
-		this.#stageMeasure = undefined;
-		if (this.#toolName !== "bash" && this.#toolName !== "eval") return;
-		let stage = 0;
-		for (const child of this.#contentBox.children) {
-			if (hasTopStageRows(child)) stage = Math.max(stage, child.topStageRows());
+	#measureCommandRows(): void {
+		let rows = 0;
+		if (this.#toolName === "bash" || this.#toolName === "eval") {
+			for (const child of this.#contentBox.children) {
+				if (hasTopStageRows(child)) rows = Math.max(rows, child.topStageRows());
+			}
 		}
-		if (stage === 0) return;
-		this.#stageMeasure = { width, rows: stage, window: this.#stageWindow ?? previewWindowRows() };
+		this.#commandRows = rows;
 	}
 
 	/**
@@ -1802,10 +1786,10 @@ export class ToolExecutionComponent extends Container {
 			const merged = renderer.mergeCallAndResult === true;
 			const resultView = result
 				? renderer.describeResult?.(
-						{ content: result.content, details: result.details, isError: result.isError },
-						options,
-						args,
-					)
+					{ content: result.content, details: result.details, isError: result.isError },
+					options,
+					args,
+				)
 				: undefined;
 			const callView = !result || !merged || !resultView ? renderer.describeCall?.(args, options) : undefined;
 			if (merged || !callView || !resultView) {
@@ -1988,10 +1972,8 @@ export class ToolExecutionComponent extends Container {
 			);
 		}
 		let lines = super.render(width);
-		this.#measureStage(width);
-		// A published stage must remain a prefix until the transcript slices it
-		// off. Collapsing it here makes that slice discard the live suffix too.
-		if (this.#allocation < 4 && this.#stageWindow === undefined) {
+		this.#measureCommandRows();
+		if (this.#allocation < 4) {
 			// A squeezed allocation degrades only blocks that genuinely overflow it.
 			// The allocator measures blocks by trimmed height and never squeezes one
 			// below that, so inline tools whose real content is 1-2 rows (wait
@@ -2028,7 +2010,8 @@ export class ToolExecutionComponent extends Container {
 
 	renderTranscriptCompact(width: number, rows = 1, lines: readonly string[] = []): readonly string[] {
 		const compact = this.#renderCompact(width);
-		return renderOutputBlockViewport(compact[0]!, lines, width, rows, theme) ?? compact;
+		const staged = this.#toolName === "bash" || this.#toolName === "eval";
+		return renderOutputBlockViewport(compact[0]!, lines, width, rows, theme, staged) ?? compact;
 	}
 
 	/** The one-row summary: bold label, muted detail, and the elapsed seconds of a running call. */
@@ -2042,9 +2025,9 @@ export class ToolExecutionComponent extends Container {
 		const elapsed =
 			this.#isRunning() && this.#executionStartedAtNow !== undefined
 				? theme.fg(
-						"dim",
-						` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
-					)
+					"dim",
+					` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
+				)
 				: "";
 		return truncateToWidth(
 			`${theme.fg("toolTitle", theme.bold(plainLine(summary.label)))}${detail}${elapsed}`,
@@ -2467,10 +2450,10 @@ export class ToolExecutionComponent extends Container {
 			this.#isBenignSkip() || isNativeRendering()
 				? undefined
 				: renderer?.figure?.(
-						this.#args,
-						result && { content: result.content, details: result.details, isError: result.isError },
-						this.#renderState,
-					);
+					this.#args,
+					result && { content: result.content, details: result.details, isError: result.isError },
+					this.#renderState,
+				);
 		const drawable = fence !== undefined && FenceFigure.draws(fence, { showImages: this.#showImages });
 		let figure = this.#figure;
 		if (figure && (!drawable || figure.lang !== fence.lang)) {
@@ -2547,28 +2530,7 @@ export class ToolExecutionComponent extends Container {
 				enumerable: true,
 				get: () => this.#liveWidthMax?.value ?? 0,
 			});
-			Object.defineProperty(context, "stageWindow", {
-				enumerable: true,
-				get: () => this.#stageWindow ?? previewWindowRows(),
-			});
-			Object.defineProperty(context, "stageExpanded", {
-				enumerable: true,
-				get: () => this.#stageExpanded ?? this.#expanded,
-			});
-			Object.defineProperty(context, "stageShellPresentation", {
-				enumerable: true,
-				get: () => this.#stageShellPresentation,
-			});
 		} else if (this.#toolName === "eval") {
-			// Present before any result too: the pending call card draws the same frozen top stage.
-			Object.defineProperty(context, "stageWindow", {
-				enumerable: true,
-				get: () => this.#stageWindow ?? previewWindowRows(),
-			});
-			Object.defineProperty(context, "stageExpanded", {
-				enumerable: true,
-				get: () => this.#stageExpanded ?? this.#expanded,
-			});
 			if (this.#result) {
 				Object.defineProperty(context, "output", {
 					get: () => this.#getTrimmedTextOutput(),
@@ -2601,9 +2563,9 @@ export class ToolExecutionComponent extends Container {
 					context.editDiffPreview = first.error
 						? { error: first.error }
 						: {
-								diff: first.diff ?? "",
-								firstChangedLine: first.firstChangedLine,
-							};
+							diff: first.diff ?? "",
+							firstChangedLine: first.firstChangedLine,
+						};
 				}
 				if (previews.length > 1) {
 					context.perFileDiffPreview = previews;
@@ -2692,10 +2654,10 @@ export class ToolExecutionComponent extends Container {
 				args: this.#args,
 				result: this.#result
 					? {
-							output: this.#getTextOutput(),
-							isError: this.#result.isError,
-							skipped: this.#isBenignSkip(),
-						}
+						output: this.#getTextOutput(),
+						isError: this.#result.isError,
+						skipped: this.#isBenignSkip(),
+					}
 					: undefined,
 				options: this.#renderState,
 			},
@@ -2714,11 +2676,11 @@ export class ToolExecutionComponent extends Container {
 		if (this.#isPartial || !this.#result) return false;
 		const details = this.#result.details as
 			| {
-					__synthetic?: boolean;
-					__interrupted?: boolean;
-					source?: string;
-					execution?: string;
-			  }
+				__synthetic?: boolean;
+				__interrupted?: boolean;
+				source?: string;
+				execution?: string;
+			}
 			| undefined;
 		if (details?.source !== "interrupt_skipped") return false;
 		return details.__synthetic === true || (details.__interrupted === true && details.execution === "started");

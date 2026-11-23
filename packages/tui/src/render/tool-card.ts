@@ -32,6 +32,7 @@ export type ToolCardContent = readonly string[] | Component | ((width: number) =
 /** A labeled body section in a tool card. */
 export interface ToolCardSection {
 	label?: string;
+	separatorAction?: string;
 	content: ToolCardContent;
 	separator?: boolean;
 }
@@ -200,7 +201,7 @@ export class ToolCard implements Component {
 			nextChildSet.add(component);
 			nextChildren.push(component);
 		};
-		const sections: Array<{ label?: string; lines: readonly string[]; separator?: boolean }> = [];
+		const sections: NonNullable<OutputBlockOptions["sections"]> = [];
 		if (snapshot.body) {
 			const body = resolveContent(snapshot.body, contentWidth);
 			sections.push({ lines: body.lines });
@@ -208,7 +209,12 @@ export class ToolCard implements Component {
 		}
 		for (const section of snapshot.sections ?? []) {
 			const resolved = resolveContent(section.content, contentWidth);
-			sections.push({ label: section.label, lines: resolved.lines, separator: section.separator });
+			sections.push({
+				label: section.label,
+				separatorAction: section.separatorAction,
+				lines: resolved.lines,
+				separator: section.separator,
+			});
 			retainChild(resolved.component);
 		}
 		if (snapshot.footer) {
@@ -232,6 +238,7 @@ export class ToolCard implements Component {
 					const previous = previousSections[index];
 					return (
 						previous?.label === section.label &&
+						previous.separatorAction === section.separatorAction &&
 						previous.lines === section.lines &&
 						previous.separator === section.separator
 					);

@@ -4,7 +4,7 @@ import { highlightCode, type Theme } from "../theme/theme";
 import { renderStatusLine } from "../render/status-line";
 import { framedToolCard, type ToolCardSnapshot } from "../render/tool-card";
 import { formatOutputPaneLines } from "../render/output-pane";
-import { outputCopyChip } from "../render/output-block";
+import { renderCopyChip } from "../render/copy-chip";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
@@ -265,12 +265,6 @@ export interface BashRenderArgs {
 export interface BashRenderContext {
 	/** Widest lower box drawn so far at the current width; the box never gets narrower than this. */
 	minLiveWidth?: number;
-	/** Window the command stage is drawn with; frozen once the stage is offered to history. */
-	stageWindow?: number;
-	/** Expand state the command stage is drawn with; frozen with the window. */
-	stageExpanded?: boolean;
-	/** Command presentation frozen with its published stage; null keeps a published plain command. */
-	stageShellPresentation?: ShellVizPresentation | null;
 	/** Raw output text */
 	output?: string;
 	/** Whether output came from artifact storage */
@@ -541,20 +535,15 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			return framedToolCard(
 				uiTheme,
 				({ contentWidth }) => {
-					const frozen = options.renderContext?.stageShellPresentation;
-					const presentation = frozen === undefined ? options.shellPresentation : (frozen ?? undefined);
-					const commandLines = presentation
-						? visualCommandLines(presentation, renderArgs, undefined, uiTheme, contentWidth)
+					const commandLines = options.shellPresentation
+						? visualCommandLines(options.shellPresentation, renderArgs, undefined, uiTheme, contentWidth)
 						: (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme));
 					const header =
 						config.showHeader === false
 							? undefined
 							: renderStatusLine(
 									{
-										// Static glyph: the head row is the card's first native-history
-										// row, and a spinner there would change it every frame.
-										// Same glyph as a successful result, so the head row is
-										// byte-identical before and after execution.
+										// The live status belongs on the Output separator.
 										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
 										title: config.resolveTitle(args, options),
 									},
@@ -563,11 +552,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const elapsedMs = options.executionStarted ? options.elapsedMs : undefined;
 					return {
 						header,
-						phase: options.spinnerFrame !== undefined ? "running" : "pending",
-						// Same neutral, unwashed frame as the result card in every phase.
-						applyBg: false,
-						// The command is final once its arguments are complete: it keeps one neutral frame
-						// through every later state, so the same bytes can sit in native history.
+						// Use one palette for both stages; the Output label carries execution status.
 						stageTone: "success",
 						footerMeta:
 							elapsedMs === undefined || elapsedMs < 1000
@@ -587,6 +572,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								? [
 										{
 											label: bashOutputLabel(uiTheme, "Running", options.spinnerFrame),
+											separatorAction:
+												options.argsComplete !== false
+													? renderCopyChip(renderArgs.command ?? "", uiTheme, "input")
+													: undefined,
 											content: [] as string[],
 										},
 									]
@@ -643,14 +632,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			let cachedIsPartial: boolean | undefined;
 			let cachedPreviewWindow: number | undefined;
 			let cachedMinLiveWidth: number | undefined;
-			let cachedStageWindow: number | undefined;
-			let cachedStageExpanded: boolean | undefined;
 			let cachedSpinnerFrame: number | undefined;
 			let cachedSnapshot: ToolCardSnapshot | undefined;
 			let cachedElapsedSecond: number | undefined;
 			let cachedTraceKey: string | undefined;
 			let cachedPresentation: ShellVizPresentation | undefined;
-			let cachedStagePresentation: ShellVizPresentation | null | undefined;
 			const dropSnapshot = () => {
 				cmdLines = undefined;
 				cachedSnapshot = undefined;
@@ -661,13 +647,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				cachedIsPartial = undefined;
 				cachedPreviewWindow = undefined;
 				cachedMinLiveWidth = undefined;
-				cachedStageWindow = undefined;
-				cachedStageExpanded = undefined;
 				cachedSpinnerFrame = undefined;
 				cachedElapsedSecond = undefined;
 				cachedTraceKey = undefined;
 				cachedPresentation = undefined;
-				cachedStagePresentation = undefined;
 			};
 
 			return framedToolCard(
@@ -683,10 +666,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					// the first trace poll) keeps the call's untraced presentation.
 					const trace = options.shellTrace ?? details?.trace;
 					const presentation = options.shellPresentation;
-					const frozen = renderContext?.stageShellPresentation;
-					const commandPresentation = frozen === undefined ? presentation : (frozen ?? undefined);
 					// Without a trace the presentation parsed the raw command, `cd` and all.
-					const scriptDetails = trace === undefined || frozen !== undefined ? undefined : details;
+					const scriptDetails = trace === undefined ? undefined : details;
 
 					// Get output from context (preferred) or fall back to result content.
 					// Strip the LLM-facing notice appended by wrappedExecute so we don't
@@ -718,13 +699,10 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						cachedIsPartial === isPartial &&
 						cachedPreviewWindow === previewWindow &&
 						cachedMinLiveWidth === (renderContext?.minLiveWidth ?? 0) &&
-						cachedStageWindow === (renderContext?.stageWindow ?? previewWindow) &&
-						cachedStageExpanded === (renderContext?.stageExpanded ?? expanded) &&
 						cachedSpinnerFrame === (isPartial ? options.spinnerFrame : undefined) &&
 						cachedElapsedSecond === elapsedSecond &&
 						cachedTraceKey === traceKey &&
-						cachedPresentation === presentation &&
-						cachedStagePresentation === frozen
+						cachedPresentation === presentation
 					) {
 						return cachedSnapshot;
 					}
@@ -785,47 +763,40 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 									: `${uiTheme.styledSymbol("status.error", "error")} failed`
 								: uiTheme.styledSymbol("status.success", "success");
 					const outputLabel = bashOutputLabel(uiTheme, outputStatus, isPartial ? options.spinnerFrame : undefined);
-					const success = !isPartial && !isError;
 					const snapshot: ToolCardSnapshot = {
 						header,
 						stageTone: "success",
 						minLiveWidth: renderContext?.minLiveWidth,
-						phase: isPartial ? "partial" : isError ? (isTimeout ? "warning" : "error") : "success",
-						// Shell cards keep the neutral segmented look in every phase: the
-						// phase colours status and border, never a background wash. A
-						// settled success names its default dim border, so a native host
-						// drawing this card gets a muted tone rather than a success tint.
-						applyBg: false,
-						borderColor: success ? "dim" : undefined,
 						footerMeta,
-						footerAction: !isPartial && !backgrounded && hasOutput ? outputCopyChip(output, uiTheme) : undefined,
+						footerAction:
+							!isPartial && !backgrounded && hasOutput ? renderCopyChip(output, uiTheme, "output") : undefined,
 						sections: [
 							{
 								// Viewport-sized tail window in every state — streaming and final
 								// render identically; only ctrl+o uncaps.
 								content: capPreviewLines(
-									commandPresentation
-										? visualCommandLines(
-												commandPresentation,
-												renderArgs,
-												scriptDetails,
-												uiTheme,
-												contentWidth,
-											)
+									presentation
+										? visualCommandLines(presentation, renderArgs, scriptDetails, uiTheme, contentWidth)
 										: args
 											? (cmdLines ??= formatBashCommandLines(renderArgs, uiTheme))
 											: [],
 									uiTheme,
 									{
-										// The command stage may already be in history: it keeps the shape it was committed in.
-										expanded: renderContext?.stageExpanded ?? expanded,
+										expanded,
 										keepHead: true,
 										width: contentWidth,
-										max: renderContext?.stageWindow ?? previewWindow,
+										max: previewWindow,
 									},
 								),
 							},
-							{ label: outputLabel, content: outputLines },
+							{
+								label: outputLabel,
+								separatorAction:
+									options.argsComplete !== false
+										? renderCopyChip(renderArgs.command ?? "", uiTheme, "input")
+										: undefined,
+								content: outputLines,
+							},
 						],
 					};
 
@@ -836,14 +807,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedIsPartial = isPartial;
 					cachedPreviewWindow = previewWindow;
 					cachedMinLiveWidth = renderContext?.minLiveWidth ?? 0;
-					cachedStageWindow = renderContext?.stageWindow ?? previewWindow;
-					cachedStageExpanded = renderContext?.stageExpanded ?? expanded;
 					cachedSpinnerFrame = isPartial ? options.spinnerFrame : undefined;
 					cachedElapsedSecond = elapsedSecond;
 					cachedTraceKey = traceKey;
 					cachedPresentation = presentation;
 					cachedSnapshot = snapshot;
-					cachedStagePresentation = frozen;
 					return snapshot;
 				},
 				{ onInvalidate: dropSnapshot, onReleaseRenderCaches: dropSnapshot },
